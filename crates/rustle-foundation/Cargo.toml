@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 rustle-geometry.workspace = true
 rustle-graphics.workspace = true
+rustle-runtime.workspace = true
 rustle-text.workspace = true
 rustle-ui.workspace = true
 rustle-unit.workspace = true
