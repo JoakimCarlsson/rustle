@@ -2,6 +2,12 @@
 
 use std::cell::RefCell;
 
+mod composition;
+mod state;
+
+pub use composition::{Composition, remember};
+pub use state::State;
+
 /// A node of the UI tree produced by composition.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {

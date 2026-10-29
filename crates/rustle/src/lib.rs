@@ -3,7 +3,7 @@
 use std::process;
 use std::sync::Arc;
 
-use rustle_core::DrawCommand;
+use rustle_core::{Composition, DrawCommand};
 use rustle_wgpu::Renderer;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -11,25 +11,36 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-pub use rustle_core::{column, text};
+pub use rustle_core::{State, column, remember, text};
 pub use rustle_macros::composable;
 
 pub mod prelude {
-    pub use crate::{column, composable, text};
+    pub use crate::{State, column, composable, remember, text};
 }
 
-/// Composes `root`, lays it out, and shows it in a native window until closed.
+/// Composes `root` and shows it in a native window until closed.
+///
+/// The whole root is composed again, on the event loop, whenever state it
+/// remembers has changed.
 ///
 /// Exits the process with status 1 if the window or renderer cannot be set up.
-pub fn run(root: impl FnOnce()) {
-    let tree = rustle_core::compose(root);
+pub fn run(root: impl FnMut() + 'static) {
     let mut app = App {
-        commands: rustle_core::layout(&tree),
+        composition: Composition::new(root),
+        commands: Vec::new(),
         window: None,
         error: None,
     };
 
     let result = EventLoop::new().and_then(|event_loop| {
+        // State changes wake the event loop instead of being polled for. A
+        // new composition is dirty, so the first wake-up also composes it.
+        let proxy = event_loop.create_proxy();
+        let wake = proxy.clone();
+        app.composition.on_invalidate(move || {
+            let _ = wake.send_event(());
+        });
+        let _ = proxy.send_event(());
         event_loop.set_control_flow(ControlFlow::Wait);
         event_loop.run_app(&mut app)
     });
@@ -43,6 +54,7 @@ pub fn run(root: impl FnOnce()) {
 }
 
 struct App {
+    composition: Composition,
     commands: Vec<DrawCommand>,
     window: Option<WindowState>,
     error: Option<String>,
@@ -67,7 +79,7 @@ impl ApplicationHandler for App {
         }
         let attributes = Window::default_attributes()
             .with_title("Rustle")
-            .with_inner_size(LogicalSize::new(480.0, 240.0));
+            .with_inner_size(LogicalSize::new(1920.0, 1080.0));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => return self.fail(event_loop, error),
@@ -83,6 +95,15 @@ impl ApplicationHandler for App {
                 self.window = Some(WindowState { renderer, window });
             }
             Err(error) => self.fail(event_loop, error),
+        }
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, _: ()) {
+        if self.composition.recompose() {
+            self.commands = rustle_core::layout(self.composition.tree());
+            if let Some(state) = &self.window {
+                state.window.request_redraw();
+            }
         }
     }
 
