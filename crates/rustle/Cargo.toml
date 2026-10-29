@@ -6,11 +6,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+accesskit = "0.25"
+accesskit_winit = "0.34.2"
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 rustle-animation.workspace = true
+rustle-charts.workspace = true
 rustle-foundation.workspace = true
 rustle-geometry.workspace = true
 rustle-graphics.workspace = true
 rustle-macros.workspace = true
+rustle-navigation.workspace = true
 rustle-runtime.workspace = true
 rustle-text.workspace = true
 rustle-ui.workspace = true
@@ -22,4 +27,4 @@ winit = "0.30"
 
 [[example]]
 name = "hello_world"
-path = "../../examples/hello_world.rs"
+path = "../../examples/hello_world/main.rs"

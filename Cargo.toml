@@ -9,10 +9,12 @@ license = "MIT"
 
 [workspace.dependencies]
 rustle-animation = { path = "crates/rustle-animation" }
+rustle-charts = { path = "crates/rustle-charts" }
 rustle-foundation = { path = "crates/rustle-foundation" }
 rustle-geometry = { path = "crates/rustle-geometry" }
 rustle-graphics = { path = "crates/rustle-graphics" }
 rustle-macros = { path = "crates/rustle-macros" }
+rustle-navigation = { path = "crates/rustle-navigation" }
 rustle-runtime = { path = "crates/rustle-runtime" }
 rustle-shaders = { path = "crates/rustle-shaders" }
 rustle-text = { path = "crates/rustle-text" }
