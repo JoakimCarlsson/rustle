@@ -1,0 +1,8 @@
+[package]
+name = "rustle-unit"
+description = "Density-independent units and layout constraints for Rustle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

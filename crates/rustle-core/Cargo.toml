@@ -1,8 +1,0 @@
-[package]
-name = "rustle-core"
-description = "Renderer-independent composition, layout and display list for Rustle"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]

@@ -1606,15 +1606,41 @@ dependencies = [
 name = "rustle"
 version = "0.1.0"
 dependencies = [
- "rustle-core",
+ "rustle-animation",
+ "rustle-foundation",
+ "rustle-geometry",
+ "rustle-graphics",
  "rustle-macros",
+ "rustle-runtime",
+ "rustle-text",
+ "rustle-ui",
+ "rustle-unit",
  "rustle-wgpu",
+ "rustle-widgets",
  "wgpu",
  "winit",
 ]
 
 [[package]]
-name = "rustle-core"
+name = "rustle-animation"
+version = "0.1.0"
+dependencies = [
+ "rustle-runtime",
+]
+
+[[package]]
+name = "rustle-foundation"
+version = "0.1.0"
+dependencies = [
+ "rustle-ui",
+]
+
+[[package]]
+name = "rustle-geometry"
+version = "0.1.0"
+
+[[package]]
+name = "rustle-graphics"
 version = "0.1.0"
 
 [[package]]
@@ -1622,7 +1648,31 @@ name = "rustle-macros"
 version = "0.1.0"
 
 [[package]]
+name = "rustle-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "rustle-shaders"
+version = "0.1.0"
+
+[[package]]
+name = "rustle-text"
+version = "0.1.0"
+dependencies = [
+ "rustle-geometry",
+ "rustle-unit",
+]
+
+[[package]]
+name = "rustle-ui"
+version = "0.1.0"
+dependencies = [
+ "rustle-graphics",
+ "rustle-runtime",
+]
+
+[[package]]
+name = "rustle-unit"
 version = "0.1.0"
 
 [[package]]
@@ -1631,9 +1681,16 @@ version = "0.1.0"
 dependencies = [
  "glyphon",
  "pollster",
- "rustle-core",
+ "rustle-graphics",
  "rustle-shaders",
  "wgpu",
+]
+
+[[package]]
+name = "rustle-widgets"
+version = "0.1.0"
+dependencies = [
+ "rustle-foundation",
 ]
 
 [[package]]

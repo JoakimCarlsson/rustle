@@ -1,14 +1,22 @@
 [package]
 name = "rustle"
-description = "A tiny Compose-inspired declarative UI framework"
+description = "A tiny declarative UI framework"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rustle-core.workspace = true
+rustle-animation.workspace = true
+rustle-foundation.workspace = true
+rustle-geometry.workspace = true
+rustle-graphics.workspace = true
 rustle-macros.workspace = true
+rustle-runtime.workspace = true
+rustle-text.workspace = true
+rustle-ui.workspace = true
+rustle-unit.workspace = true
 rustle-wgpu.workspace = true
+rustle-widgets.workspace = true
 wgpu = "30.0.1"
 winit = "0.30"
 

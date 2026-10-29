@@ -6,7 +6,7 @@ fn app() {
 
     column(|| {
         text("Hello, Rustle!");
-        text("A tiny Compose-inspired UI.");
+        text("A tiny declarative UI.");
         text("Rendered with wgpu.");
         text(format!("Count: {}", count.get()));
     });

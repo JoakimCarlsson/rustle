@@ -1,6 +1,6 @@
 # Rustle
 
-A minimal, Compose-inspired declarative UI framework in Rust. This is the smallest working foundation: composition, a vertical column layout, and a `wgpu` renderer.
+A minimal declarative UI framework in Rust, inspired by Jetpack Compose. This is the smallest working foundation: composition, a vertical column layout, and a `wgpu` renderer.
 
 ```rust
 use rustle::prelude::*;
@@ -9,7 +9,7 @@ use rustle::prelude::*;
 fn app() {
     column(|| {
         text("Hello, Rustle!");
-        text("A tiny Compose-inspired UI.");
+        text("A tiny declarative UI.");
         text("Rendered with wgpu.");
     });
 }
@@ -27,14 +27,9 @@ cargo run --example hello_world
 
 ## Architecture
 
-| Crate | Role |
-| --- | --- |
-| `rustle-core` | Composition (thread-local scope stack), `Node` tree, layout, `DrawCommand` display list. No graphics dependencies. |
-| `rustle-macros` | `#[composable]` (currently a pass-through). |
-| `rustle-wgpu` | wgpu + glyphon renderer. Consumes only `DrawCommand`s. |
-| `rustle` | Public API, prelude, and the winit-based `run`. |
+See [docs/architecture.md](docs/architecture.md) for the crates and what belongs in each.
 
-Pipeline: `compose` builds a `Node` tree, `layout` turns it into `DrawCommand`s, and `Renderer::render` draws them.
+Pipeline: a `Composition` runs the root into a `Node` tree, `layout` turns it into `DrawCommand`s, and `Renderer::render` draws them. State changes mark the composition dirty and wake the event loop, which composes again.
 
 ## Not implemented yet
 

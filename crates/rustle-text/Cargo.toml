@@ -1,0 +1,10 @@
+[package]
+name = "rustle-text"
+description = "Text styling and measurement for Rustle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustle-geometry.workspace = true
+rustle-unit.workspace = true

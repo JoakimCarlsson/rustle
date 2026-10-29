@@ -1,9 +1,10 @@
-//! Rustle: a tiny Compose-inspired declarative UI framework.
+//! Rustle: a tiny declarative UI framework.
 
 use std::process;
 use std::sync::Arc;
 
-use rustle_core::{Composition, DrawCommand};
+use rustle_graphics::DrawCommand;
+use rustle_ui::Composition;
 use rustle_wgpu::Renderer;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -11,8 +12,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-pub use rustle_core::{State, column, remember, text};
+pub use rustle_foundation::{column, text};
 pub use rustle_macros::composable;
+pub use rustle_runtime::{State, remember};
 
 pub mod prelude {
     pub use crate::{State, column, composable, remember, text};
@@ -26,7 +28,7 @@ pub mod prelude {
 /// Exits the process with status 1 if the window or renderer cannot be set up.
 pub fn run(root: impl FnMut() + 'static) {
     let mut app = App {
-        composition: Composition::new(root),
+        composition: rustle_ui::composition(root),
         commands: Vec::new(),
         window: None,
         error: None,
@@ -100,7 +102,9 @@ impl ApplicationHandler for App {
 
     fn user_event(&mut self, _: &ActiveEventLoop, _: ()) {
         if self.composition.recompose() {
-            self.commands = rustle_core::layout(self.composition.tree());
+            if let Some(tree) = self.composition.output() {
+                self.commands = rustle_ui::layout(tree);
+            }
             if let Some(state) = &self.window {
                 state.window.request_redraw();
             }

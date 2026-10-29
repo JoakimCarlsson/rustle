@@ -1,0 +1,9 @@
+[package]
+name = "rustle-animation"
+description = "Animation APIs for Rustle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustle-runtime.workspace = true

@@ -8,7 +8,15 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-rustle-core = { path = "crates/rustle-core" }
+rustle-animation = { path = "crates/rustle-animation" }
+rustle-foundation = { path = "crates/rustle-foundation" }
+rustle-geometry = { path = "crates/rustle-geometry" }
+rustle-graphics = { path = "crates/rustle-graphics" }
 rustle-macros = { path = "crates/rustle-macros" }
+rustle-runtime = { path = "crates/rustle-runtime" }
 rustle-shaders = { path = "crates/rustle-shaders" }
+rustle-text = { path = "crates/rustle-text" }
+rustle-ui = { path = "crates/rustle-ui" }
+rustle-unit = { path = "crates/rustle-unit" }
 rustle-wgpu = { path = "crates/rustle-wgpu" }
+rustle-widgets = { path = "crates/rustle-widgets" }

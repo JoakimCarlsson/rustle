@@ -1,0 +1,9 @@
+[package]
+name = "rustle-widgets"
+description = "Styled, ready-made components for Rustle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustle-foundation.workspace = true

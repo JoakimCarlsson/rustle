@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::mem;
 use std::rc::Rc;
 
-use crate::Node;
 use crate::state::{Invalidation, State};
 
 /// Per-pass view of a composition's slots, installed while its root runs.
@@ -39,25 +38,26 @@ impl Drop for PassGuard<'_> {
 
 /// A root composable together with the state it remembers.
 ///
-/// Every pass runs the whole root again and replaces the previous tree.
-/// State changes only mark the composition dirty; call [`Composition::recompose`]
-/// to apply them.
-pub struct Composition {
-    root: Box<dyn FnMut()>,
+/// Every pass runs the whole root again and keeps what it returned, replacing
+/// the previous output. The runtime does not care what that is; a UI layer
+/// returns its tree. State changes only mark the composition dirty; call
+/// [`Composition::recompose`] to apply them.
+pub struct Composition<T> {
+    root: Box<dyn FnMut() -> T>,
     slots: Vec<Box<dyn Any>>,
     composed: bool,
     invalidation: Rc<Invalidation>,
-    tree: Node,
+    output: Option<T>,
 }
 
-impl Composition {
-    pub fn new(root: impl FnMut() + 'static) -> Self {
+impl<T> Composition<T> {
+    pub fn new(root: impl FnMut() -> T + 'static) -> Self {
         Self {
             root: Box::new(root),
             slots: Vec::new(),
             composed: false,
             invalidation: Invalidation::new(),
-            tree: Node::Column(Vec::new()),
+            output: None,
         }
     }
 
@@ -69,9 +69,9 @@ impl Composition {
         self.invalidation.set_waker(waker);
     }
 
-    /// The tree produced by the latest pass.
-    pub fn tree(&self) -> &Node {
-        &self.tree
+    /// What the latest pass returned, or `None` before the first pass.
+    pub fn output(&self) -> Option<&T> {
+        self.output.as_ref()
     }
 
     /// True if state changed since the latest pass, or none has run yet.
@@ -79,7 +79,7 @@ impl Composition {
         self.invalidation.is_dirty()
     }
 
-    /// Runs the root unconditionally and replaces the tree.
+    /// Runs the root unconditionally and replaces the output.
     ///
     /// Changing state while composing marks the composition dirty again.
     ///
@@ -102,7 +102,7 @@ impl Composition {
             slots: &mut self.slots,
         };
 
-        let tree = crate::compose(&mut self.root);
+        let output = (self.root)();
         RUNTIME.with(|runtime| {
             let runtime = runtime.borrow();
             let runtime = runtime.as_ref().expect("runtime missing after pass");
@@ -114,7 +114,7 @@ impl Composition {
         });
 
         drop(guard);
-        self.tree = tree;
+        self.output = Some(output);
         self.composed = true;
     }
 

@@ -1,0 +1,8 @@
+[package]
+name = "rustle-geometry"
+description = "Geometry primitives for Rustle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

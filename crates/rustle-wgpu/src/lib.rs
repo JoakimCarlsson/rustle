@@ -9,7 +9,7 @@ use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
-use rustle_core::{DrawCommand, FONT_SIZE, LINE_HEIGHT};
+use rustle_graphics::{DrawCommand, FONT_SIZE, LINE_HEIGHT};
 
 type SurfaceFactory = Box<
     dyn Fn(

@@ -1,12 +1,8 @@
-//! Renderer-independent core of Rustle: composition, layout and the display list.
+//! Rustle's UI layer: the node tree, composing into it, and layout.
 
 use std::cell::RefCell;
 
-mod composition;
-mod state;
-
-pub use composition::{Composition, remember};
-pub use state::State;
+use rustle_graphics::{DrawCommand, LINE_HEIGHT};
 
 /// A node of the UI tree produced by composition.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,16 +11,6 @@ pub enum Node {
     Text(String),
 }
 
-/// A backend-independent drawing instruction produced by layout.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DrawCommand {
-    Text { x: f32, y: f32, content: String },
-}
-
-/// Font size of all text, in logical pixels.
-pub const FONT_SIZE: f32 = 18.0;
-/// Height reserved for one line of text, in logical pixels.
-pub const LINE_HEIGHT: f32 = 24.0;
 /// Vertical gap between the children of a column, in logical pixels.
 pub const SPACING: f32 = 8.0;
 /// Offset of the root UI from the top-left corner, in logical pixels.
@@ -48,7 +34,7 @@ impl Drop for ScopeGuard {
 }
 
 /// Runs `content` in a fresh scope and returns the nodes it emitted.
-fn collect(content: impl FnOnce()) -> Vec<Node> {
+pub fn collect(content: impl FnOnce()) -> Vec<Node> {
     let depth = SCOPES.with(|scopes| {
         let mut scopes = scopes.borrow_mut();
         scopes.push(Vec::new());
@@ -61,7 +47,12 @@ fn collect(content: impl FnOnce()) -> Vec<Node> {
         .expect("composition scope stack was corrupted")
 }
 
-fn emit(node: Node) {
+/// Emits `node` into the current scope.
+///
+/// # Panics
+///
+/// Panics when called outside composition.
+pub fn emit(node: Node) {
     let node = SCOPES.with(|scopes| match scopes.borrow_mut().last_mut() {
         Some(children) => {
             children.push(node);
@@ -75,16 +66,6 @@ fn emit(node: Node) {
     );
 }
 
-/// Emits a text element into the current scope.
-pub fn text(content: impl Into<String>) {
-    emit(Node::Text(content.into()));
-}
-
-/// Emits a column whose children are emitted by `content`.
-pub fn column(content: impl FnOnce()) {
-    emit(Node::Column(collect(content)));
-}
-
 /// Runs a root composable and returns the resulting UI tree.
 ///
 /// A single root element is returned as is; anything else is wrapped in a column.
@@ -95,6 +76,14 @@ pub fn compose(root: impl FnOnce()) -> Node {
     } else {
         Node::Column(children)
     }
+}
+
+/// A composition whose root produces a UI [`Node`] tree.
+pub type Composition = rustle_runtime::Composition<Node>;
+
+/// Creates a composition that composes `root` into a tree on every pass.
+pub fn composition(mut root: impl FnMut() + 'static) -> Composition {
+    Composition::new(move || compose(&mut root))
 }
 
 /// Lays out the tree and returns drawing commands in paint order.

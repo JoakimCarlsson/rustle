@@ -1,0 +1,10 @@
+[package]
+name = "rustle-ui"
+description = "Node tree, composition into it, and layout for Rustle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustle-graphics.workspace = true
+rustle-runtime.workspace = true

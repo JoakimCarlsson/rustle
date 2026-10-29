@@ -1,0 +1,9 @@
+[package]
+name = "rustle-foundation"
+description = "Design-system-agnostic building blocks for Rustle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustle-ui.workspace = true
