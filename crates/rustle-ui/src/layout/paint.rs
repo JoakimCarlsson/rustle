@@ -343,12 +343,15 @@ impl<'a> Painter<'a> {
                 self.paint(inner, origin);
             }
             Paint::PointerMove { on_move, inner } => {
+                let index = self.list.pointer_moves.len();
                 self.list.pointer_moves.push(PointerMoveRegion {
                     rect: self.visible(rect),
                     origin,
                     on_move: Rc::clone(on_move),
+                    covered_after: 0,
                 });
                 self.paint(inner, origin);
+                self.list.pointer_moves[index].covered_after = self.list.regions.len();
             }
             Paint::LongPress {
                 on_long_press,
@@ -361,11 +364,14 @@ impl<'a> Painter<'a> {
                 self.paint(inner, origin);
             }
             Paint::Hover { on_hover, inner } => {
+                let index = self.list.hovers.len();
                 self.list.hovers.push(HoverRegion {
                     rect: self.visible(rect),
                     on_hover: Rc::clone(on_hover),
+                    covered_after: 0,
                 });
                 self.paint(inner, origin);
+                self.list.hovers[index].covered_after = self.list.regions.len();
             }
             Paint::Placed { on_placed, inner } => {
                 on_placed(rect, self.window);

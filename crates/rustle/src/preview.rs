@@ -93,16 +93,9 @@ pub(crate) fn snapshot(
                 for region in display.hovers_at(at) {
                     (Rc::clone(&region.on_hover))(true);
                 }
-                for region in &display.pointer_moves {
-                    let rect = region.rect;
-                    if at.x >= rect.origin.x
-                        && at.x < rect.origin.x + rect.size.width
-                        && at.y >= rect.origin.y
-                        && at.y < rect.origin.y + rect.size.height
-                    {
-                        let local = Offset::new(at.x - region.origin.x, at.y - region.origin.y);
-                        (Rc::clone(&region.on_move))(Some(local));
-                    }
+                for region in display.pointer_moves_at(at) {
+                    let local = Offset::new(at.x - region.origin.x, at.y - region.origin.y);
+                    (Rc::clone(&region.on_move))(Some(local));
                 }
             }
             "type" | "key" => {

@@ -96,6 +96,8 @@ pub struct PointerMoveRegion {
     /// Where the area's top-left corner is, before it was cut to what is visible.
     pub origin: Offset,
     pub on_move: Rc<dyn Fn(Option<Offset>)>,
+    /// How many clickable regions were painted when this area and what is inside it had been.
+    pub covered_after: usize,
 }
 
 /// An area that reacts to a long press, cut to what is visible.
@@ -108,6 +110,8 @@ pub struct LongPressRegion {
 pub struct HoverRegion {
     pub rect: Rect,
     pub on_hover: Rc<dyn Fn(bool)>,
+    /// How many clickable regions were painted when this area and what is inside it had been.
+    pub covered_after: usize,
 }
 
 /// An area that follows a drag, cut to what is visible.
@@ -213,11 +217,27 @@ impl DisplayList {
             .find(|region| contains(region.rect, point))
     }
 
-    /// Every hover region containing `point`.
+    /// Every hover region containing `point` that nothing painted later covers.
     pub fn hovers_at(&self, point: Offset) -> impl Iterator<Item = &HoverRegion> {
-        self.hovers
+        self.hovers.iter().filter(move |region| {
+            contains(region.rect, point) && !self.covered_at(region.covered_after, point)
+        })
+    }
+
+    /// Every pointer-follow region containing `point` that nothing painted later covers.
+    pub fn pointer_moves_at(&self, point: Offset) -> impl Iterator<Item = &PointerMoveRegion> {
+        self.pointer_moves.iter().filter(move |region| {
+            contains(region.rect, point) && !self.covered_at(region.covered_after, point)
+        })
+    }
+
+    /// Whether a clickable region painted after the first `painted` ones contains `point`,
+    /// such as a dialog over the page, which keeps the pointer from reaching what is beneath.
+    fn covered_at(&self, painted: usize, point: Offset) -> bool {
+        self.regions
             .iter()
-            .filter(move |region| contains(region.rect, point))
+            .skip(painted)
+            .any(|region| contains(region.rect, point))
     }
 
     /// The topmost drag region containing `point`.

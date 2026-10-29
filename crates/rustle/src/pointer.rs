@@ -15,16 +15,9 @@ impl App {
     pub(crate) fn update_following(&mut self) {
         let mut now: Vec<(FollowEntry, Offset)> = Vec::new();
         if let Some(pointer) = self.pointer {
-            for region in &self.display.pointer_moves {
-                let inside = pointer.x >= region.rect.origin.x
-                    && pointer.x < region.rect.origin.x + region.rect.size.width
-                    && pointer.y >= region.rect.origin.y
-                    && pointer.y < region.rect.origin.y + region.rect.size.height;
-                if inside {
-                    let local =
-                        Offset::new(pointer.x - region.origin.x, pointer.y - region.origin.y);
-                    now.push(((region.rect, Rc::clone(&region.on_move)), local));
-                }
+            for region in self.display.pointer_moves_at(pointer) {
+                let local = Offset::new(pointer.x - region.origin.x, pointer.y - region.origin.y);
+                now.push(((region.rect, Rc::clone(&region.on_move)), local));
             }
         }
         for (rect, on_move) in &self.following {
