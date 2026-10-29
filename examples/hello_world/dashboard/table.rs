@@ -1,299 +1,9 @@
-//! The metrics page: stat cards that pick what the chart shows, and a
-//! document table that filters, sorts, selects and pages.
+//! The document table.
 
 use rustle::prelude::*;
 
 use crate::ctx::{Ctx, Doc, Overlay};
-use crate::ui::{chart_style, icon_action, icon_box, wander};
-
-struct Metric {
-    label: &'static str,
-    value: &'static str,
-    delta: &'static str,
-    up: bool,
-    headline: &'static str,
-    note: &'static str,
-    names: (&'static str, &'static str),
-    seed: f32,
-    base: f32,
-}
-
-const METRICS: [Metric; 4] = [
-    Metric {
-        label: "Total Revenue",
-        value: "$1,250.00",
-        delta: "+12.5%",
-        up: true,
-        headline: "Trending up this month",
-        note: "Visitors for the last 6 months",
-        names: ("Mobile", "Desktop"),
-        seed: 1.0,
-        base: 230.0,
-    },
-    Metric {
-        label: "New Customers",
-        value: "1,234",
-        delta: "-20%",
-        up: false,
-        headline: "Down 20% this period",
-        note: "Acquisition needs attention",
-        names: ("Referral", "Organic"),
-        seed: 4.2,
-        base: 140.0,
-    },
-    Metric {
-        label: "Active Accounts",
-        value: "45,678",
-        delta: "+12.5%",
-        up: true,
-        headline: "Strong user retention",
-        note: "Engagement exceed targets",
-        names: ("Free", "Paid"),
-        seed: 7.7,
-        base: 300.0,
-    },
-    Metric {
-        label: "Growth Rate",
-        value: "4.5%",
-        delta: "+4.5%",
-        up: true,
-        headline: "Steady performance increase",
-        note: "Meets growth projections",
-        names: ("Target", "Actual"),
-        seed: 9.1,
-        base: 90.0,
-    },
-];
-
-#[composable]
-fn delta_pill(label: &str, up: bool) {
-    let theme = theme();
-    row_arranged(
-        Modifier::new()
-            .border(1.0, theme.outline, 100.0)
-            .padding_xy(8.0, 2.0),
-        Arrangement::SpacedBy(4.0),
-        Alignment::Center,
-        || {
-            icon(
-                if up {
-                    phosphor::TREND_UP
-                } else {
-                    phosphor::TREND_DOWN
-                },
-                12.0,
-                theme.on_surface,
-            );
-            let style = LOCAL_TEXT_STYLE
-                .current()
-                .font_size(12.0)
-                .font_weight(FontWeight::MEDIUM);
-            text_styled(Modifier::new(), label.to_string(), style);
-        },
-    );
-}
-
-#[composable]
-fn stat_card(metric: &Metric, selected: bool, on_click: impl Fn() + 'static) {
-    let theme = theme();
-    card(
-        Modifier::new()
-            .weight(1.0)
-            .semantics(
-                Semantics::new(Role::Button)
-                    .label(metric.label.to_string())
-                    .merging_descendants(),
-            )
-            .clickable(on_click)
-            .border(
-                1.5,
-                if selected {
-                    theme.on_surface_muted
-                } else {
-                    Color::TRANSPARENT
-                },
-                theme.corner_radius,
-            ),
-        || {
-            column_with(Modifier::new().fill_max_width().padding(20.0), || {
-                row_arranged(
-                    Modifier::new().fill_max_width(),
-                    Arrangement::SpaceBetween,
-                    Alignment::Center,
-                    || {
-                        muted(metric.label);
-                        delta_pill(metric.delta, metric.up);
-                    },
-                );
-                spacer(Modifier::new().height(8.0));
-                title(metric.value, 28.0);
-                spacer(Modifier::new().height(14.0));
-                row_arranged(
-                    Modifier::new(),
-                    Arrangement::SpacedBy(6.0),
-                    Alignment::Center,
-                    || {
-                        title(metric.headline, 13.0);
-                        icon(
-                            if metric.up {
-                                phosphor::TREND_UP
-                            } else {
-                                phosphor::TREND_DOWN
-                            },
-                            14.0,
-                            theme.on_surface,
-                        );
-                    },
-                );
-                muted_sized(metric.note, 13.0);
-            });
-        },
-    );
-}
-
-fn day_label(offset: usize) -> String {
-    if offset < 30 {
-        format!("Apr {}", offset + 1)
-    } else if offset < 61 {
-        format!("May {}", offset - 29)
-    } else {
-        format!("Jun {}", offset - 60)
-    }
-}
-
-#[composable]
-pub fn dashboard_page(ctx: &Ctx) {
-    let metric = remember(|| 0usize);
-    column_with(Modifier::new().fill_max_width().padding(24.0), || {
-        row_arranged(
-            Modifier::new().fill_max_width(),
-            Arrangement::SpacedBy(16.0),
-            Alignment::Start,
-            || {
-                for (index, item) in METRICS.iter().enumerate() {
-                    key(index, || {
-                        let pick = metric.clone();
-                        stat_card(item, metric.get() == index, move || pick.set(index));
-                    });
-                }
-            },
-        );
-        spacer(Modifier::new().height(16.0));
-        visitors_chart(&METRICS[metric.get().min(3)]);
-        spacer(Modifier::new().height(16.0));
-        document_section(ctx);
-    });
-}
-
-#[composable]
-fn visitors_chart(metric: &Metric) {
-    let theme = theme();
-    let range = remember(|| 0usize);
-    // April 7 to June 30 is 85 days; shorter ranges end on the same day.
-    let points = [85usize, 30, 7][range.get().min(2)];
-    let first = wander(points, metric.seed, metric.base, 160.0);
-    let second = wander(points, metric.seed + 1.4, metric.base + 100.0, 190.0);
-    let labels: Vec<String> = (0..points)
-        .map(|i| day_label(6 + (85 - points) + i))
-        .collect();
-    let (hover, hovered) = chart_hover(points, 0.0, 0.0);
-    let width = remember(|| std::rc::Rc::new(std::cell::Cell::new(1000.0_f32))).get();
-    let measure = std::rc::Rc::clone(&width);
-    let hover = hover.on_size_changed(move |size| measure.set(size.width));
-    let marker = hovered.map(|i| i.min(points - 1));
-    let readout = marker.map(|m| {
-        (
-            labels[m].clone(),
-            first[m].round() as i32,
-            second[m].round() as i32,
-        )
-    });
-    card(Modifier::new().fill_max_width(), || {
-        column_with(Modifier::new().fill_max_width().padding(20.0), || {
-            row_arranged(
-                Modifier::new().fill_max_width(),
-                Arrangement::SpaceBetween,
-                Alignment::Start,
-                || {
-                    column(|| {
-                        title(metric.label, 16.0);
-                        muted_sized(
-                            [
-                                "Total for the last 3 months",
-                                "Total for the last 30 days",
-                                "Total for the last 7 days",
-                            ][range.get().min(2)],
-                            13.0,
-                        );
-                    });
-                    let pick = range.clone();
-                    segmented_control(
-                        range.get(),
-                        &["Last 3 months", "Last 30 days", "Last 7 days"],
-                        move |index| pick.set(index),
-                    );
-                },
-            );
-            spacer(Modifier::new().height(16.0));
-            stack_aligned(
-                Modifier::new().fill_max_width().height(300.0).chain(hover),
-                BoxAlignment::TopStart,
-                || {
-                    area_chart(
-                        Modifier::new().fill_max_size(),
-                        vec![
-                            Series::new(second, theme.primary).filled(),
-                            Series::new(first, theme.on_surface_muted).filled(),
-                        ],
-                        labels,
-                        if points > 30 { 8 } else { 3 },
-                        marker,
-                        chart_style(),
-                    );
-                    // The readout sits beside the marker, on the left near the right edge.
-                    if let (Some(marker), Some(readout)) = (marker, &readout) {
-                        const TIP: f32 = 144.0;
-                        let x = width.get() * marker as f32 / (points - 1).max(1) as f32;
-                        let x = if x + TIP + 24.0 > width.get() {
-                            x - TIP - 12.0
-                        } else {
-                            x + 12.0
-                        };
-                        stack_with(
-                            Modifier::new()
-                                .offset(x.max(0.0), 30.0)
-                                .shadow(8.0, 8.0)
-                                .background_rounded(theme.surface, 8.0)
-                                .border(1.0, theme.outline, 8.0)
-                                .padding_xy(12.0, 8.0),
-                            || {
-                                column(|| {
-                                    title(&readout.0, 12.0);
-                                    spacer(Modifier::new().height(4.0));
-                                    for (name, value) in
-                                        [(metric.names.0, readout.1), (metric.names.1, readout.2)]
-                                    {
-                                        key(name, || {
-                                            row_arranged(
-                                                Modifier::new().width(120.0),
-                                                Arrangement::SpaceBetween,
-                                                Alignment::Center,
-                                                || {
-                                                    muted_sized(name, 12.0);
-                                                    title(&value.to_string(), 12.0);
-                                                },
-                                            );
-                                        });
-                                    }
-                                });
-                            },
-                        );
-                    }
-                },
-            );
-        });
-    });
-}
+use crate::ui::{icon_action, icon_box};
 
 // ------------------------------------------------------------------ table
 
@@ -311,7 +21,7 @@ const TABS: [&str; 4] = [
     "Focus Documents",
 ];
 
-fn matches_tab(doc: &Doc, tab: usize) -> bool {
+pub(super) fn matches_tab(doc: &Doc, tab: usize) -> bool {
     match tab {
         1 => doc.done,
         2 => !doc.done,
@@ -320,7 +30,7 @@ fn matches_tab(doc: &Doc, tab: usize) -> bool {
     }
 }
 
-fn compare(a: &Doc, b: &Doc, column: usize) -> std::cmp::Ordering {
+pub(super) fn compare(a: &Doc, b: &Doc, column: usize) -> std::cmp::Ordering {
     match column {
         0 => a.header.to_lowercase().cmp(&b.header.to_lowercase()),
         1 => a.kind.cmp(&b.kind),
@@ -332,7 +42,7 @@ fn compare(a: &Doc, b: &Doc, column: usize) -> std::cmp::Ordering {
 }
 
 #[composable]
-fn document_section(ctx: &Ctx) {
+pub(super) fn document_section(ctx: &Ctx) {
     let tab = remember(|| 0usize);
     let query = remember_text_field_state("");
     let visible = remember(|| [true; 5]);
@@ -565,7 +275,12 @@ fn document_section(ctx: &Ctx) {
 }
 
 #[composable]
-fn sort_header(weight: f32, label: &str, column: usize, sort: &State<Option<(usize, bool)>>) {
+pub(super) fn sort_header(
+    weight: f32,
+    label: &str,
+    column: usize,
+    sort: &State<Option<(usize, bool)>>,
+) {
     let theme = theme();
     let state = sort.get();
     let glyph = match state {
@@ -600,7 +315,7 @@ fn sort_header(weight: f32, label: &str, column: usize, sort: &State<Option<(usi
 }
 
 #[composable]
-fn document_row(
+pub(super) fn document_row(
     ctx: &Ctx,
     doc: &Doc,
     visible: &State<[bool; 5]>,

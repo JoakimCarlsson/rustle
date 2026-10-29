@@ -3,6 +3,8 @@
 use accesskit::{Action, Node, NodeId, Rect, Role, Toggled, TreeId, TreeInfo, TreeUpdate};
 use rustle_ui::{DisplayList, Focus, Role as UiRole};
 
+use crate::app::App;
+
 /// The window itself, parent of every described area.
 const WINDOW: NodeId = NodeId(0);
 
@@ -89,5 +91,43 @@ pub(crate) fn tree(
         tree: Some(TreeInfo::new(WINDOW)),
         tree_id: TreeId::ROOT,
         focus,
+    }
+}
+
+impl App {
+    /// Tells the platform what the latest layout means, if anything is listening.
+    pub(crate) fn update_accessibility(&mut self) {
+        let Some(state) = &mut self.window else {
+            return;
+        };
+        let scale_factor = state.window.scale_factor();
+        let (display, focused) = (&self.display, self.focused.as_ref());
+        state
+            .adapter
+            .update_if_active(|| tree(display, scale_factor, focused));
+    }
+
+    pub(crate) fn accessibility_event(&mut self, event: accesskit_winit::WindowEvent) {
+        use accesskit::Action;
+        match event {
+            accesskit_winit::WindowEvent::InitialTreeRequested => self.update_accessibility(),
+            accesskit_winit::WindowEvent::ActionRequested(request) => {
+                let described = index_of(request.target_node)
+                    .and_then(|index| self.display.semantics.get(index));
+                match request.action {
+                    Action::Click => {
+                        if let Some(on_click) = described.and_then(|node| node.on_click.clone()) {
+                            on_click();
+                        }
+                    }
+                    Action::Focus => {
+                        let focus = described.and_then(|node| node.semantics.focus.clone());
+                        self.set_focus(focus);
+                    }
+                    _ => {}
+                }
+            }
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+        }
     }
 }

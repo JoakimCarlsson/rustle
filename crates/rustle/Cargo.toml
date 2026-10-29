@@ -26,6 +26,8 @@ rustle-widgets.workspace = true
 wgpu = "30.0.1"
 winit = "0.30"
 
+# The example lives at the workspace root, outside any package, so it is
+# registered here; run it with `cargo run --release --example hello_world`.
 [[example]]
 name = "hello_world"
 path = "../../examples/hello_world/main.rs"
