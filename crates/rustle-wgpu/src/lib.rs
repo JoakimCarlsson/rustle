@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
 
-use glyphon::cosmic_text::{Align, Ellipsize, EllipsizeHeightLimit};
+use glyphon::cosmic_text::{Align, Ellipsize, EllipsizeHeightLimit, Hinting};
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, Wrap,
@@ -615,6 +615,7 @@ impl Renderer {
                     align,
                     max_lines,
                 } => {
+                    let font_weight = &legible_weight(*font_weight, *color);
                     let cache_key = format!(
                         "{content}\u{0}{font_weight}{font_family:?}{font_size}{line_height}{align:?}{max_lines:?}{width}"
                     );
@@ -646,7 +647,7 @@ impl Renderer {
                     };
                     current.texts.push(Shaped {
                         position: (*x, *y),
-                        color: Color::rgba(color.r, color.g, color.b, color.a),
+                        color: legible_color(*color),
                         buffer,
                     });
                 }
@@ -712,8 +713,8 @@ impl Renderer {
         };
         let areas = texts.iter().map(|text| TextArea {
             buffer: &text.buffer,
-            left: text.position.0 * scale_factor,
-            top: text.position.1 * scale_factor,
+            left: (text.position.0 * scale_factor).round(),
+            top: (text.position.1 * scale_factor).round(),
             scale: scale_factor,
             bounds,
             default_color: text.color,
@@ -882,7 +883,7 @@ impl TextMeasurer for Renderer {
             Setting {
                 content: Content::Plain {
                     text: content,
-                    font_weight: style.font_weight.0,
+                    font_weight: legible_weight(style.font_weight.0, style.color),
                     font_family: style.font_family,
                 },
                 font_size: style.font_size,
@@ -945,6 +946,32 @@ enum Content<'a> {
     Rich(&'a [StyledSpan]),
 }
 
+/// Whether text in `color` sits on a light surface.
+fn is_dark(color: rustle_graphics::Color) -> bool {
+    let luminance =
+        0.2126 * f32::from(color.r) + 0.7152 * f32::from(color.g) + 0.0722 * f32::from(color.b);
+    luminance < 110.0
+}
+
+/// Dark text is drawn pure black, the strongest contrast antialiasing allows.
+fn legible_color(color: rustle_graphics::Color) -> Color {
+    if is_dark(color) {
+        Color::rgba(0, 0, 0, color.a)
+    } else {
+        Color::rgba(color.r, color.g, color.b, color.a)
+    }
+}
+
+/// Dark text on a light surface blends thinner than light text on a dark one,
+/// so it is set one step heavier to stay as readable.
+fn legible_weight(weight: u16, color: rustle_graphics::Color) -> u16 {
+    if is_dark(color) && weight < 600 {
+        600
+    } else {
+        weight
+    }
+}
+
 fn family(family: FontFamily) -> Family<'static> {
     match family {
         FontFamily::SansSerif => Family::SansSerif,
@@ -960,6 +987,8 @@ fn shape(font_system: &mut FontSystem, setting: Setting<'_>, width: Option<f32>)
         font_system,
         Metrics::new(setting.font_size, setting.line_height),
     );
+    // Snap glyph advances to whole pixels so strokes land on the pixel grid.
+    buffer.set_hinting(Hinting::Enabled);
     buffer.set_size(width, None);
     buffer.set_wrap(Wrap::Word);
     buffer.set_ellipsize(match setting.max_lines {
@@ -991,7 +1020,7 @@ fn shape(font_system: &mut FontSystem, setting: Setting<'_>, width: Option<f32>)
                     span.text.as_str(),
                     Attrs::new()
                         .family(family(span.font_family))
-                        .weight(Weight(span.font_weight))
+                        .weight(Weight(legible_weight(span.font_weight, span.color)))
                         .color(Color::rgba(
                             span.color.r,
                             span.color.g,

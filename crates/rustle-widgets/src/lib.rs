@@ -456,12 +456,12 @@ pub fn dialog(on_dismiss: impl Fn() + 'static, content: impl FnOnce()) {
         Modifier::new()
             .fill_max_size()
             .semantics(Semantics::new(Role::Dialog))
-            .clickable(on_dismiss)
+            .clickable_plain(on_dismiss)
             .background(Color::rgba(0, 0, 0, 140)),
         BoxAlignment::Center,
         || {
             // The card takes clicks so they do not reach the dimmed area behind it.
-            card(Modifier::new().clickable(|| {}), || {
+            card(Modifier::new().clickable_plain(|| {}), || {
                 stack_with(Modifier::new().padding(24.0), content);
             });
         },
@@ -535,7 +535,7 @@ pub fn popup(on_dismiss: impl Fn() + 'static, content: impl FnOnce()) {
             Modifier::new()
                 .size(20_000.0, 20_000.0)
                 .offset(-10_000.0, -10_000.0)
-                .clickable(on_dismiss),
+                .clickable_plain(on_dismiss),
         );
         content();
     });
@@ -569,7 +569,7 @@ pub fn dropdown_menu_at(
             }
             .offset(offset.0, offset.1)
             // The card takes clicks, so they do not dismiss the menu.
-            .clickable(|| {}),
+            .clickable_plain(|| {}),
             || {
                 column_with(Modifier::new().padding_xy(0.0, 8.0), content);
             },
@@ -1330,7 +1330,7 @@ pub fn bottom_sheet(visible: bool, on_dismiss: impl Fn() + 'static, content: imp
                         .fill_max_size()
                         .alpha(progress)
                         .background(Color::rgba(0, 0, 0, 140))
-                        .clickable(on_dismiss),
+                        .clickable_plain(on_dismiss),
                 );
                 stack_with(
                     Modifier::new()
@@ -1340,7 +1340,7 @@ pub fn bottom_sheet(visible: bool, on_dismiss: impl Fn() + 'static, content: imp
                         .shadow(10.0, 16.0)
                         .background_rounded(theme.surface, 16.0)
                         // Takes clicks, so they do not dismiss the sheet.
-                        .clickable(|| {})
+                        .clickable_plain(|| {})
                         .padding(24.0),
                     || with_text_color(theme.on_surface, content),
                 );

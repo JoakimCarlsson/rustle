@@ -295,6 +295,7 @@ enum Paint {
     },
     Clickable {
         on_click: Rc<dyn Fn()>,
+        feedback: bool,
         inner: Box<Measured>,
     },
     Semantics {
@@ -431,6 +432,8 @@ pub struct HitRegion {
     pub rect: Rect,
     /// The corner radius of the background the region sits on, for drawing feedback.
     pub corner_radius: f32,
+    /// Whether the runner tints the region while hovered or pressed.
+    pub feedback: bool,
     pub on_click: Rc<dyn Fn()>,
 }
 
@@ -841,10 +844,13 @@ fn measure_modified(
                 },
             }
         }
-        Element::Clickable(on_click) => wrap(next(constraints), |inner| Paint::Clickable {
-            on_click: Rc::clone(on_click),
-            inner,
-        }),
+        Element::Clickable(on_click, feedback) => {
+            wrap(next(constraints), |inner| Paint::Clickable {
+                on_click: Rc::clone(on_click),
+                feedback: *feedback,
+                inner,
+            })
+        }
         Element::Semantics(semantics) => wrap(next(constraints), |inner| Paint::Semantics {
             semantics: semantics.clone(),
             inner,
@@ -1471,7 +1477,11 @@ impl<'a> Painter<'a> {
                 });
                 self.paint(inner, origin);
             }
-            Paint::Clickable { on_click, inner } => {
+            Paint::Clickable {
+                on_click,
+                feedback,
+                inner,
+            } => {
                 let corner_radius = match &inner.paint {
                     Paint::Background { corner_radius, .. } => *corner_radius,
                     _ => 0.0,
@@ -1479,6 +1489,7 @@ impl<'a> Painter<'a> {
                 self.list.regions.push(HitRegion {
                     rect: self.visible(rect),
                     corner_radius,
+                    feedback: *feedback,
                     on_click: Rc::clone(on_click),
                 });
                 self.paint(inner, origin);

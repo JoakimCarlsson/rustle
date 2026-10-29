@@ -94,7 +94,7 @@ pub(crate) enum Element {
         state: ScrollState,
         vertical: bool,
     },
-    Clickable(Rc<dyn Fn()>),
+    Clickable(Rc<dyn Fn()>, bool),
     Semantics(Semantics),
     Press(Rc<dyn Fn(PressEvent)>),
     Drag(Rc<dyn Fn(Offset)>),
@@ -530,6 +530,14 @@ impl Modifier {
     /// The area is whatever the modifiers before this one add up to, so
     /// `padding` before `clickable` makes the padding clickable too.
     pub fn clickable(self, on_click: impl Fn() + 'static) -> Self {
-        self.then(Element::Clickable(Rc::new(on_click)))
+        self.then(Element::Clickable(Rc::new(on_click), true))
+    }
+
+    /// Like [`clickable`](Self::clickable), without the hover and press tint.
+    ///
+    /// For areas that only take clicks so they do not reach what is behind,
+    /// such as a dialog's backdrop.
+    pub fn clickable_plain(self, on_click: impl Fn() + 'static) -> Self {
+        self.then(Element::Clickable(Rc::new(on_click), false))
     }
 }

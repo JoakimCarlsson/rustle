@@ -872,6 +872,9 @@ fn feedback(
     pressed: &Option<Rect>,
 ) -> Option<DrawCommand> {
     let region = display.hit_test(pointer?)?;
+    if !region.feedback {
+        return None;
+    }
     let is_pressed = pressed.is_some_and(|pressed| same_area(pressed, region.rect));
     if pressed.is_some() && !is_pressed {
         return None;
