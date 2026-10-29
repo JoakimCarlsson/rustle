@@ -1,0 +1,8 @@
+[package]
+name = "rustle-shaders"
+description = "WGSL shaders for the Rustle renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

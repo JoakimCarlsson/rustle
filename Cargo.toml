@@ -10,4 +10,5 @@ license = "MIT"
 [workspace.dependencies]
 rustle-core = { path = "crates/rustle-core" }
 rustle-macros = { path = "crates/rustle-macros" }
+rustle-shaders = { path = "crates/rustle-shaders" }
 rustle-wgpu = { path = "crates/rustle-wgpu" }

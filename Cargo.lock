@@ -1622,12 +1622,17 @@ name = "rustle-macros"
 version = "0.1.0"
 
 [[package]]
+name = "rustle-shaders"
+version = "0.1.0"
+
+[[package]]
 name = "rustle-wgpu"
 version = "0.1.0"
 dependencies = [
  "glyphon",
  "pollster",
  "rustle-core",
+ "rustle-shaders",
  "wgpu",
 ]
 
