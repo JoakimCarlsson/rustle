@@ -73,7 +73,7 @@ pub fn collection_page(
                     Modifier::new(),
                     ButtonStyle::Default,
                     &format!("Add {noun}"),
-                    Some(Icon::Plus),
+                    Some(phosphor::PLUS),
                     None,
                     add,
                 );
@@ -118,16 +118,16 @@ pub fn collection_page(
                                         let star = list.clone();
                                         icon_action(
                                             if item.starred {
-                                                Icon::Check
+                                                phosphor::CHECK
                                             } else {
-                                                Icon::Circle
+                                                phosphor::CIRCLE
                                             },
                                             if item.starred { "Unstar" } else { "Star" },
                                             move || {
                                                 star.update(|l| l[slot].starred = !l[slot].starred)
                                             },
                                         );
-                                        icon(glyph, 18.0, theme.on_surface_muted);
+                                        icon(glyph.clone(), 18.0, theme.on_surface_muted);
                                         column(|| {
                                             title(&item.name, 14.0);
                                             muted_sized(&item.detail, 13.0);
@@ -146,7 +146,7 @@ pub fn collection_page(
                                             ctx.say("Duplicated");
                                         }
                                     })
-                                    .icon(Icon::Layers),
+                                    .icon(phosphor::STACK),
                                     MenuItem::new("Delete", {
                                         let (list, ctx) = (list.clone(), ctx.clone());
                                         move || {
@@ -154,12 +154,16 @@ pub fn collection_page(
                                             ctx.say("Deleted");
                                         }
                                     })
-                                    .icon(Icon::X)
+                                    .icon(phosphor::X)
                                     .destructive(),
                                 ];
                                 menu(
                                     |open| {
-                                        icon_action(Icon::MoreVertical, "Actions", move || open())
+                                        icon_action(
+                                            phosphor::DOTS_THREE_VERTICAL,
+                                            "Actions",
+                                            move || open(),
+                                        )
                                     },
                                     items,
                                 );
@@ -180,7 +184,7 @@ pub fn team_page(ctx: &Ctx) {
             Modifier::new(),
             ButtonStyle::Default,
             "Invite member",
-            Some(Icon::Plus),
+            Some(phosphor::PLUS),
             None,
             move || invite.open(Overlay::Invite),
         );
@@ -198,7 +202,7 @@ pub fn team_page(ctx: &Ctx) {
                                     member_row(ctx, index, &member);
                                 });
                                 let remove = ctx.clone();
-                                icon_action(Icon::X, "Remove member", move || {
+                                icon_action(phosphor::X, "Remove member", move || {
                                     remove.members.remove(index);
                                     remove.say(format!("Removed {}", member.name));
                                 });
@@ -427,7 +431,7 @@ pub fn help_page(ctx: &Ctx) {
                                         || {
                                             title(question, 14.0);
                                             icon(
-                                                if shown { Icon::ChevronUp } else { Icon::ChevronDown },
+                                                if shown { phosphor::CARET_UP } else { phosphor::CARET_DOWN },
                                                 14.0,
                                                 theme.on_surface_muted,
                                             );
@@ -462,7 +466,7 @@ pub fn help_page(ctx: &Ctx) {
                                 Modifier::new(),
                                 ButtonStyle::Default,
                                 "Send",
-                                Some(Icon::Send),
+                                Some(phosphor::PAPER_PLANE_TILT),
                                 None,
                                 move || {
                                     if message.text().trim().is_empty() {
@@ -478,7 +482,7 @@ pub fn help_page(ctx: &Ctx) {
                                 ButtonStyle::Outline,
                                 "Documentation",
                                 None,
-                                Some(Icon::ArrowUpRight),
+                                Some(phosphor::ARROW_UP_RIGHT),
                                 move || {
                                     let _ = rustle::open_url("https://docs.rs/");
                                 },

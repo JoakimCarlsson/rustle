@@ -10,5 +10,6 @@ rustle-animation.workspace = true
 rustle-foundation.workspace = true
 rustle-geometry.workspace = true
 rustle-graphics.workspace = true
+rustle-icons = { workspace = true, features = ["bold"] }
 rustle-runtime.workspace = true
 rustle-text.workspace = true

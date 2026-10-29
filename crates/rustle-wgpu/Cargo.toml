@@ -14,3 +14,4 @@ rustle-graphics.workspace = true
 rustle-text.workspace = true
 rustle-shaders.workspace = true
 wgpu = "30.0.1"
+lyon_tessellation = "1.0.23"

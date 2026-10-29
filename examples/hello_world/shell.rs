@@ -32,7 +32,7 @@ pub fn sidebar(ctx: &Ctx) {
                             .size(24.0, 24.0)
                             .background_rounded(theme.primary, 6.0),
                         BoxAlignment::Center,
-                        || icon(Icon::Layers, 14.0, theme.on_primary),
+                        || icon(phosphor::STACK, 14.0, theme.on_primary),
                     );
                     if !compact {
                         title("Acme Inc.", 15.0);
@@ -47,7 +47,7 @@ pub fn sidebar(ctx: &Ctx) {
                 || {
                     let create = ctx.clone();
                     if compact {
-                        icon_action(Icon::Plus, "Quick Create", move || {
+                        icon_action(phosphor::PLUS, "Quick Create", move || {
                             create.open(Overlay::NewDocument)
                         });
                     } else {
@@ -55,7 +55,7 @@ pub fn sidebar(ctx: &Ctx) {
                             Modifier::new().weight(1.0),
                             ButtonStyle::Default,
                             "Quick Create",
-                            Some(Icon::Plus),
+                            Some(phosphor::PLUS),
                             None,
                             move || create.open(Overlay::NewDocument),
                         );
@@ -66,11 +66,11 @@ pub fn sidebar(ctx: &Ctx) {
             spacer(Modifier::new().height(16.0));
 
             for (label, glyph, target) in [
-                ("Dashboard", Icon::Dashboard, 0),
-                ("Overview", Icon::Activity, 1),
-                ("Components", Icon::Layers, 2),
-                ("Projects", Icon::Folder, 3),
-                ("Team", Icon::Users, 4),
+                ("Dashboard", phosphor::SQUARES_FOUR, 0),
+                ("Overview", phosphor::PULSE, 1),
+                ("Components", phosphor::STACK, 2),
+                ("Projects", phosphor::FOLDER, 3),
+                ("Team", phosphor::USERS, 4),
             ] {
                 key(target, || {
                     let go = ctx.clone();
@@ -84,9 +84,10 @@ pub fn sidebar(ctx: &Ctx) {
                     muted_sized("Showcase", 12.0);
                 });
             }
-            for (label, glyph, target) in
-                [("Gallery", Icon::Grip, 11), ("Motion", Icon::Activity, 12)]
-            {
+            for (label, glyph, target) in [
+                ("Gallery", phosphor::DOTS_SIX_VERTICAL, 11),
+                ("Motion", phosphor::PULSE, 12),
+            ] {
                 key(target, || {
                     let go = ctx.clone();
                     nav_item(glyph, label, page == target, compact, move || go.go(target));
@@ -100,9 +101,9 @@ pub fn sidebar(ctx: &Ctx) {
                 });
             }
             for (label, glyph, target) in [
-                ("Data Library", Icon::Layers, 5),
-                ("Reports", Icon::File, 6),
-                ("Word Assistant", Icon::Send, 7),
+                ("Data Library", phosphor::STACK, 5),
+                ("Reports", phosphor::FILE, 6),
+                ("Word Assistant", phosphor::PAPER_PLANE_TILT, 7),
             ] {
                 key(target, || {
                     let go = ctx.clone();
@@ -113,7 +114,7 @@ pub fn sidebar(ctx: &Ctx) {
             if ctx.more.get() {
                 let go = ctx.clone();
                 nav_item(
-                    Icon::Activity,
+                    phosphor::PULSE,
                     "Automations",
                     page == 10,
                     compact,
@@ -122,9 +123,9 @@ pub fn sidebar(ctx: &Ctx) {
             }
             nav_item(
                 if ctx.more.get() {
-                    Icon::ChevronUp
+                    phosphor::CARET_UP
                 } else {
-                    Icon::MoreHorizontal
+                    phosphor::DOTS_THREE
                 },
                 if ctx.more.get() { "Less" } else { "More" },
                 false,
@@ -134,15 +135,25 @@ pub fn sidebar(ctx: &Ctx) {
 
             spacer(Modifier::new().weight(1.0));
             let go = ctx.clone();
-            nav_item(Icon::Settings, "Settings", page == 8, compact, move || {
+            nav_item(phosphor::GEAR, "Settings", page == 8, compact, move || {
                 go.go(8)
             });
             let go = ctx.clone();
-            nav_item(Icon::Help, "Get Help", page == 9, compact, move || go.go(9));
+            nav_item(
+                phosphor::QUESTION,
+                "Get Help",
+                page == 9,
+                compact,
+                move || go.go(9),
+            );
             let search = ctx.clone();
-            nav_item(Icon::Search, "Search", false, compact, move || {
-                search.open(Overlay::Search)
-            });
+            nav_item(
+                phosphor::MAGNIFYING_GLASS,
+                "Search",
+                false,
+                compact,
+                move || search.open(Overlay::Search),
+            );
             spacer(Modifier::new().height(8.0));
             user_row(ctx, compact);
         },
@@ -181,7 +192,7 @@ fn notifications(ctx: &Ctx) {
                 .update(|list| list.iter_mut().for_each(|(_, read)| *read = true));
             all.say("All notifications read");
         })
-        .icon(Icon::Check),
+        .icon(phosphor::CHECK),
     );
     menu(
         |open| {
@@ -193,7 +204,7 @@ fn notifications(ctx: &Ctx) {
                     .border(1.0, theme.outline, 8.0),
                 BoxAlignment::Center,
                 || {
-                    icon(Icon::Mail, 15.0, theme.on_surface);
+                    icon(phosphor::ENVELOPE_SIMPLE, 15.0, theme.on_surface);
                     if unread > 0 {
                         stack_aligned(
                             Modifier::new().size(34.0, 34.0).padding(5.0),
@@ -222,7 +233,7 @@ fn user_row(ctx: &Ctx, compact: bool) {
             let ctx = ctx.clone();
             move || ctx.go(8)
         })
-        .icon(Icon::User),
+        .icon(phosphor::USER),
         MenuItem::new("Billing", {
             let ctx = ctx.clone();
             move || {
@@ -230,17 +241,17 @@ fn user_row(ctx: &Ctx, compact: bool) {
                 ctx.say("Billing is on the Components page");
             }
         })
-        .icon(Icon::CreditCard),
+        .icon(phosphor::CREDIT_CARD),
         MenuItem::new("Notifications", {
             let ctx = ctx.clone();
             move || ctx.go(8)
         })
-        .icon(Icon::Bell),
+        .icon(phosphor::BELL),
         MenuItem::new("Log out", {
             let ctx = ctx.clone();
             move || ctx.open(Overlay::Logout)
         })
-        .icon(Icon::Lock)
+        .icon(phosphor::LOCK)
         .destructive(),
     ];
     menu(
@@ -273,7 +284,7 @@ fn user_row(ctx: &Ctx, compact: bool) {
                         },
                     );
                     if !compact {
-                        icon(Icon::MoreVertical, 16.0, theme.on_surface_muted);
+                        icon(phosphor::DOTS_THREE_VERTICAL, 16.0, theme.on_surface_muted);
                     }
                 },
             );
@@ -342,7 +353,7 @@ pub fn top_bar(ctx: &Ctx) {
                 Alignment::Center,
                 || {
                     let collapse = ctx.collapsed.clone();
-                    icon_action(Icon::PanelLeft, "Toggle sidebar", move || {
+                    icon_action(phosphor::SIDEBAR_SIMPLE, "Toggle sidebar", move || {
                         collapse.update(|c| *c = !*c)
                     });
                     spacer(Modifier::new().size(1.0, 16.0).background(theme.outline));
@@ -355,14 +366,16 @@ pub fn top_bar(ctx: &Ctx) {
                 Alignment::Center,
                 || {
                     let search = ctx.clone();
-                    icon_action(Icon::Search, "Search", move || search.open(Overlay::Search));
+                    icon_action(phosphor::MAGNIFYING_GLASS, "Search", move || {
+                        search.open(Overlay::Search)
+                    });
                     let ctx = ctx.clone();
                     styled_button(
                         Modifier::new(),
                         ButtonStyle::Ghost,
                         "GitHub",
                         None,
-                        Some(Icon::ArrowUpRight),
+                        Some(phosphor::ARROW_UP_RIGHT),
                         move || {
                             rustle::open_url("https://github.com/");
                             ctx.say("Opening GitHub in your browser");

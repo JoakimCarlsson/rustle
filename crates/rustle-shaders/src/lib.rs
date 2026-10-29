@@ -14,3 +14,6 @@ pub const IMAGE: &str = include_str!("image.wgsl");
 
 /// A rendered layer composited onto its parent, turned, scaled and faded.
 pub const COMPOSITE: &str = include_str!("composite.wgsl");
+
+/// Filled vector outlines, drawn as triangles.
+pub const PATH: &str = include_str!("path.wgsl");

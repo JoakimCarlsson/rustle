@@ -77,9 +77,9 @@ fn delta_pill(label: &str, up: bool) {
         || {
             icon(
                 if up {
-                    Icon::TrendingUp
+                    phosphor::TREND_UP
                 } else {
-                    Icon::TrendingDown
+                    phosphor::TREND_DOWN
                 },
                 12.0,
                 theme.on_surface,
@@ -136,9 +136,9 @@ fn stat_card(metric: &Metric, selected: bool, on_click: impl Fn() + 'static) {
                         title(metric.headline, 13.0);
                         icon(
                             if metric.up {
-                                Icon::TrendingUp
+                                phosphor::TREND_UP
                             } else {
-                                Icon::TrendingDown
+                                phosphor::TREND_DOWN
                             },
                             14.0,
                             theme.on_surface,
@@ -440,8 +440,8 @@ fn document_section(ctx: &Ctx) {
                                 Modifier::new(),
                                 ButtonStyle::Outline,
                                 "Customize Columns",
-                                Some(Icon::Layers),
-                                Some(Icon::ChevronDown),
+                                Some(phosphor::STACK),
+                                Some(phosphor::CARET_DOWN),
                                 move || open(),
                             )
                         },
@@ -452,7 +452,7 @@ fn document_section(ctx: &Ctx) {
                         Modifier::new(),
                         ButtonStyle::Outline,
                         "Add Section",
-                        Some(Icon::Plus),
+                        Some(phosphor::PLUS),
                         None,
                         move || add.open(Overlay::NewDocument),
                     );
@@ -541,12 +541,12 @@ fn document_section(ctx: &Ctx) {
                             muted_sized(&format!("Page {} of {}", current + 1, pages), 13.0);
                             for (glyph, label, target) in [
                                 (
-                                    Icon::ChevronLeft,
+                                    phosphor::CARET_LEFT,
                                     "Previous page",
                                     current.saturating_sub(1),
                                 ),
                                 (
-                                    Icon::ChevronRight,
+                                    phosphor::CARET_RIGHT,
                                     "Next page",
                                     (current + 1).min(pages - 1),
                                 ),
@@ -569,9 +569,9 @@ fn sort_header(weight: f32, label: &str, column: usize, sort: &State<Option<(usi
     let theme = theme();
     let state = sort.get();
     let glyph = match state {
-        Some((c, true)) if c == column => Icon::ChevronUp,
-        Some((c, false)) if c == column => Icon::ChevronDown,
-        _ => Icon::ChevronsUpDown,
+        Some((c, true)) if c == column => phosphor::CARET_UP,
+        Some((c, false)) if c == column => phosphor::CARET_DOWN,
+        _ => phosphor::CARET_UP_DOWN,
     };
     let sort = sort.clone();
     table_cell(weight, || {
@@ -617,7 +617,7 @@ fn document_row(
                 Arrangement::SpacedBy(10.0),
                 Alignment::Center,
                 || {
-                    icon(Icon::Grip, 14.0, theme.on_surface_muted);
+                    icon(phosphor::DOTS_SIX_VERTICAL, 14.0, theme.on_surface_muted);
                     let selected = selected.clone();
                     checkbox(chosen, move |value| {
                         selected.update(|ids| {
@@ -684,7 +684,7 @@ fn document_row(
                     let ctx = ctx.clone();
                     move || ctx.open(Overlay::Detail(id))
                 })
-                .icon(Icon::File),
+                .icon(phosphor::FILE),
                 MenuItem::new(
                     if doc.done {
                         "Mark in process"
@@ -696,7 +696,7 @@ fn document_row(
                         move || ctx.change_doc(id, |d| d.done = !d.done)
                     },
                 )
-                .icon(Icon::Check),
+                .icon(phosphor::CHECK),
                 MenuItem::new("Duplicate", {
                     let (ctx, doc) = (ctx.clone(), doc.clone());
                     move || {
@@ -704,7 +704,7 @@ fn document_row(
                         ctx.say("Section duplicated");
                     }
                 })
-                .icon(Icon::Layers),
+                .icon(phosphor::STACK),
                 MenuItem::new("Delete", {
                     let ctx = ctx.clone();
                     move || {
@@ -712,11 +712,11 @@ fn document_row(
                         ctx.say("Section deleted");
                     }
                 })
-                .icon(Icon::X)
+                .icon(phosphor::X)
                 .destructive(),
             ];
             menu(
-                |open| icon_action(Icon::MoreVertical, "Row actions", move || open()),
+                |open| icon_action(phosphor::DOTS_THREE_VERTICAL, "Row actions", move || open()),
                 items,
             );
         });

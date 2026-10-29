@@ -3,7 +3,7 @@
 //! A canvas: an area drawn with shapes, lines and text in its own coordinates.
 
 use rustle_geometry::{Offset, Rect, Size};
-use rustle_graphics::{Border, Color, DrawCommand, FontFamily, TextAlign};
+use rustle_graphics::{Border, Color, DrawCommand, FontFamily, Path, TextAlign};
 
 /// Collects what is drawn on a canvas, with (0, 0) at its top-left corner.
 pub struct Canvas {
@@ -46,6 +46,15 @@ impl Canvas {
     /// A filled rectangle.
     pub fn rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Color) {
         self.rounded_rect(x, y, width, height, 0.0, color);
+    }
+
+    /// A vector outline, such as an icon, stretched over a rectangle and filled.
+    pub fn path(&mut self, path: &Path, x: f32, y: f32, width: f32, height: f32, color: Color) {
+        self.commands.push(DrawCommand::Path {
+            path: path.clone(),
+            rect: Self::rect_at(x, y, width, height),
+            color,
+        });
     }
 
     /// A filled rectangle with rounded corners.

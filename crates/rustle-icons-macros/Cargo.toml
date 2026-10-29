@@ -1,0 +1,12 @@
+[package]
+name = "rustle-icons-macros"
+description = "Compile-time icon embedding for rustle-icons"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+svgtypes = "0.16.1"

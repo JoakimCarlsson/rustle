@@ -21,10 +21,12 @@ use rustle_text::{TextMeasurer, TextStyle};
 
 mod composite;
 mod image;
+mod path;
 mod quad;
 
 use composite::{Composite, Placement};
 use image::Images;
+use path::Paths;
 use quad::{Instance, Quads};
 
 type SurfaceFactory = Box<
@@ -65,6 +67,7 @@ pub struct Renderer {
     text_renderers: Vec<TextRenderer>,
     quads: Quads,
     images: Images,
+    paths: Paths,
     composite: Composite,
     /// The background as the surface takes it: linear on an sRGB surface.
     clear: wgpu::Color,
@@ -176,6 +179,7 @@ impl Renderer {
         let atlas = TextAtlas::new(&device, &queue, &cache, format);
         let quads = Quads::new(&device, format);
         let images = Images::new(&device, format, quads.viewport_layout());
+        let paths = Paths::new(&device, format, quads.viewport_layout());
         let composite = Composite::new(&device, format);
         let [r, g, b] = BACKGROUND.map(|channel| {
             let value = f32::from(channel) / 255.0;
@@ -202,6 +206,7 @@ impl Renderer {
             text_renderers: Vec::new(),
             quads,
             images,
+            paths,
             composite,
             clear,
             surface,
@@ -391,6 +396,7 @@ impl Renderer {
             prepared.push(match item {
                 Item::Layer(layer) => {
                     let quads = self.quads.upload(&self.device, &layer.quads);
+                    let paths = self.paths.upload(&self.device, &layer.paths);
                     let images = self.images.upload(&self.device, &layer.images);
                     let text = if layer.texts.is_empty() {
                         None
@@ -403,6 +409,7 @@ impl Renderer {
                     PreparedItem::Layer(Prepared {
                         scissor: layer.scissor,
                         quads,
+                        paths,
                         images,
                         text,
                     })
@@ -512,6 +519,9 @@ impl Renderer {
         if let Some(quads) = &layer.quads {
             self.quads.draw(pass, quads);
         }
+        if let Some(paths) = &layer.paths {
+            self.paths.draw(pass, self.quads.viewport_group(), paths);
+        }
         if let Some(images) = &layer.images {
             self.images.draw(pass, self.quads.viewport_group(), images);
         }
@@ -580,17 +590,32 @@ impl Renderer {
                 | DrawCommand::Gradient { .. }
                 | DrawCommand::Arc { .. }
                 | DrawCommand::Line { .. } => {
-                    // A rectangle after text or a picture must paint over it, so it starts a new layer.
-                    if !current.texts.is_empty() || !current.images.is_empty() {
+                    // A rectangle after an outline, text or a picture must paint over it, so it starts a new layer.
+                    if !current.texts.is_empty()
+                        || !current.images.is_empty()
+                        || !current.paths.is_empty()
+                    {
                         let scissor = current.scissor;
                         push_layer(&mut frames, current.take());
                         current = Layer::new(scissor);
                     }
                     current.quads.extend(self.quads.instance(command));
                 }
+                DrawCommand::Path { .. } => {
+                    // An outline after text or a picture must paint over it.
+                    if !current.texts.is_empty() || !current.images.is_empty() {
+                        let scissor = current.scissor;
+                        push_layer(&mut frames, current.take());
+                        current = Layer::new(scissor);
+                    }
+                    self.paths.push(&mut current.paths, command, scale_factor);
+                }
                 DrawCommand::Image { .. } => {
-                    // A picture after text or a rectangle must paint over it.
-                    if !current.texts.is_empty() || !current.quads.is_empty() {
+                    // A picture after text, an outline or a rectangle must paint over it.
+                    if !current.texts.is_empty()
+                        || !current.quads.is_empty()
+                        || !current.paths.is_empty()
+                    {
                         let scissor = current.scissor;
                         push_layer(&mut frames, current.take());
                         current = Layer::new(scissor);
@@ -681,6 +706,7 @@ impl Renderer {
             }
         }
         self.frame += 1;
+        self.paths.end_frame();
         let frame = self.frame;
         self.shaped.retain(|_, (_, used)| frame - *used < 240);
         push_layer(&mut frames, current.take());
@@ -738,6 +764,7 @@ struct Layer {
     /// In physical pixels as x, y, width and height; `None` is the whole target.
     scissor: Option<(u32, u32, u32, u32)>,
     quads: Vec<Instance>,
+    paths: path::Geometry,
     images: Vec<(u64, image::Instance)>,
     texts: Vec<Shaped>,
 }
@@ -747,6 +774,7 @@ impl Layer {
         Self {
             scissor,
             quads: Vec::new(),
+            paths: path::Geometry::default(),
             images: Vec::new(),
             texts: Vec::new(),
         }
@@ -754,8 +782,11 @@ impl Layer {
 
     /// The layer, or nothing if it has nothing to draw.
     fn take(self) -> Option<Self> {
-        (!self.quads.is_empty() || !self.images.is_empty() || !self.texts.is_empty())
-            .then_some(self)
+        (!self.quads.is_empty()
+            || !self.paths.is_empty()
+            || !self.images.is_empty()
+            || !self.texts.is_empty())
+        .then_some(self)
     }
 }
 
@@ -769,6 +800,7 @@ struct Shaped {
 struct Prepared {
     scissor: Option<(u32, u32, u32, u32)>,
     quads: Option<quad::Batch>,
+    paths: Option<path::Batch>,
     images: Option<image::Batch>,
     /// Which text renderer holds the layer's text.
     text: Option<usize>,

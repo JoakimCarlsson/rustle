@@ -6,12 +6,13 @@
 mod icons;
 mod modern;
 
-pub use icons::{Icon, icon};
+pub use icons::icon;
 pub use modern::{
     BadgeStyle, ButtonStyle, MenuItem, avatar, calendar, card_header, days_in_month, first_weekday,
     menu, muted, muted_sized, pill, segmented_control, select, select_field, separator,
     styled_button, table_cell, table_row, tabs_list, title,
 };
+pub use rustle_icons::{Icon, phosphor};
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -265,10 +266,7 @@ pub fn checkbox(checked: bool, on_change: impl Fn(bool) + 'static) {
         BoxAlignment::Center,
         || {
             if checked {
-                let color = theme.on_primary;
-                rustle_foundation::canvas(Modifier::new().size(16.0, 16.0), move |canvas| {
-                    canvas.polyline(&[(4.0, 8.5), (7.0, 11.5), (12.0, 5.0)], 1.8, color);
-                });
+                icon(phosphor::bold::CHECK, 12.0, theme.on_primary);
             }
         },
     );

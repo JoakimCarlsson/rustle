@@ -219,7 +219,7 @@ pub fn chat(replies: &[&str], opening: &[(&str, bool)]) {
                     .clickable(send)
                     .background_rounded(theme.accent, 8.0),
                 BoxAlignment::Center,
-                || icon(Icon::Send, 15.0, theme.on_surface),
+                || icon(phosphor::PAPER_PLANE_TILT, 15.0, theme.on_surface),
             );
         },
     );

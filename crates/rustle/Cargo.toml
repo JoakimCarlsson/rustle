@@ -14,6 +14,7 @@ rustle-charts.workspace = true
 rustle-foundation.workspace = true
 rustle-geometry.workspace = true
 rustle-graphics.workspace = true
+rustle-icons.workspace = true
 rustle-macros.workspace = true
 rustle-navigation.workspace = true
 rustle-runtime.workspace = true
@@ -28,3 +29,10 @@ winit = "0.30"
 [[example]]
 name = "hello_world"
 path = "../../examples/hello_world/main.rs"
+
+[features]
+# More Phosphor weights; the regular weight is always there.
+icons-thin = ["rustle-icons/thin"]
+icons-light = ["rustle-icons/light"]
+icons-bold = ["rustle-icons/bold"]
+icons-fill = ["rustle-icons/fill"]

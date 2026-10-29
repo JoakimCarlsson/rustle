@@ -38,7 +38,7 @@ fn replay_button(label: &str, on_click: impl Fn() + 'static) {
         Modifier::new(),
         ButtonStyle::Outline,
         label,
-        Some(Icon::Activity),
+        Some(phosphor::PULSE),
         None,
         on_click,
     );
@@ -222,11 +222,11 @@ fn stagger() {
         "Each row waits a beat longer, then slides and fades in.",
         || {
             let rows = [
-                (Icon::Folder, "Projects", "4 in flight"),
-                (Icon::Users, "Team", "3 members online"),
-                (Icon::BarChart, "Reports", "Weekly summary is ready"),
-                (Icon::Bell, "Alerts", "Nothing needs you"),
-                (Icon::Settings, "Settings", "All synced"),
+                (phosphor::FOLDER, "Projects", "4 in flight"),
+                (phosphor::USERS, "Team", "3 members online"),
+                (phosphor::CHART_BAR, "Reports", "Weekly summary is ready"),
+                (phosphor::BELL, "Alerts", "Nothing needs you"),
+                (phosphor::GEAR, "Settings", "All synced"),
             ];
             for (index, (glyph, label, detail)) in rows.into_iter().enumerate() {
                 key(index, || {
@@ -513,7 +513,7 @@ fn counter_and_bars() {
                         Modifier::new(),
                         ButtonStyle::Default,
                         "Shuffle",
-                        Some(Icon::Activity),
+                        Some(phosphor::PULSE),
                         None,
                         move || {
                             seed.update(|s| *s += 1);
@@ -636,7 +636,7 @@ fn bell_button() {
             stack_aligned(
                 Modifier::new().size(20.0, 20.0).rotate(angle.value()),
                 BoxAlignment::Center,
-                || icon(Icon::Bell, 20.0, theme.on_surface),
+                || icon(phosphor::BELL, 20.0, theme.on_surface),
             );
         },
     );
@@ -674,9 +674,9 @@ fn pop_button() {
         BoxAlignment::Center,
         || {
             if done.get() {
-                icon(Icon::Check, 22.0, theme.background);
+                icon(phosphor::CHECK, 22.0, theme.background);
             } else {
-                icon(Icon::Plus, 20.0, theme.on_surface);
+                icon(phosphor::PLUS, 20.0, theme.on_surface);
             }
         },
     );
@@ -693,9 +693,9 @@ fn feedback() {
                 Arrangement::SpacedBy(10.0),
                 Alignment::Start,
                 || {
-                    lift_card(Icon::Layers, "Layers", "Hover me");
-                    lift_card(Icon::Settings, "Settings", "And me");
-                    lift_card(Icon::Wallet, "Wallet", "Me too");
+                    lift_card(phosphor::STACK, "Layers", "Hover me");
+                    lift_card(phosphor::GEAR, "Settings", "And me");
+                    lift_card(phosphor::WALLET, "Wallet", "Me too");
                 },
             );
             spacer(Modifier::new().height(20.0));
@@ -832,7 +832,7 @@ fn accordion_item(heading: &str, body: &str, open: bool, on_toggle: impl Fn() + 
                 stack_aligned(
                     Modifier::new().size(16.0, 16.0).rotate(turn),
                     BoxAlignment::Center,
-                    || icon(Icon::ChevronDown, 16.0, theme.on_surface_muted),
+                    || icon(phosphor::CARET_DOWN, 16.0, theme.on_surface_muted),
                 );
             },
         );
@@ -1019,7 +1019,7 @@ fn swipe_list(ctx: &Ctx) {
                                 Arrangement::SpacedBy(10.0),
                                 Alignment::Center,
                                 || {
-                                    icon(Icon::Bell, 15.0, theme.on_surface_muted);
+                                    icon(phosphor::BELL, 15.0, theme.on_surface_muted);
                                     text(message.to_string());
                                 },
                             );
@@ -1120,7 +1120,11 @@ fn kanban(ctx: &Ctx) {
                                                 Arrangement::SpacedBy(8.0),
                                                 Alignment::Center,
                                                 || {
-                                                    icon(Icon::Grip, 14.0, theme.on_surface_muted);
+                                                    icon(
+                                                        phosphor::DOTS_SIX_VERTICAL,
+                                                        14.0,
+                                                        theme.on_surface_muted,
+                                                    );
                                                     text(label.to_string());
                                                 },
                                             );

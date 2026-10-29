@@ -62,11 +62,11 @@ pub use rustle_widgets::{
     circular_progress_indicator_indeterminate, crossfade, days_in_month, dialog, divider,
     dropdown_menu, dropdown_menu_item, first_weekday, floating_action_button, horizontal_pager,
     icon, icon_button, linear_progress_indicator, list_item, menu, muted, muted_sized,
-    navigation_bar, outlined_button, page_indicator, pill, popup, provide_theme, radio_button,
-    range_slider, remember_pager_state, scaffold, segmented_control, select, select_field,
-    separator, slider, snackbar, styled_button, surface, surface_with, swipe_to_dismiss, switch,
-    system_theme, tab_row, table_cell, table_row, tabs_list, text_area, text_button, text_field,
-    text_field_focused, theme, title, tooltip, top_app_bar,
+    navigation_bar, outlined_button, page_indicator, phosphor, pill, popup, provide_theme,
+    radio_button, range_slider, remember_pager_state, scaffold, segmented_control, select,
+    select_field, separator, slider, snackbar, styled_button, surface, surface_with,
+    swipe_to_dismiss, switch, system_theme, tab_row, table_cell, table_row, tabs_list, text_area,
+    text_button, text_field, text_field_focused, theme, title, tooltip, top_app_bar,
 };
 
 pub mod prelude {
@@ -86,8 +86,8 @@ pub mod prelude {
         horizontal_pager, icon, icon_button, image, infinite_float, infinite_float_repeating,
         is_rtl, is_system_in_dark_theme, key, launched_effect, lazy_column, lazy_list, lazy_row,
         lazy_vertical_grid, line_chart, linear_progress_indicator, list_item, menu, muted,
-        muted_sized, nav_host, navigation_bar, outlined_button, page_indicator, pill, popup,
-        produce_state, provide_theme, qr_code, radio_button, range_slider, remember,
+        muted_sized, nav_host, navigation_bar, outlined_button, page_indicator, phosphor, pill,
+        popup, produce_state, provide_theme, qr_code, radio_button, range_slider, remember,
         remember_animatable, remember_focus, remember_lazy_list_state, remember_nav_controller,
         remember_pager_state, remember_saveable, remember_scroll_state, remember_state_list,
         remember_state_map, remember_text_field_state, remember_updated_state, reveal, rich_text,

@@ -69,7 +69,7 @@ fn buttons(ctx: &Ctx) {
                 Modifier::new(),
                 ButtonStyle::Default,
                 "Login with email",
-                Some(Icon::Mail),
+                Some(phosphor::ENVELOPE_SIMPLE),
                 None,
                 move || c.say("Check your inbox"),
             );
@@ -79,11 +79,14 @@ fn buttons(ctx: &Ctx) {
                 ButtonStyle::Outline,
                 "Continue",
                 None,
-                Some(Icon::ArrowRight),
+                Some(phosphor::ARROW_RIGHT),
                 move || c.say("Continuing"),
             );
-            for glyph in [Icon::Plus, Icon::Search, Icon::Settings] {
-                key(glyph as usize, || {
+            for (index, glyph) in [phosphor::PLUS, phosphor::MAGNIFYING_GLASS, phosphor::GEAR]
+                .into_iter()
+                .enumerate()
+            {
+                key(index, || {
                     let c = ctx.clone();
                     icon_action(glyph, "Icon button", move || c.say("Icon button"));
                 });
@@ -170,7 +173,7 @@ fn badges() {
                 Arrangement::SpacedBy(6.0),
                 Alignment::Center,
                 || {
-                    icon(Icon::Check, 12.0, theme.success);
+                    icon(phosphor::CHECK, 12.0, theme.success);
                     muted_sized("Verified", 12.0);
                 },
             );
@@ -272,13 +275,13 @@ fn callout(glyph: Icon, heading: &str, body: &str, destructive: bool) {
 fn alerts() {
     panel("Alert", "Callouts for things worth reading.", || {
         callout(
-            Icon::Activity,
+            phosphor::PULSE,
             "Heads up!",
             "You can add components to your app from the command line.",
             false,
         );
         callout(
-            Icon::Lock,
+            phosphor::LOCK,
             "Your session has expired",
             "Please log in again to keep editing.",
             true,
@@ -496,17 +499,17 @@ fn selects(ctx: &Ctx) {
                         let ctx = ctx.clone();
                         move || ctx.say("Profile")
                     })
-                    .icon(Icon::User),
+                    .icon(phosphor::USER),
                     MenuItem::new("Billing", {
                         let ctx = ctx.clone();
                         move || ctx.say("Billing")
                     })
-                    .icon(Icon::CreditCard),
+                    .icon(phosphor::CREDIT_CARD),
                     MenuItem::new("Delete account", {
                         let ctx = ctx.clone();
                         move || ctx.say("Not today")
                     })
-                    .icon(Icon::X)
+                    .icon(phosphor::X)
                     .destructive(),
                 ];
                 menu(
@@ -516,7 +519,7 @@ fn selects(ctx: &Ctx) {
                             ButtonStyle::Outline,
                             "Open menu",
                             None,
-                            Some(Icon::ChevronDown),
+                            Some(phosphor::CARET_DOWN),
                             move || open(),
                         );
                     },
@@ -527,7 +530,7 @@ fn selects(ctx: &Ctx) {
                         Modifier::new(),
                         ButtonStyle::Outline,
                         "Hover",
-                        Some(Icon::Plus),
+                        Some(phosphor::PLUS),
                         None,
                         || {},
                     );
@@ -612,9 +615,9 @@ fn navigation() {
                 Alignment::Center,
                 || {
                     muted_sized("Home", 13.0);
-                    icon(Icon::ChevronRight, 13.0, theme.on_surface_muted);
+                    icon(phosphor::CARET_RIGHT, 13.0, theme.on_surface_muted);
                     muted_sized("Components", 13.0);
-                    icon(Icon::ChevronRight, 13.0, theme.on_surface_muted);
+                    icon(phosphor::CARET_RIGHT, 13.0, theme.on_surface_muted);
                     title("Breadcrumb", 13.0);
                 },
             );
@@ -647,7 +650,7 @@ fn navigation() {
                         Modifier::new(),
                         ButtonStyle::Ghost,
                         "Previous",
-                        Some(Icon::ChevronLeft),
+                        Some(phosphor::CARET_LEFT),
                         None,
                         move || back.update(|p| *p = p.saturating_sub(1)),
                     );
@@ -683,7 +686,7 @@ fn navigation() {
                         ButtonStyle::Ghost,
                         "Next",
                         None,
-                        Some(Icon::ChevronRight),
+                        Some(phosphor::CARET_RIGHT),
                         move || next.update(|p| *p = (*p + 1).min(4)),
                     );
                 },
@@ -833,7 +836,7 @@ fn collapsible() {
                         stack_aligned(
                             Modifier::new().size(16.0, 16.0).rotate(turn),
                             BoxAlignment::Center,
-                            || icon(Icon::ChevronDown, 16.0, theme.on_surface_muted),
+                            || icon(phosphor::CARET_DOWN, 16.0, theme.on_surface_muted),
                         );
                     },
                 );

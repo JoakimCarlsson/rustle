@@ -60,7 +60,7 @@ fn nav_list(heading: &str, entries: &[Entry], filter: &str, toast: &Ctx) {
                         Arrangement::SpacedBy(10.0),
                         Alignment::Center,
                         || {
-                            icon(*glyph, 15.0, color);
+                            icon(glyph.clone(), 15.0, color);
                             text_styled(
                                 Modifier::new(),
                                 label.to_string(),
@@ -186,9 +186,9 @@ fn holding_row(name: &str, shares: &str, bars: Vec<f32>, dividend: f64) {
                             );
                             icon(
                                 if open.get() {
-                                    Icon::ChevronUp
+                                    phosphor::CARET_UP
                                 } else {
-                                    Icon::ChevronDown
+                                    phosphor::CARET_DOWN
                                 },
                                 14.0,
                                 theme.on_surface_muted,
@@ -243,7 +243,7 @@ fn first_column(ctx: &Ctx) {
             Alignment::Center,
             || {
                 for (label, style, trailing) in [
-                    ("Button", ButtonStyle::Default, Some(Icon::ArrowRight)),
+                    ("Button", ButtonStyle::Default, Some(phosphor::ARROW_RIGHT)),
                     ("Secondary", ButtonStyle::Secondary, None),
                     ("Outline", ButtonStyle::Outline, None),
                 ] {
@@ -263,7 +263,7 @@ fn first_column(ctx: &Ctx) {
             || {
                 text_field(Modifier::new().fill_max_width(), &name, "Name");
                 stack_with(Modifier::new().padding_xy(12.0, 0.0), || {
-                    icon(Icon::Search, 15.0, theme.on_surface_muted);
+                    icon(phosphor::MAGNIFYING_GLASS, 15.0, theme.on_surface_muted);
                 });
             },
         );
@@ -326,10 +326,10 @@ fn first_column(ctx: &Ctx) {
                     move || alert.open(Overlay::Alert),
                 );
                 let group = [
-                    ("Archive", Icon::Folder),
-                    ("Mark as read", Icon::Check),
-                    ("Snooze", Icon::Calendar),
-                    ("Add to favorites", Icon::Plus),
+                    ("Archive", phosphor::FOLDER),
+                    ("Mark as read", phosphor::CHECK),
+                    ("Snooze", phosphor::CALENDAR_BLANK),
+                    ("Add to favorites", phosphor::PLUS),
                 ]
                 .map(|(label, glyph)| {
                     let ctx = ctx.clone();
@@ -343,7 +343,7 @@ fn first_column(ctx: &Ctx) {
                             ButtonStyle::Outline,
                             "Button Group",
                             None,
-                            Some(Icon::ChevronDown),
+                            Some(phosphor::CARET_DOWN),
                             move || open(),
                         )
                     },
@@ -357,37 +357,37 @@ fn first_column(ctx: &Ctx) {
         (
             "Planning",
             &[
-                (Icon::File, "Documents"),
-                (Icon::Wallet, "Budget"),
-                (Icon::Receipt, "Reports"),
-                (Icon::Circle, "Goals"),
-                (Icon::Calendar, "Calendar"),
+                (phosphor::FILE, "Documents"),
+                (phosphor::WALLET, "Budget"),
+                (phosphor::RECEIPT, "Reports"),
+                (phosphor::CIRCLE, "Goals"),
+                (phosphor::CALENDAR_BLANK, "Calendar"),
             ][..],
             "Support",
             &[
-                (Icon::Help, "Help Center"),
-                (Icon::File, "Docs"),
-                (Icon::Mail, "Contact Us"),
-                (Icon::Activity, "Status"),
-                (Icon::Users, "Community"),
+                (phosphor::QUESTION, "Help Center"),
+                (phosphor::FILE, "Docs"),
+                (phosphor::ENVELOPE_SIMPLE, "Contact Us"),
+                (phosphor::PULSE, "Status"),
+                (phosphor::USERS, "Community"),
             ][..],
         ),
         (
             "Overview",
             &[
-                (Icon::BarChart, "Analytics"),
-                (Icon::Receipt, "Transactions"),
-                (Icon::TrendingUp, "Investments"),
-                (Icon::Wallet, "Accounts"),
-                (Icon::CreditCard, "Spending"),
+                (phosphor::CHART_BAR, "Analytics"),
+                (phosphor::RECEIPT, "Transactions"),
+                (phosphor::TREND_UP, "Investments"),
+                (phosphor::WALLET, "Accounts"),
+                (phosphor::CREDIT_CARD, "Spending"),
             ][..],
             "Account",
             &[
-                (Icon::User, "Profile"),
-                (Icon::CreditCard, "Billing"),
-                (Icon::Bell, "Notifications"),
-                (Icon::Lock, "Security"),
-                (Icon::Settings, "Appearance"),
+                (phosphor::USER, "Profile"),
+                (phosphor::CREDIT_CARD, "Billing"),
+                (phosphor::BELL, "Notifications"),
+                (phosphor::LOCK, "Security"),
+                (phosphor::GEAR, "Appearance"),
             ][..],
         ),
     ] {
@@ -699,7 +699,7 @@ fn third_column(ctx: &Ctx) {
                         .clickable(move || home.go(0)),
                     || muted_sized("Home", 13.0),
                 );
-                icon(Icon::ChevronRight, 12.0, theme.on_surface_muted);
+                icon(phosphor::CARET_RIGHT, 12.0, theme.on_surface_muted);
                 let trail = [("Billing", 8usize), ("Cards", 2), ("Statements", 6)]
                     .map(|(label, page)| {
                         let ctx = ctx.clone();
@@ -712,29 +712,29 @@ fn third_column(ctx: &Ctx) {
                             Modifier::new()
                                 .semantics(Semantics::new(Role::Button).label("More".to_string()))
                                 .clickable(move || open()),
-                            || icon(Icon::MoreHorizontal, 14.0, theme.on_surface_muted),
+                            || icon(phosphor::DOTS_THREE, 14.0, theme.on_surface_muted),
                         )
                     },
                     trail,
                 );
-                icon(Icon::ChevronRight, 12.0, theme.on_surface_muted);
+                icon(phosphor::CARET_RIGHT, 12.0, theme.on_surface_muted);
                 text("Payments".to_string());
             },
         );
         spacer(Modifier::new().height(14.0));
         for (index, (glyph, heading, detail)) in [
             (
-                Icon::TrendingUp,
+                phosphor::TREND_UP,
                 "Change transfer limit",
                 "Adjust how much you can send from your balance.",
             ),
             (
-                Icon::Calendar,
+                phosphor::CALENDAR_BLANK,
                 "Scheduled transfers",
                 "Set up a transfer to send at a later date.",
             ),
             (
-                Icon::CreditCard,
+                phosphor::CREDIT_CARD,
                 "Recurring card payments",
                 "Manage subscriptions on this card.",
             ),
@@ -776,9 +776,9 @@ fn third_column(ctx: &Ctx) {
                                 );
                                 icon(
                                     if open {
-                                        Icon::ChevronDown
+                                        phosphor::CARET_DOWN
                                     } else {
-                                        Icon::ChevronRight
+                                        phosphor::CARET_RIGHT
                                     },
                                     14.0,
                                     theme.on_surface_muted,
@@ -793,7 +793,7 @@ fn third_column(ctx: &Ctx) {
                                 ButtonStyle::Outline,
                                 "Manage",
                                 None,
-                                Some(Icon::ArrowRight),
+                                Some(phosphor::ARROW_RIGHT),
                                 move || go.say(format!("Managing: {heading}")),
                             );
                         }

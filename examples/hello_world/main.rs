@@ -75,7 +75,7 @@ fn page(ctx: &ctx::Ctx) {
             "Projects",
             "Everything in flight across the team.",
             "project",
-            Icon::Folder,
+            phosphor::FOLDER,
         ),
         4 => pages::team_page(ctx),
         5 => pages::collection_page(
@@ -84,7 +84,7 @@ fn page(ctx: &ctx::Ctx) {
             "Data Library",
             "Files your team has uploaded.",
             "file",
-            Icon::File,
+            phosphor::FILE,
         ),
         6 => pages::collection_page(
             ctx,
@@ -92,7 +92,7 @@ fn page(ctx: &ctx::Ctx) {
             "Reports",
             "Generated summaries you can share.",
             "report",
-            Icon::BarChart,
+            phosphor::CHART_BAR,
         ),
         7 => pages::assistant_page(ctx),
         8 => pages::settings_page(ctx),

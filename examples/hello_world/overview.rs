@@ -131,7 +131,7 @@ fn team_panel(ctx: &Ctx) {
                 Modifier::new().fill_max_width(),
                 ButtonStyle::Outline,
                 "Invite member",
-                Some(Icon::Plus),
+                Some(phosphor::PLUS),
                 None,
                 move || ctx.open(Overlay::Invite),
             );
@@ -207,7 +207,7 @@ fn chat_card(ctx: &Ctx) {
                         },
                     );
                     let (fresh, ctx) = (epoch.clone(), ctx.clone());
-                    icon_box(Icon::Plus, 30.0, "New conversation", move || {
+                    icon_box(phosphor::PLUS, 30.0, "New conversation", move || {
                         fresh.update(|e| *e += 1);
                         ctx.say("Started a new conversation");
                     });
@@ -319,7 +319,7 @@ fn goal_card(ctx: &Ctx) {
                 Alignment::Center,
                 || {
                     let down = goal.clone();
-                    icon_box(Icon::ChevronLeft, 32.0, "Decrease goal", move || {
+                    icon_box(phosphor::CARET_LEFT, 32.0, "Decrease goal", move || {
                         down.update(|g| *g = (*g - 10).max(0))
                     });
                     column_arranged(
@@ -332,7 +332,7 @@ fn goal_card(ctx: &Ctx) {
                         },
                     );
                     let up = goal.clone();
-                    icon_box(Icon::ChevronRight, 32.0, "Increase goal", move || {
+                    icon_box(phosphor::CARET_RIGHT, 32.0, "Increase goal", move || {
                         up.update(|g| *g += 10)
                     });
                 },

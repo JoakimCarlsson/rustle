@@ -13,8 +13,9 @@ use rustle_graphics::Color;
 use rustle_runtime::key;
 use rustle_text::FontWeight;
 
-use crate::icons::{Icon, icon};
+use crate::icons::icon;
 use crate::theme;
+use rustle_icons::{Icon, phosphor};
 
 /// How a button looks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,7 +216,7 @@ pub fn select_field(modifier: Modifier, value: &str, on_click: impl Fn() + 'stat
         Alignment::Center,
         || {
             text(value.to_string());
-            icon(Icon::ChevronsUpDown, 14.0, theme.on_surface_muted);
+            icon(phosphor::CARET_UP_DOWN, 14.0, theme.on_surface_muted);
         },
     );
 }
@@ -386,7 +387,7 @@ pub fn calendar(
                         .semantics(Semantics::new(Role::Button).label("Previous month".to_string()))
                         .clickable(move || back(-1)),
                     BoxAlignment::Center,
-                    || icon(Icon::ChevronLeft, 16.0, theme.on_surface_muted),
+                    || icon(phosphor::CARET_LEFT, 16.0, theme.on_surface_muted),
                 );
                 title(heading, 14.0);
                 stack_aligned(
@@ -395,7 +396,7 @@ pub fn calendar(
                         .semantics(Semantics::new(Role::Button).label("Next month".to_string()))
                         .clickable(move || forward(1)),
                     BoxAlignment::Center,
-                    || icon(Icon::ChevronRight, 16.0, theme.on_surface_muted),
+                    || icon(phosphor::CARET_RIGHT, 16.0, theme.on_surface_muted),
                 );
             },
         );
@@ -607,7 +608,7 @@ pub fn menu(trigger: impl FnOnce(Rc<dyn Fn()>), items: Vec<MenuItem>) {
                                     text_styled(Modifier::new(), item.label.clone(), style);
                                     if item.checked {
                                         spacer(Modifier::new().weight(1.0));
-                                        icon(Icon::Check, 14.0, theme.on_surface_muted);
+                                        icon(phosphor::CHECK, 14.0, theme.on_surface_muted);
                                     }
                                 },
                             );

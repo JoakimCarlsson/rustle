@@ -1,0 +1,16 @@
+[package]
+name = "rustle-icons"
+description = "Phosphor icons as vector paths, compiled in only where they are used"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+
+[dependencies]
+rustle-graphics.workspace = true
+rustle-icons-macros.workspace = true
+
+[features]
+thin = []
+light = []
+bold = []
+fill = []

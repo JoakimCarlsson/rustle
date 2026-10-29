@@ -122,7 +122,7 @@ fn toast(ctx: &Ctx) {
                 Arrangement::SpacedBy(10.0),
                 Alignment::Center,
                 || {
-                    icon(Icon::Check, 15.0, theme.success);
+                    icon(phosphor::CHECK, 15.0, theme.success);
                     text(message.clone());
                 },
             );
@@ -202,38 +202,38 @@ fn commands(ctx: &Ctx) -> Vec<Command> {
         let ctx = ctx.clone();
         list.push(Command {
             label: format!("Go to {name}"),
-            glyph: Icon::ArrowRight,
+            glyph: phosphor::ARROW_RIGHT,
             run: Rc::new(move || ctx.go(index)),
         });
     }
     let c = ctx.clone();
     list.push(Command {
         label: "Create document".into(),
-        glyph: Icon::Plus,
+        glyph: phosphor::PLUS,
         run: Rc::new(move || c.open(Overlay::NewDocument)),
     });
     let c = ctx.clone();
     list.push(Command {
         label: "Toggle sidebar".into(),
-        glyph: Icon::PanelLeft,
+        glyph: phosphor::SIDEBAR_SIMPLE,
         run: Rc::new(move || c.collapsed.update(|v| *v = !*v)),
     });
     let c = ctx.clone();
     list.push(Command {
         label: "Switch to light theme".into(),
-        glyph: Icon::Circle,
+        glyph: phosphor::CIRCLE,
         run: Rc::new(move || c.dark.set(Some(false))),
     });
     let c = ctx.clone();
     list.push(Command {
         label: "Switch to dark theme".into(),
-        glyph: Icon::Circle,
+        glyph: phosphor::CIRCLE,
         run: Rc::new(move || c.dark.set(Some(true))),
     });
     let c = ctx.clone();
     list.push(Command {
         label: "Open GitHub".into(),
-        glyph: Icon::ArrowUpRight,
+        glyph: phosphor::ARROW_UP_RIGHT,
         run: Rc::new(move || {
             rustle::open_url("https://github.com/");
             c.say("Opening GitHub in your browser");
@@ -242,7 +242,7 @@ fn commands(ctx: &Ctx) -> Vec<Command> {
     let c = ctx.clone();
     list.push(Command {
         label: "Log out".into(),
-        glyph: Icon::Lock,
+        glyph: phosphor::LOCK,
         run: Rc::new(move || c.open(Overlay::Logout)),
     });
     list
@@ -319,7 +319,11 @@ fn search_palette(ctx: &Ctx) {
                                             Arrangement::SpacedBy(10.0),
                                             Alignment::Center,
                                             || {
-                                                icon(command.glyph, 15.0, theme.on_surface_muted);
+                                                icon(
+                                                    command.glyph.clone(),
+                                                    15.0,
+                                                    theme.on_surface_muted,
+                                                );
                                                 text(command.label.clone());
                                             },
                                         );
@@ -475,7 +479,7 @@ fn pending_setup(ctx: &Ctx) {
                         title(label, 14.0);
                         muted_sized(detail, 12.0);
                     });
-                    icon(Icon::ChevronRight, 14.0, theme.on_surface_muted);
+                    icon(phosphor::CARET_RIGHT, 14.0, theme.on_surface_muted);
                 },
             );
             spacer(Modifier::new().height(8.0));
@@ -506,7 +510,7 @@ fn report_sheet(ctx: &Ctx) {
                     muted_sized("Contributions from December to May.", 13.0);
                 });
                 let ctx = ctx.clone();
-                icon_box(Icon::X, 30.0, "Close", move || ctx.close());
+                icon_box(phosphor::X, 30.0, "Close", move || ctx.close());
             },
         );
         spacer(Modifier::new().height(16.0));
@@ -533,7 +537,7 @@ fn report_sheet(ctx: &Ctx) {
                     Modifier::new(),
                     ButtonStyle::Default,
                     "Download PDF",
-                    Some(Icon::File),
+                    Some(phosphor::FILE),
                     None,
                     move || {
                         save.close();
@@ -545,7 +549,7 @@ fn report_sheet(ctx: &Ctx) {
                     Modifier::new(),
                     ButtonStyle::Outline,
                     "Email me a copy",
-                    Some(Icon::Mail),
+                    Some(phosphor::ENVELOPE_SIMPLE),
                     None,
                     move || {
                         ctx.close();
@@ -577,7 +581,7 @@ fn detail_sheet(ctx: &Ctx, id: usize) {
                     );
                 });
                 let ctx = ctx.clone();
-                icon_box(Icon::X, 30.0, "Close", move || ctx.close());
+                icon_box(phosphor::X, 30.0, "Close", move || ctx.close());
             },
         );
         spacer(Modifier::new().height(16.0));
@@ -597,7 +601,7 @@ fn detail_sheet(ctx: &Ctx, id: usize) {
                                 Alignment::Center,
                                 || {
                                     let down = ctx.clone();
-                                    icon_box(Icon::ChevronLeft, 30.0, "Decrease", move || {
+                                    icon_box(phosphor::CARET_LEFT, 30.0, "Decrease", move || {
                                         down.change_doc(id, |d| {
                                             let v = if field == 0 {
                                                 &mut d.target
@@ -609,7 +613,7 @@ fn detail_sheet(ctx: &Ctx, id: usize) {
                                     });
                                     title(&value.to_string(), 20.0);
                                     let up = ctx.clone();
-                                    icon_box(Icon::ChevronRight, 30.0, "Increase", move || {
+                                    icon_box(phosphor::CARET_RIGHT, 30.0, "Increase", move || {
                                         up.change_doc(id, |d| {
                                             let v = if field == 0 {
                                                 &mut d.target
@@ -653,7 +657,7 @@ fn detail_sheet(ctx: &Ctx, id: usize) {
                     Modifier::new(),
                     ButtonStyle::Default,
                     if doc.done { "Reopen" } else { "Mark as done" },
-                    Some(Icon::Check),
+                    Some(phosphor::CHECK),
                     None,
                     move || {
                         toggle.change_doc(id, |d| d.done = !d.done);
@@ -697,7 +701,7 @@ pub fn signed_out(ctx: &Ctx) {
                                 .size(40.0, 40.0)
                                 .background_rounded(theme.primary, 10.0),
                             BoxAlignment::Center,
-                            || icon(Icon::Layers, 22.0, theme.on_primary),
+                            || icon(phosphor::STACK, 22.0, theme.on_primary),
                         );
                         spacer(Modifier::new().height(16.0));
                         title("You are signed out", 18.0);
