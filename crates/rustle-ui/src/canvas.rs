@@ -118,6 +118,26 @@ impl Canvas {
         });
     }
 
+    /// A soft blur of a rounded rectangle: a glow when `color` is bright, a drop
+    /// shadow when it is dark. The colour fades out over `blur` pixels.
+    pub fn shadow(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: f32,
+        blur: f32,
+        color: Color,
+    ) {
+        self.commands.push(DrawCommand::Shadow {
+            rect: Self::rect_at(x, y, width, height),
+            corner_radius: radius,
+            blur,
+            color,
+        });
+    }
+
     /// A straight line with round ends.
     pub fn line(&mut self, from: (f32, f32), to: (f32, f32), width: f32, color: Color) {
         self.commands.push(DrawCommand::Line {

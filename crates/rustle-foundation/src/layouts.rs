@@ -1,6 +1,52 @@
 use rustle_geometry::{Offset, Size};
-use rustle_ui::{Children, Layout, LayoutResult, Modifier, is_rtl, layout};
+use rustle_ui::{Canvas, Children, Layout, LayoutResult, Modifier, is_rtl, layout};
 use rustle_unit::Constraints;
+
+/// Emits `content` stacked over a canvas that is drawn behind it and is exactly
+/// as large as the content, for frames, glows and other decoration that must
+/// follow the size of what it surrounds.
+#[track_caller]
+pub fn backdrop(modifier: Modifier, draw: impl Fn(&mut Canvas) + 'static, content: impl FnOnce()) {
+    layout(modifier, Backdrop, || {
+        rustle_ui::canvas(Modifier::new(), draw);
+        content();
+    });
+}
+
+/// Sizes itself to every child but the first, then makes the first as large.
+struct Backdrop;
+
+impl Layout for Backdrop {
+    fn measure(&self, children: &mut Children, constraints: Constraints) -> LayoutResult {
+        let loose = Constraints {
+            min_width: 0.0,
+            min_height: 0.0,
+            ..constraints
+        };
+        let mut size = Size::default();
+        for index in 1..children.len() {
+            let child = children.measure(index, loose);
+            size.width = size.width.max(child.width);
+            size.height = size.height.max(child.height);
+        }
+        let size = constraints.constrain(size);
+        if !children.is_empty() {
+            children.measure(
+                0,
+                Constraints {
+                    min_width: size.width,
+                    max_width: size.width,
+                    min_height: size.height,
+                    max_height: size.height,
+                },
+            );
+        }
+        LayoutResult {
+            size,
+            positions: vec![Offset::default(); children.len()],
+        }
+    }
+}
 
 /// Emits a row that fills with the children of `content` left to right and
 /// starts a new line when the next one does not fit, with the given gaps.

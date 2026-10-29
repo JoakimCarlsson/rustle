@@ -28,9 +28,14 @@ winit = "0.30"
 
 # The example lives at the workspace root, outside any package, so it is
 # registered here; run it with `cargo run --release --example hello_world`.
+# `advance` is the showpiece: shaders-style canvases, live charts and motion.
 [[example]]
 name = "hello_world"
 path = "../../examples/hello_world/main.rs"
+
+[[example]]
+name = "advance"
+path = "../../examples/advance/main.rs"
 
 [features]
 # More Phosphor weights; the regular weight is always there.

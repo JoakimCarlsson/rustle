@@ -9,7 +9,7 @@ mod linear;
 mod text;
 mod text_field;
 
-pub use layouts::{floating, flow_row, reveal};
+pub use layouts::{backdrop, floating, flow_row, reveal};
 pub use lazy::{
     LazyListState, lazy_column, lazy_list, lazy_row, lazy_vertical_grid, remember_lazy_list_state,
 };
