@@ -1,6 +1,8 @@
 //! Filled, rounded rectangles drawn as instanced quads by the shader in `rustle-shaders`.
 
 use rustle_graphics::{Color, DrawCommand};
+
+use crate::srgb_to_linear;
 use wgpu::util::DeviceExt;
 
 /// The viewport the shader turns logical pixels into clip space with.
@@ -18,7 +20,7 @@ struct Viewport {
 /// One quad as the shader reads it.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Instance {
+pub(crate) struct Instance {
     /// Left, top, width and height in logical pixels.
     rect: [f32; 4],
     fill: [f32; 4],
@@ -45,7 +47,7 @@ impl Instance {
     ];
 }
 
-/// The quads of one frame, uploaded and ready to draw.
+/// The quads of one layer, uploaded and ready to draw.
 pub(crate) struct Batch {
     buffer: wgpu::Buffer,
     count: u32,
@@ -54,11 +56,11 @@ pub(crate) struct Batch {
 pub(crate) struct Quads {
     pipeline: wgpu::RenderPipeline,
     viewport_buffer: wgpu::Buffer,
+    viewport_layout: wgpu::BindGroupLayout,
     viewport_group: wgpu::BindGroup,
     /// Whether the target encodes linear values to sRGB on write.
     srgb_target: bool,
 }
-
 impl Quads {
     pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let viewport_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -140,48 +142,24 @@ impl Quads {
         Self {
             pipeline,
             viewport_buffer,
+            viewport_layout,
             viewport_group,
             srgb_target: format.is_srgb(),
         }
     }
 
-    /// Uploads the rectangles among `commands`, or returns `None` if there are none.
-    pub(crate) fn prepare(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        commands: &[DrawCommand],
-        target_size: (u32, u32),
-        scale: f32,
-    ) -> Option<Batch> {
-        let instances: Vec<Instance> = commands
-            .iter()
-            .filter_map(|command| match command {
-                DrawCommand::Rect {
-                    rect,
-                    color,
-                    corner_radius,
-                } => Some(Instance {
-                    rect: [
-                        rect.origin.x,
-                        rect.origin.y,
-                        rect.size.width,
-                        rect.size.height,
-                    ],
-                    fill: self.channels(*color),
-                    border_color: [0.0; 4],
-                    radii: [*corner_radius; 4],
-                    matrix: [1.0, 0.0, 0.0, 1.0],
-                    params: [0.0; 4],
-                    arc: [0.0; 4],
-                }),
-                _ => None,
-            })
-            .collect();
-        if instances.is_empty() {
-            return None;
-        }
+    /// The layout of the viewport bind group, which other pipelines share.
+    pub(crate) fn viewport_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.viewport_layout
+    }
 
+    /// The viewport bind group, set as group 0 by every pipeline.
+    pub(crate) fn viewport_group(&self) -> &wgpu::BindGroup {
+        &self.viewport_group
+    }
+
+    /// Sets the viewport every batch of the frame is drawn with.
+    pub(crate) fn set_viewport(&self, queue: &wgpu::Queue, target_size: (u32, u32), scale: f32) {
         queue.write_buffer(
             &self.viewport_buffer,
             0,
@@ -191,9 +169,126 @@ impl Quads {
                 padding: 0.0,
             }),
         );
+    }
+
+    /// The quad that draws `command`, if it is a rectangle or a shadow.
+    pub(crate) fn instance(&self, command: &DrawCommand) -> Option<Instance> {
+        let (rect, fill, corner_radius, border, softness) = match command {
+            DrawCommand::Rect {
+                rect,
+                color,
+                corner_radius,
+                border,
+            } => (rect, *color, *corner_radius, *border, 0.0),
+            DrawCommand::Shadow {
+                rect,
+                corner_radius,
+                blur,
+                color,
+            } => (rect, *color, *corner_radius, None, *blur),
+            DrawCommand::Line {
+                from,
+                to,
+                width,
+                color,
+            } => {
+                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                let length = (dx * dx + dy * dy).sqrt().max(0.001);
+                let (centre_x, centre_y) = ((from.0 + to.0) / 2.0, (from.1 + to.1) / 2.0);
+                // A rounded rectangle turned about its centre: the matrix turns it
+                // about the origin, so the translation puts the centre back.
+                let (cos, sin) = (dx / length, dy / length);
+                let turned_x = cos * centre_x - sin * centre_y;
+                let turned_y = sin * centre_x + cos * centre_y;
+                return Some(Instance {
+                    rect: [
+                        centre_x - length / 2.0 - width / 2.0,
+                        centre_y - width / 2.0,
+                        length + width,
+                        *width,
+                    ],
+                    fill: self.channels(*color),
+                    border_color: [0.0; 4],
+                    radii: [width / 2.0; 4],
+                    matrix: [cos, sin, -sin, cos],
+                    params: [centre_x - turned_x, centre_y - turned_y, 0.0, 0.0],
+                    arc: [0.0; 4],
+                });
+            }
+            DrawCommand::Arc {
+                rect,
+                color,
+                thickness,
+                start,
+                sweep,
+            } => {
+                return Some(Instance {
+                    rect: [
+                        rect.origin.x,
+                        rect.origin.y,
+                        rect.size.width,
+                        rect.size.height,
+                    ],
+                    fill: self.channels(*color),
+                    border_color: [0.0; 4],
+                    radii: [0.0; 4],
+                    matrix: [1.0, 0.0, 0.0, 1.0],
+                    params: [0.0; 4],
+                    arc: [*sweep, *thickness, *start, 0.0],
+                });
+            }
+            DrawCommand::Gradient {
+                rect,
+                from,
+                to,
+                angle,
+                corner_radius,
+            } => {
+                return Some(Instance {
+                    rect: [
+                        rect.origin.x,
+                        rect.origin.y,
+                        rect.size.width,
+                        rect.size.height,
+                    ],
+                    fill: self.channels(*from),
+                    border_color: self.channels(*to),
+                    radii: [*corner_radius; 4],
+                    matrix: [1.0, 0.0, 0.0, 1.0],
+                    params: [0.0; 4],
+                    arc: [0.0, 0.0, *angle, 1.0],
+                });
+            }
+            _ => return None,
+        };
+        let (border_color, border_width) = match border {
+            Some(border) => (self.channels(border.color), border.width),
+            None => ([0.0; 4], 0.0),
+        };
+        Some(Instance {
+            rect: [
+                rect.origin.x,
+                rect.origin.y,
+                rect.size.width,
+                rect.size.height,
+            ],
+            fill: self.channels(fill),
+            border_color,
+            radii: [corner_radius; 4],
+            matrix: [1.0, 0.0, 0.0, 1.0],
+            params: [0.0, 0.0, border_width, softness],
+            arc: [0.0; 4],
+        })
+    }
+
+    /// Uploads `instances`, or returns `None` if there are none.
+    pub(crate) fn upload(&self, device: &wgpu::Device, instances: &[Instance]) -> Option<Batch> {
+        if instances.is_empty() {
+            return None;
+        }
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("quads"),
-            contents: bytemuck::cast_slice(&instances),
+            contents: bytemuck::cast_slice(instances),
             usage: wgpu::BufferUsages::VERTEX,
         });
         Some(Batch {
@@ -214,12 +309,10 @@ impl Quads {
     fn channels(&self, color: Color) -> [f32; 4] {
         let channel = |value: u8| {
             let value = f32::from(value) / 255.0;
-            if !self.srgb_target {
-                value
-            } else if value <= 0.04045 {
-                value / 12.92
+            if self.srgb_target {
+                srgb_to_linear(value)
             } else {
-                ((value + 0.055) / 1.055).powf(2.4)
+                value
             }
         };
         [

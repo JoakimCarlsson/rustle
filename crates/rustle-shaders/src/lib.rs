@@ -11,3 +11,6 @@ pub const GLYPH: &str = include_str!("glyph.wgsl");
 
 /// Pictures, one instanced quad each, sampled from a full-colour texture.
 pub const IMAGE: &str = include_str!("image.wgsl");
+
+/// A rendered layer composited onto its parent, turned, scaled and faded.
+pub const COMPOSITE: &str = include_str!("composite.wgsl");

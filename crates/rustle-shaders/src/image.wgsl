@@ -23,6 +23,7 @@ struct Fragment {
     @location(1) local: vec2<f32>,
     @location(2) half_size: vec2<f32>,
     @location(3) radius: f32,
+    @location(4) opacity: f32,
 }
 
 fn unit_corner(index: u32) -> vec2<f32> {
@@ -53,6 +54,7 @@ fn vertex(@builtin(vertex_index) index: u32, instance: Instance) -> Fragment {
     out.half_size = instance.size / 2.0;
     out.local = (corner - vec2<f32>(0.5, 0.5)) * instance.size;
     out.radius = instance.color.x;
+    out.opacity = instance.color.y;
     return out;
 }
 
@@ -63,6 +65,6 @@ fn fragment(in: Fragment) -> @location(0) vec4<f32> {
     let offset = abs(in.local) - inner;
     let distance = length(max(offset, vec2<f32>(0.0, 0.0))) + min(max(offset.x, offset.y), 0.0) - in.radius;
     let coverage = clamp(0.5 - distance, 0.0, 1.0);
-    let alpha = pixel.a * coverage;
+    let alpha = pixel.a * coverage * in.opacity;
     return vec4<f32>(pixel.rgb * alpha, alpha);
 }

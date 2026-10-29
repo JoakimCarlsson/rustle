@@ -110,7 +110,14 @@ fn vertex(@builtin(vertex_index) index: u32, instance: Instance) -> Fragment {
 fn fragment(in: Fragment) -> @location(0) vec4<f32> {
     if in.arc.y > 0.0 {
         let ring = min(in.half_size.x, in.half_size.y) - in.arc.y * 0.5;
-        let distance = arc_distance(in.local, ring, in.arc.y, in.arc.x);
+        // The ring starts `arc.z` radians clockwise from the top.
+        let turn = cos(in.arc.z);
+        let lean = sin(in.arc.z);
+        let turned = vec2<f32>(
+            turn * in.local.x + lean * in.local.y,
+            turn * in.local.y - lean * in.local.x,
+        );
+        let distance = arc_distance(turned, ring, in.arc.y, in.arc.x);
         let edge = 0.5 / viewport.scale;
         let coverage = 1.0 - smoothstep(-edge, edge, distance);
         return vec4<f32>(in.fill.rgb * in.fill.a, in.fill.a) * coverage;
@@ -125,7 +132,15 @@ fn fragment(in: Fragment) -> @location(0) vec4<f32> {
         coverage = 1.0 - smoothstep(-softness, softness, distance);
     }
 
-    let fill = vec4<f32>(in.fill.rgb * in.fill.a, in.fill.a);
+    // A gradient blends from the fill color to the border color along an angle.
+    var base = in.fill;
+    if in.arc.w > 0.0 {
+        let direction = vec2<f32>(cos(in.arc.z), sin(in.arc.z));
+        let extent = abs(direction.x) * in.half_size.x + abs(direction.y) * in.half_size.y;
+        let t = clamp(0.5 + dot(in.local, direction) / (2.0 * max(extent, 0.0001)), 0.0, 1.0);
+        base = mix(in.fill, in.border_color, t);
+    }
+    let fill = vec4<f32>(base.rgb * base.a, base.a);
     let border = vec4<f32>(in.border_color.rgb * in.border_color.a, in.border_color.a);
     var colour = fill;
     let border_width = in.params.z;
