@@ -1,23 +1,33 @@
 //! Rustle: a tiny declarative UI framework.
 
 use std::process;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use rustle_graphics::DrawCommand;
-use rustle_ui::Composition;
+use rustle_geometry::{Offset, Size};
+use rustle_ui::{Composition, DisplayList};
+use rustle_unit::Constraints;
 use rustle_wgpu::Renderer;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
-pub use rustle_foundation::{column, text};
+pub use rustle_foundation::{
+    Modifier, column, column_with, row, row_with, spacer, stack, stack_with, text, text_with,
+};
+pub use rustle_graphics::Color;
 pub use rustle_macros::composable;
 pub use rustle_runtime::{State, remember};
+pub use rustle_unit::{Dp, dp};
+pub use rustle_widgets::{button, button_with};
 
 pub mod prelude {
-    pub use crate::{State, column, composable, remember, text};
+    pub use crate::{
+        Color, Dp, Modifier, State, button, button_with, column, column_with, composable, dp,
+        remember, row, row_with, spacer, stack, stack_with, text, text_with,
+    };
 }
 
 /// Composes `root` and shows it in a native window until closed.
@@ -29,7 +39,9 @@ pub mod prelude {
 pub fn run(root: impl FnMut() + 'static) {
     let mut app = App {
         composition: rustle_ui::composition(root),
-        commands: Vec::new(),
+        display: DisplayList::default(),
+        pointer: None,
+        pressed: None,
         window: None,
         error: None,
     };
@@ -57,7 +69,11 @@ pub fn run(root: impl FnMut() + 'static) {
 
 struct App {
     composition: Composition,
-    commands: Vec<DrawCommand>,
+    display: DisplayList,
+    /// Where the pointer is, in logical pixels, while it is over the window.
+    pointer: Option<Offset>,
+    /// The handler of the region the primary button went down on.
+    pressed: Option<Rc<dyn Fn()>>,
     window: Option<WindowState>,
     error: Option<String>,
 }
@@ -68,6 +84,24 @@ struct WindowState {
 }
 
 impl App {
+    /// Lays the latest tree out for the current window and asks for a redraw.
+    ///
+    /// Text is measured by the renderer, so this waits until the window exists
+    /// and the first pass has produced a tree.
+    fn relayout(&mut self) {
+        let (Some(state), Some(tree)) = (&mut self.window, self.composition.output()) else {
+            return;
+        };
+        let scale_factor = state.window.scale_factor() as f32;
+        let size = state.window.inner_size();
+        let constraints = Constraints::loose(Size::new(
+            size.width as f32 / scale_factor,
+            size.height as f32 / scale_factor,
+        ));
+        self.display = rustle_ui::display_list(tree, constraints, &mut state.renderer);
+        state.window.request_redraw();
+    }
+
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
         self.error = Some(error.to_string());
         event_loop.exit();
@@ -93,8 +127,8 @@ impl ApplicationHandler for App {
         let size = window.inner_size();
         match Renderer::new(instance, window.clone(), (size.width, size.height)) {
             Ok(renderer) => {
-                window.request_redraw();
                 self.window = Some(WindowState { renderer, window });
+                self.relayout();
             }
             Err(error) => self.fail(event_loop, error),
         }
@@ -102,12 +136,7 @@ impl ApplicationHandler for App {
 
     fn user_event(&mut self, _: &ActiveEventLoop, _: ()) {
         if self.composition.recompose() {
-            if let Some(tree) = self.composition.output() {
-                self.commands = rustle_ui::layout(tree);
-            }
-            if let Some(state) = &self.window {
-                state.window.request_redraw();
-            }
+            self.relayout();
         }
     }
 
@@ -119,12 +148,49 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
                 state.renderer.resize(size.width, size.height);
-                state.window.request_redraw();
+                self.relayout();
             }
-            WindowEvent::ScaleFactorChanged { .. } => state.window.request_redraw(),
+            WindowEvent::ScaleFactorChanged { .. } => self.relayout(),
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale_factor = state.window.scale_factor();
+                let pointer = Offset::new(
+                    (position.x / scale_factor) as f32,
+                    (position.y / scale_factor) as f32,
+                );
+                let clickable = self.display.hit_test(pointer).is_some();
+                state.window.set_cursor(if clickable {
+                    CursorIcon::Pointer
+                } else {
+                    CursorIcon::Default
+                });
+                self.pointer = Some(pointer);
+            }
+            WindowEvent::CursorLeft { .. } => self.pointer = None,
+            WindowEvent::MouseInput {
+                state: button_state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let target = self
+                    .pointer
+                    .and_then(|pointer| self.display.hit_test(pointer))
+                    .map(|region| Rc::clone(&region.on_click));
+                match button_state {
+                    ElementState::Pressed => self.pressed = target,
+                    // A click is a press and a release on the same region.
+                    ElementState::Released => {
+                        let pressed = self.pressed.take();
+                        if let (Some(pressed), Some(target)) = (pressed, target)
+                            && Rc::ptr_eq(&pressed, &target)
+                        {
+                            target();
+                        }
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => {
                 let scale_factor = state.window.scale_factor() as f32;
-                match state.renderer.render(&self.commands, scale_factor) {
+                match state.renderer.render(&self.display.commands, scale_factor) {
                     Ok(true) => {}
                     Ok(false) => state.window.request_redraw(),
                     Err(error) => self.fail(event_loop, error),

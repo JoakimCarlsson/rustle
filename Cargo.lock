@@ -1632,7 +1632,11 @@ dependencies = [
 name = "rustle-foundation"
 version = "0.1.0"
 dependencies = [
+ "rustle-geometry",
+ "rustle-graphics",
+ "rustle-text",
  "rustle-ui",
+ "rustle-unit",
 ]
 
 [[package]]
@@ -1642,6 +1646,9 @@ version = "0.1.0"
 [[package]]
 name = "rustle-graphics"
 version = "0.1.0"
+dependencies = [
+ "rustle-geometry",
+]
 
 [[package]]
 name = "rustle-macros"
@@ -1660,29 +1667,37 @@ name = "rustle-text"
 version = "0.1.0"
 dependencies = [
  "rustle-geometry",
- "rustle-unit",
 ]
 
 [[package]]
 name = "rustle-ui"
 version = "0.1.0"
 dependencies = [
+ "rustle-geometry",
  "rustle-graphics",
  "rustle-runtime",
+ "rustle-text",
+ "rustle-unit",
 ]
 
 [[package]]
 name = "rustle-unit"
 version = "0.1.0"
+dependencies = [
+ "rustle-geometry",
+]
 
 [[package]]
 name = "rustle-wgpu"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "glyphon",
  "pollster",
+ "rustle-geometry",
  "rustle-graphics",
  "rustle-shaders",
+ "rustle-text",
  "wgpu",
 ]
 
@@ -1691,6 +1706,7 @@ name = "rustle-widgets"
 version = "0.1.0"
 dependencies = [
  "rustle-foundation",
+ "rustle-graphics",
 ]
 
 [[package]]

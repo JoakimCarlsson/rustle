@@ -7,4 +7,3 @@ license.workspace = true
 
 [dependencies]
 rustle-geometry.workspace = true
-rustle-unit.workspace = true

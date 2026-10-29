@@ -1,20 +1,36 @@
-//! Rustle's UI layer: the node tree, composing into it, and layout.
+//! Rustle's UI layer: the node tree, modifiers, composing into the tree, and layout.
 
 use std::cell::RefCell;
 
-use rustle_graphics::{DrawCommand, LINE_HEIGHT};
+use rustle_graphics::Color;
+use rustle_text::TextStyle;
+
+mod layout;
+mod modifier;
+
+pub use layout::{Children, DisplayList, HitRegion, Layout, LayoutResult, Overlay, display_list};
+pub use modifier::Modifier;
 
 /// A node of the UI tree produced by composition.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Node {
-    Column(Vec<Node>),
-    Text(String),
+pub struct Node {
+    pub modifier: Modifier,
+    pub content: Content,
 }
 
-/// Vertical gap between the children of a column, in logical pixels.
-pub const SPACING: f32 = 8.0;
-/// Offset of the root UI from the top-left corner, in logical pixels.
-pub const PADDING: f32 = 16.0;
+/// What a node is.
+pub enum Content {
+    /// One line of text.
+    Text {
+        content: String,
+        color: Color,
+        style: TextStyle,
+    },
+    /// Children arranged by a layout policy.
+    Layout {
+        policy: Box<dyn Layout>,
+        children: Vec<Node>,
+    },
+}
 
 thread_local! {
     /// One entry per open scope, each holding the children emitted so far.
@@ -68,14 +84,32 @@ pub fn emit(node: Node) {
 
 /// Runs a root composable and returns the resulting UI tree.
 ///
-/// A single root element is returned as is; anything else is wrapped in a column.
+/// A single root element is returned as is; anything else is placed on top of
+/// each other by an [`Overlay`].
 pub fn compose(root: impl FnOnce()) -> Node {
     let mut children = collect(root);
     if children.len() == 1 {
         children.remove(0)
     } else {
-        Node::Column(children)
+        Node {
+            modifier: Modifier::new(),
+            content: Content::Layout {
+                policy: Box::new(Overlay),
+                children,
+            },
+        }
     }
+}
+
+/// Emits a node arranged by `policy` whose children are emitted by `content`.
+pub fn layout(modifier: Modifier, policy: impl Layout + 'static, content: impl FnOnce()) {
+    emit(Node {
+        modifier,
+        content: Content::Layout {
+            policy: Box::new(policy),
+            children: collect(content),
+        },
+    });
 }
 
 /// A composition whose root produces a UI [`Node`] tree.
@@ -84,35 +118,4 @@ pub type Composition = rustle_runtime::Composition<Node>;
 /// Creates a composition that composes `root` into a tree on every pass.
 pub fn composition(mut root: impl FnMut() + 'static) -> Composition {
     Composition::new(move || compose(&mut root))
-}
-
-/// Lays out the tree and returns drawing commands in paint order.
-pub fn layout(root: &Node) -> Vec<DrawCommand> {
-    let mut commands = Vec::new();
-    place(root, PADDING, PADDING, &mut commands);
-    commands
-}
-
-/// Places `node` with its top-left corner at (`x`, `y`) and returns its height.
-fn place(node: &Node, x: f32, y: f32, commands: &mut Vec<DrawCommand>) -> f32 {
-    match node {
-        Node::Text(content) => {
-            commands.push(DrawCommand::Text {
-                x,
-                y,
-                content: content.clone(),
-            });
-            LINE_HEIGHT
-        }
-        Node::Column(children) => {
-            let mut offset = 0.0;
-            for (i, child) in children.iter().enumerate() {
-                if i > 0 {
-                    offset += SPACING;
-                }
-                offset += place(child, x, y + offset, commands);
-            }
-            offset
-        }
-    }
 }

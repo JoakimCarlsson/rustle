@@ -1,7 +1,9 @@
 //! wgpu rendering backend for Rustle.
 //!
 //! The renderer only consumes [`DrawCommand`]s; it knows nothing about
-//! composition or the UI tree.
+//! composition or the UI tree. It also measures text for layout.
+//!
+//! All rectangles are drawn first, then all text, so text is always on top.
 
 use std::error::Error;
 
@@ -9,7 +11,13 @@ use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
-use rustle_graphics::{DrawCommand, FONT_SIZE, LINE_HEIGHT};
+use rustle_geometry::Size;
+use rustle_graphics::DrawCommand;
+use rustle_text::{TextMeasurer, TextStyle};
+
+mod quad;
+
+use quad::Quads;
 
 type SurfaceFactory = Box<
     dyn Fn(
@@ -25,7 +33,6 @@ const BACKGROUND: wgpu::Color = wgpu::Color {
     b: 0.09,
     a: 1.0,
 };
-const TEXT_COLOR: Color = Color::rgb(235, 235, 240);
 
 pub struct Renderer {
     instance: wgpu::Instance,
@@ -38,6 +45,7 @@ pub struct Renderer {
     viewport: Viewport,
     atlas: TextAtlas,
     text_renderer: TextRenderer,
+    quads: Quads,
 
     // Declared before `create_surface`, which may own the window the surface
     // draws into, so the surface is dropped first.
@@ -92,6 +100,8 @@ impl Renderer {
         let text_renderer =
             TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
 
+        let quads = Quads::new(&device, format);
+
         Ok(Self {
             instance,
             device,
@@ -102,6 +112,7 @@ impl Renderer {
             viewport,
             atlas,
             text_renderer,
+            quads,
             surface,
             create_surface,
         })
@@ -151,21 +162,22 @@ impl Renderer {
             },
         );
 
-        let metrics = Metrics::new(FONT_SIZE, LINE_HEIGHT);
-        let buffers: Vec<Buffer> = commands
+        let texts: Vec<_> = commands
             .iter()
-            .map(|command| {
-                let DrawCommand::Text { content, .. } = command;
-                let mut buffer = Buffer::new(&mut self.font_system, metrics);
-                buffer.set_size(None, None);
-                buffer.set_text(
+            .filter_map(|command| match command {
+                DrawCommand::Text {
+                    x,
+                    y,
                     content,
-                    &Attrs::new().family(Family::SansSerif),
-                    Shaping::Advanced,
-                    None,
-                );
-                buffer.shape_until_scroll(&mut self.font_system, false);
-                buffer
+                    color,
+                    font_size,
+                    line_height,
+                } => Some((
+                    (*x, *y),
+                    *color,
+                    shape(&mut self.font_system, content, *font_size, *line_height),
+                )),
+                _ => None,
             })
             .collect();
         let bounds = TextBounds {
@@ -174,17 +186,14 @@ impl Renderer {
             right: self.surface_config.width as i32,
             bottom: self.surface_config.height as i32,
         };
-        let areas = commands.iter().zip(&buffers).map(|(command, buffer)| {
-            let DrawCommand::Text { x, y, .. } = command;
-            TextArea {
-                buffer,
-                left: x * scale_factor,
-                top: y * scale_factor,
-                scale: scale_factor,
-                bounds,
-                default_color: TEXT_COLOR,
-                custom_glyphs: &[],
-            }
+        let areas = texts.iter().map(|((x, y), color, buffer)| TextArea {
+            buffer,
+            left: x * scale_factor,
+            top: y * scale_factor,
+            scale: scale_factor,
+            bounds,
+            default_color: Color::rgba(color.r, color.g, color.b, color.a),
+            custom_glyphs: &[],
         });
         self.text_renderer.prepare(
             &self.device,
@@ -195,6 +204,14 @@ impl Renderer {
             areas,
             &mut self.swash_cache,
         )?;
+
+        let batch = self.quads.prepare(
+            &self.device,
+            &self.queue,
+            commands,
+            (self.surface_config.width, self.surface_config.height),
+            scale_factor,
+        );
 
         let view = frame
             .texture
@@ -219,6 +236,9 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if let Some(batch) = &batch {
+                self.quads.draw(&mut pass, batch);
+            }
             self.text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)?;
         }
@@ -227,4 +247,35 @@ impl Renderer {
         self.atlas.trim();
         Ok(true)
     }
+}
+
+impl TextMeasurer for Renderer {
+    fn measure(&mut self, content: &str, style: &TextStyle) -> Size {
+        let buffer = shape(
+            &mut self.font_system,
+            content,
+            style.font_size,
+            style.line_height,
+        );
+        let (width, lines) = buffer
+            .layout_runs()
+            .fold((0.0_f32, 0_u32), |(width, lines), run| {
+                (width.max(run.line_w), lines + 1)
+            });
+        Size::new(width, lines.max(1) as f32 * style.line_height)
+    }
+}
+
+/// Shapes `content` on unbounded lines, in logical pixels.
+fn shape(font_system: &mut FontSystem, content: &str, font_size: f32, line_height: f32) -> Buffer {
+    let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_height));
+    buffer.set_size(None, None);
+    buffer.set_text(
+        content,
+        &Attrs::new().family(Family::SansSerif),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(font_system, false);
+    buffer
 }
