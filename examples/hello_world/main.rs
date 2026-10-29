@@ -6,6 +6,8 @@
 mod components;
 mod ctx;
 mod dashboard;
+mod gallery;
+mod motion;
 mod overlays;
 mod overview;
 mod pages;
@@ -95,6 +97,8 @@ fn page(ctx: &ctx::Ctx) {
         7 => pages::assistant_page(ctx),
         8 => pages::settings_page(ctx),
         9 => pages::help_page(ctx),
+        11 => gallery::gallery_page(ctx),
+        12 => motion::motion_page(ctx),
         _ => pages::automations_page(ctx),
     }
 }

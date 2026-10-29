@@ -81,6 +81,21 @@ pub fn sidebar(ctx: &Ctx) {
             spacer(Modifier::new().height(20.0));
             if !compact {
                 stack_with(Modifier::new().padding_xy(10.0, 4.0), || {
+                    muted_sized("Showcase", 12.0);
+                });
+            }
+            for (label, glyph, target) in
+                [("Gallery", Icon::Grip, 11), ("Motion", Icon::Activity, 12)]
+            {
+                key(target, || {
+                    let go = ctx.clone();
+                    nav_item(glyph, label, page == target, compact, move || go.go(target));
+                });
+            }
+
+            spacer(Modifier::new().height(20.0));
+            if !compact {
+                stack_with(Modifier::new().padding_xy(10.0, 4.0), || {
                     muted_sized("Documents", 12.0);
                 });
             }

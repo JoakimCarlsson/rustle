@@ -7,7 +7,7 @@ use crate::overview::member_row;
 use crate::ui::{chat, icon_action, panel};
 
 #[composable]
-fn page_frame(heading: &str, description: &str, content: impl FnOnce()) {
+pub fn page_frame(heading: &str, description: &str, content: impl FnOnce()) {
     column_with(Modifier::new().fill_max_width().padding(24.0), || {
         title(heading, 22.0);
         muted_sized(description, 14.0);

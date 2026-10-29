@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rustle::prelude::*;
 
-pub const PAGES: [&str; 11] = [
+pub const PAGES: [&str; 13] = [
     "Dashboard",
     "Overview",
     "Components",
@@ -17,6 +17,8 @@ pub const PAGES: [&str; 11] = [
     "Settings",
     "Get Help",
     "Automations",
+    "Gallery",
+    "Motion",
 ];
 
 /// What is shown over the page, if anything.
