@@ -1,0 +1,9 @@
+[package]
+name = "rustle-navigation"
+description = "Back-stack navigation between screens for Rustle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustle-runtime.workspace = true

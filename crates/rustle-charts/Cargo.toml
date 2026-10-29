@@ -1,0 +1,13 @@
+[package]
+name = "rustle-charts"
+description = "Charts and a QR code for Rustle, drawn on a canvas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+qrcode = { version = "0.14.1", default-features = false }
+rustle-foundation.workspace = true
+rustle-graphics.workspace = true
+rustle-runtime.workspace = true
+rustle-ui.workspace = true
