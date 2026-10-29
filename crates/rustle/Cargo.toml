@@ -1,0 +1,17 @@
+[package]
+name = "rustle"
+description = "A tiny Compose-inspired declarative UI framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rustle-core.workspace = true
+rustle-macros.workspace = true
+rustle-wgpu.workspace = true
+wgpu = "30.0.1"
+winit = "0.30"
+
+[[example]]
+name = "hello_world"
+path = "../../examples/hello_world.rs"

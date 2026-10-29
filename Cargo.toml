@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+rustle-core = { path = "crates/rustle-core" }
+rustle-macros = { path = "crates/rustle-macros" }
+rustle-wgpu = { path = "crates/rustle-wgpu" }
