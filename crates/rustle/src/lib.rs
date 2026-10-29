@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rustle_geometry::{Offset, Rect, Size};
-use rustle_graphics::DrawCommand;
+use rustle_graphics::{Border, DrawCommand};
 use rustle_ui::{Composition, DisplayList, PressEvent, take_focus_request};
 use rustle_unit::Constraints;
 use rustle_wgpu::Renderer;
@@ -213,6 +213,9 @@ struct Carrying {
     payload: Rc<dyn std::any::Any>,
     began: Offset,
     active: bool,
+    /// Where the picked-up area is, and which of the display list's commands draw it.
+    rect: Rect,
+    commands: std::ops::Range<usize>,
 }
 
 /// A drag in progress: its handler, and where its area's corner is.
@@ -496,6 +499,7 @@ impl App {
             .is_some_and(|carrying| carrying.active)
         {
             window.set_cursor(CursorIcon::Grabbing);
+            window.request_redraw();
         }
         // Moving away from where the press began is not a long press.
         if let Some((_, _, began)) = &self.long_press
@@ -536,7 +540,8 @@ impl App {
         }
         if !pressed {
             // Something carried over a drop target is dropped on it.
-            if let Some(carrying) = self.carrying.take()
+            let carrying = self.carrying.take();
+            if let Some(carrying) = carrying
                 && carrying.active
                 && let Some(pointer) = self.pointer
                 && let Some(region) = self.display.drop_target_at(pointer)
@@ -569,6 +574,8 @@ impl App {
                 payload: Rc::clone(&region.payload),
                 began: pointer,
                 active: false,
+                rect: region.rect,
+                commands: region.commands.clone(),
             })
         });
         self.long_press = self.pointer.and_then(|pointer| {
@@ -828,14 +835,20 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 let scale_factor = state.window.scale_factor() as f32;
-                let feedback = feedback(&self.display, self.pointer, &self.pressed);
-                let commands = match feedback {
-                    Some(overlay) => {
+                let carried = carrying_overlay(&self.display, self.carrying.as_ref(), self.pointer);
+                let feedback = if carried.is_some() {
+                    None
+                } else {
+                    feedback(&self.display, self.pointer, &self.pressed)
+                };
+                let commands = match (feedback, carried) {
+                    (None, None) => Cow::Borrowed(self.display.commands.as_slice()),
+                    (feedback, carried) => {
                         let mut commands = self.display.commands.clone();
-                        commands.push(overlay);
+                        commands.extend(feedback);
+                        commands.extend(carried.into_iter().flatten());
                         Cow::Owned(commands)
                     }
-                    None => Cow::Borrowed(self.display.commands.as_slice()),
                 };
                 match state.renderer.render(&commands, scale_factor) {
                     Ok(true) => {}
@@ -861,6 +874,69 @@ fn same_area(a: Rect, b: Rect) -> bool {
         && (a.origin.y - b.origin.y).abs() < 0.5
         && (a.size.width - b.size.width).abs() < 0.5
         && (a.size.height - b.size.height).abs() < 0.5
+}
+
+/// What is drawn on top while something is carried: the drop target under the
+/// pointer lit up, the place it came from dimmed, and a lifted, translucent copy
+/// of it following the pointer.
+fn carrying_overlay(
+    display: &DisplayList,
+    carrying: Option<&Carrying>,
+    pointer: Option<Offset>,
+) -> Option<Vec<DrawCommand>> {
+    let carrying = carrying.filter(|carrying| carrying.active)?;
+    let pointer = pointer?;
+    let mut out = Vec::new();
+    // Every place it can be dropped is outlined; the one it would land on is filled.
+    let over = display.drop_target_at(pointer).map(|target| target.rect);
+    for target in &display.drop_targets {
+        let hot = over.is_some_and(|rect| same_area(rect, target.rect));
+        out.push(DrawCommand::Rect {
+            rect: target.rect,
+            color: Color::rgba(59, 130, 246, if hot { 40 } else { 0 }),
+            corner_radius: 10.0,
+            border: Some(Border {
+                width: if hot { 2.0 } else { 1.0 },
+                color: Color::rgba(59, 130, 246, if hot { 255 } else { 110 }),
+            }),
+        });
+    }
+    out.push(DrawCommand::Rect {
+        rect: carrying.rect,
+        color: Color::rgba(128, 128, 128, 70),
+        corner_radius: 8.0,
+        border: Some(Border {
+            width: 1.0,
+            color: Color::rgba(128, 128, 128, 140),
+        }),
+    });
+    let (dx, dy) = (pointer.x - carrying.began.x, pointer.y - carrying.began.y);
+    let lifted = Rect::new(
+        Offset::new(carrying.rect.origin.x + dx, carrying.rect.origin.y + dy),
+        carrying.rect.size,
+    );
+    out.push(DrawCommand::Shadow {
+        rect: lifted,
+        corner_radius: 8.0,
+        blur: 18.0,
+        color: Color::rgba(0, 0, 0, 90),
+    });
+    out.push(DrawCommand::PushLayer {
+        rect: lifted,
+        alpha: 0.9,
+        rotation: 0.03,
+        scale: 1.04,
+    });
+    if let Some(commands) = display.commands.get(carrying.commands.clone()) {
+        out.extend(
+            commands
+                .iter()
+                .cloned()
+                .map(|command| command.translated(dx, dy)),
+        );
+    }
+    out.push(DrawCommand::PopLayer);
+    Some(out)
 }
 
 /// The tint drawn over the clickable region under the pointer: lighter while

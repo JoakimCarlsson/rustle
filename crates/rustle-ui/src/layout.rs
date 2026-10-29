@@ -377,6 +377,9 @@ pub struct PressRegion {
 pub struct DragSourceRegion {
     pub rect: Rect,
     pub payload: Rc<dyn std::any::Any>,
+    /// The drawing commands of the area, as indices into [`DisplayList::commands`],
+    /// so what is being dragged can be drawn again under the pointer.
+    pub commands: std::ops::Range<usize>,
 }
 
 /// An area something dragged can be dropped on, cut to what is visible.
@@ -1254,11 +1257,15 @@ impl<'a> Painter<'a> {
                 self.pending_end = None;
             }
             Paint::DragSource { payload, inner } => {
+                let start = self.list.commands.len();
+                let index = self.list.drag_sources.len();
                 self.list.drag_sources.push(DragSourceRegion {
                     rect: self.visible(rect),
                     payload: Rc::clone(payload),
+                    commands: start..start,
                 });
                 self.paint(inner, origin);
+                self.list.drag_sources[index].commands.end = self.list.commands.len();
             }
             Paint::DropTarget { on_drop, inner } => {
                 self.list.drop_targets.push(DropTargetRegion {
