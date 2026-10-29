@@ -1,7 +1,7 @@
 .PHONY: run fmt lint
 
 run:
-	cargo run --example hello_world
+	cargo run --release --example hello_world
 
 fmt:
 	cargo fmt --all

@@ -24,3 +24,11 @@ rustle-ui = { path = "crates/rustle-ui" }
 rustle-unit = { path = "crates/rustle-unit" }
 rustle-wgpu = { path = "crates/rustle-wgpu" }
 rustle-widgets = { path = "crates/rustle-widgets" }
+
+# Layout, text shaping and drawing run every animated frame, so an unoptimized
+# build misses the frame deadline and animations stutter.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
