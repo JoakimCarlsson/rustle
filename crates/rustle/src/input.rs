@@ -2,9 +2,14 @@
 
 use std::cell::RefCell;
 
-use rustle_ui::{Clipboard, Key, KeyEvent, Modifiers};
-use winit::event::{ElementState, KeyEvent as WinitKeyEvent};
-use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
+use rustle_ui::{
+    Clipboard, Key, KeyCode, KeyEvent, KeyLocation, Modifiers, PhysicalKey, PointerButton,
+};
+use winit::event::{ElementState, KeyEvent as WinitKeyEvent, MouseButton};
+use winit::keyboard::{
+    Key as WinitKey, KeyLocation as WinitKeyLocation, ModifiersState, NamedKey,
+    PhysicalKey as WinitPhysicalKey,
+};
 
 /// The system clipboard, opened when first used.
 pub(crate) struct SystemClipboard {
@@ -63,15 +68,60 @@ pub(crate) fn key_event(event: &WinitKeyEvent, modifiers: Modifiers) -> KeyEvent
             NamedKey::PageUp => Key::PageUp,
             NamedKey::PageDown => Key::PageDown,
             NamedKey::Space => Key::Character(" ".to_string()),
-            _ => Key::Other,
+            NamedKey::Insert => Key::Insert,
+            NamedKey::PrintScreen => Key::PrintScreen,
+            NamedKey::ContextMenu => Key::ContextMenu,
+            NamedKey::Pause => Key::Pause,
+            NamedKey::Help => Key::Help,
+            NamedKey::Clear => Key::Clear,
+            NamedKey::CapsLock => Key::CapsLock,
+            NamedKey::NumLock => Key::NumLock,
+            NamedKey::ScrollLock => Key::ScrollLock,
+            NamedKey::Shift => Key::Shift,
+            NamedKey::Control => Key::Control,
+            NamedKey::Alt => Key::Alt,
+            NamedKey::Super | NamedKey::Meta => Key::Super,
+            other => function_key(*other).map_or(Key::Other, Key::F),
         },
         WinitKey::Character(text) => Key::Character(text.to_string()),
         _ => Key::Other,
     };
+    let physical_key = match event.physical_key {
+        WinitPhysicalKey::Code(code) => KeyCode::from_name(&format!("{code:?}"))
+            .map_or(PhysicalKey::Unidentified, PhysicalKey::Code),
+        WinitPhysicalKey::Unidentified(_) => PhysicalKey::Unidentified,
+    };
     KeyEvent {
         key,
+        physical_key,
+        location: match event.location {
+            WinitKeyLocation::Standard => KeyLocation::Standard,
+            WinitKeyLocation::Left => KeyLocation::Left,
+            WinitKeyLocation::Right => KeyLocation::Right,
+            WinitKeyLocation::Numpad => KeyLocation::Numpad,
+        },
         text: event.text.as_ref().map(ToString::to_string),
         modifiers,
         pressed: event.state == ElementState::Pressed,
+        repeat: event.repeat,
+    }
+}
+
+/// The number of a function key such as F5, up to F35.
+fn function_key(named: NamedKey) -> Option<u8> {
+    format!("{named:?}")
+        .strip_prefix('F')
+        .and_then(|number| number.parse().ok())
+}
+
+/// Turns winit's mouse button into Rustle's.
+pub(crate) fn pointer_button(button: MouseButton) -> PointerButton {
+    match button {
+        MouseButton::Left => PointerButton::Primary,
+        MouseButton::Right => PointerButton::Secondary,
+        MouseButton::Middle => PointerButton::Middle,
+        MouseButton::Back => PointerButton::Back,
+        MouseButton::Forward => PointerButton::Forward,
+        MouseButton::Other(number) => PointerButton::Other(number),
     }
 }

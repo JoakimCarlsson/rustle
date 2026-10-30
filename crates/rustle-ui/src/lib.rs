@@ -8,6 +8,7 @@ use rustle_graphics::{Color, DrawCommand, ImageData};
 use rustle_text::{TextSpan, TextStyle};
 
 mod canvas;
+mod cursor;
 mod input;
 mod layout;
 mod modifier;
@@ -15,18 +16,20 @@ mod scroll;
 mod semantics;
 
 pub use canvas::Canvas;
+pub use cursor::CursorIcon;
 pub use input::{
-    Clipboard, DropHandler, Focus, Key, KeyEvent, KeyHandler, Modifiers, PressEvent, clipboard,
+    Clipboard, DropHandler, Focus, Key, KeyCode, KeyEvent, KeyHandler, KeyLocation, Modifiers,
+    PhysicalKey, PointerButton, PointerEvent, PointerPhase, Preedit, PressEvent, clipboard,
     remember_focus, set_clipboard, take_focus_request,
 };
 pub use layout::ContentScale;
 pub use layout::{
-    BoxAlignment, Children, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
-    FileDropRegion, FocusRegion, HitRegion, HoverRegion, Layout, LayoutResult, Overlay,
-    PressRegion, ScrollRegion, SemanticsNode, display_list,
+    BoxAlignment, ButtonRegion, Children, CursorRegion, DisplayList, DragRegion, DragSourceRegion,
+    DropTargetRegion, FileDropRegion, FocusRegion, HitRegion, HoverRegion, KeyRegion, Layout,
+    LayoutResult, Overlay, PressRegion, ScrollRegion, SemanticsNode, display_list,
 };
 pub use modifier::Modifier;
-pub use scroll::{ScrollState, remember_scroll_state};
+pub use scroll::{ScrollState, ScrollbarStyle, ScrollbarVisibility, remember_scroll_state};
 pub use semantics::{Role, Semantics};
 
 /// Which way layouts run: the start of a row is on the left in `Ltr` and on the right in `Rtl`.
@@ -70,12 +73,26 @@ pub struct TextEditing {
     pub caret: Option<usize>,
     /// The selected characters, as a start and end index.
     pub selection: Option<(usize, usize)>,
+    /// A range of characters to underline, as a start and end index: the input method's
+    /// composition text, which is part of the content while it is being composed.
+    pub underline: Option<(usize, usize)>,
+    /// Set on the field input goes to: where its caret is, as a character index (shown or
+    /// not, so it does not blink). The caret's place in the window is then reported in
+    /// [`DisplayList::ime_area`] for the input method's popup, as a one-pixel-wide
+    /// rectangle from the start of `underline` (or the caret) to the caret.
+    pub ime_caret: Option<usize>,
     pub caret_color: Color,
     pub selection_color: Color,
+    /// Which side of a soft wrap the caret is on, when it is at the end of a wrapped line.
+    pub caret_affinity: rustle_text::Affinity,
     /// Filled in by layout: where each character boundary is, one more than
     /// there are characters, so a pointer position can be turned into a
-    /// character index. Lines end at line breaks and do not wrap.
+    /// character index. Lines end at line breaks and where the text wraps.
     pub boundaries: Rc<RefCell<Vec<CharPosition>>>,
+    /// Filled in by layout along with `boundaries`: the shaped text with its line
+    /// breaks, for caret movement by visual line and for hit testing. Offsets in it are
+    /// bytes, while the indices of this struct count characters.
+    pub layout: Rc<RefCell<Option<Rc<rustle_text::TextLayout>>>>,
     /// Called after layout has filled in `boundaries`, for example to scroll the caret into view.
     pub on_layout: Option<Rc<dyn Fn()>>,
 }
@@ -93,6 +110,8 @@ pub enum Content {
     RichText {
         spans: Vec<TextSpan>,
         style: TextStyle,
+        /// Set to show a selection over the text and to learn its layout; the caret is not drawn.
+        editing: Option<TextEditing>,
     },
     /// Whatever `draw` paints, given the size the node is laid out at.
     Canvas {

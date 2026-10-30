@@ -1,18 +1,19 @@
 //! A single-line text field: editing, caret, selection and clipboard.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use rustle_geometry::Offset;
-use rustle_graphics::Color;
 use rustle_runtime::{State, group, launched_effect, remember};
+use rustle_text::{Affinity, TextLayout, TextWrap};
 use rustle_ui::{
     CharPosition, Content, Focus, Key, KeyEvent, Modifier, Node, Role, ScrollState, Semantics,
     TextEditing, clipboard, emit, remember_focus, remember_scroll_state,
 };
 
 use crate::LOCAL_TEXT_STYLE;
+use crate::selection::{LOCAL_SELECTION, SELECTION_COLOR, emit_block};
 
 /// The text of a field with its caret and selection, counted in characters.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -127,16 +128,25 @@ pub struct TextFieldOptions {
     pub read_only: bool,
     /// Enter starts a new line, and Up and Down move between lines.
     pub multiline: bool,
+    /// A multiline field keeps long lines whole and scrolls sideways instead of
+    /// wrapping them at the field's width. Home and End then go to the ends of the
+    /// line in the text; wrapped, they go to the ends of the visual line.
+    pub no_wrap: bool,
 }
 
-/// The boundary on `line` nearest to `x`, as a character index.
-fn nearest_on_line(positions: &[CharPosition], line: u32, x: f32) -> usize {
-    positions
-        .iter()
-        .enumerate()
-        .filter(|(_, position)| position.line == line)
-        .min_by(|(_, a), (_, b)| (a.x - x).abs().total_cmp(&(b.x - x).abs()))
-        .map_or(0, |(index, _)| index)
+type LayoutCell = Rc<RefCell<Option<Rc<TextLayout>>>>;
+
+/// The character index of byte `byte` of `text`.
+fn char_index(text: &str, byte: usize) -> usize {
+    text.get(..byte)
+        .map_or_else(|| text.chars().count(), |s| s.chars().count())
+}
+
+/// The byte of character `index` of `text`.
+fn value_byte(text: &str, index: usize) -> usize {
+    text.char_indices()
+        .nth(index)
+        .map_or(text.len(), |(byte, _)| byte)
 }
 
 /// Scrolls `scroll` the least that brings `position`, with `margin` after it, into view.
@@ -153,10 +163,16 @@ fn follow(scroll: &ScrollState, position: f32, margin: f32) {
     }
 }
 
-/// The modifiers that give a field's text room to be longer than the field:
-/// it fills the field and scrolls, without wrapping, along the axes it can grow.
-fn scrolling(multiline: bool, across: &ScrollState, down: &ScrollState) -> Modifier {
-    if multiline {
+/// The modifiers that give a field's text room to be longer than the field: it
+/// scrolls along the axes it can grow. A wrapping multiline field only scrolls
+/// down, since its lines are as wide as the field; one that does not wrap, and a
+/// single line, also scroll across. Read-only text is as big as its content.
+fn scrolling(options: TextFieldOptions, across: &ScrollState, down: &ScrollState) -> Modifier {
+    if options.read_only && options.multiline {
+        Modifier::new()
+    } else if options.multiline && !options.no_wrap {
+        Modifier::new().fill_max_size().vertical_scroll(down)
+    } else if options.multiline {
         Modifier::new()
             .fill_max_size()
             .vertical_scroll(down)
@@ -174,6 +190,10 @@ pub struct TextFieldState {
     value: State<TextFieldValue>,
     /// What Enter does in a single-line field, set each pass by whoever owns the field.
     submit: SubmitHandler,
+    /// Which side of a wrap the caret is on when it is at the end of a wrapped line.
+    affinity: State<Affinity>,
+    /// The x Up and Down keep to while they move the caret through shorter lines.
+    goal_x: Rc<Cell<Option<f32>>>,
 }
 
 impl TextFieldState {
@@ -218,15 +238,11 @@ impl TextFieldState {
 
     /// Handles a key event aimed at the field. Returns whether it was used.
     /// A read-only field moves, selects and copies but does not change.
-    fn handle_key(
-        &self,
-        event: &KeyEvent,
-        options: TextFieldOptions,
-        boundaries: &RefCell<Vec<CharPosition>>,
-    ) -> bool {
+    fn handle_key(&self, event: &KeyEvent, options: TextFieldOptions, layout: &LayoutCell) -> bool {
         let TextFieldOptions {
             read_only,
             multiline,
+            ..
         } = options;
         if !event.pressed {
             return false;
@@ -235,6 +251,9 @@ impl TextFieldState {
         let command = event.modifiers.command();
         let mut handled = true;
         let mut submit: Option<Rc<dyn Fn()>> = None;
+        // Where the caret ends up relative to a wrap, and the column Up and Down keep to.
+        let mut affinity = Affinity::Downstream;
+        let mut goal_x = None;
         self.edit(|value| match &event.key {
             Key::ArrowLeft => match value.selection() {
                 Some((start, _)) if !shift => value.move_to(start, false),
@@ -244,23 +263,42 @@ impl TextFieldState {
                 Some((_, end)) if !shift => value.move_to(end, false),
                 _ => value.move_to(value.cursor + 1, shift),
             },
-            Key::Home if multiline => value.move_to(value.line_start(), shift),
-            Key::End if multiline => value.move_to(value.line_end(), shift),
+            Key::Home | Key::End if multiline && !command => {
+                let home = event.key == Key::Home;
+                match layout.borrow().clone() {
+                    Some(layout) => {
+                        let (byte, at) = (value.byte(value.cursor), self.affinity.get());
+                        let (to, side) = if home {
+                            layout.line_start(byte, at)
+                        } else {
+                            layout.line_end(byte, at)
+                        };
+                        value.move_to(char_index(layout.text(), to), shift);
+                        affinity = side;
+                    }
+                    None if home => value.move_to(value.line_start(), shift),
+                    None => value.move_to(value.line_end(), shift),
+                }
+            }
             Key::Home => value.move_to(0, shift),
             Key::End => value.move_to(value.length(), shift),
             Key::ArrowUp | Key::ArrowDown if multiline => {
-                let positions = boundaries.borrow();
-                let Some(here) = positions.get(value.cursor).copied() else {
+                let Some(layout) = layout.borrow().clone() else {
                     return;
                 };
-                let last_line = positions.last().map_or(0, |last| last.line);
                 let up = event.key == Key::ArrowUp;
-                if (up && here.line == 0) || (!up && here.line >= last_line) {
-                    value.move_to(if up { 0 } else { value.length() }, shift);
-                } else {
-                    let target = if up { here.line - 1 } else { here.line + 1 };
-                    let index = nearest_on_line(&positions, target, here.x);
-                    value.move_to(index, shift);
+                let (byte, at) = (value.byte(value.cursor), self.affinity.get());
+                let x = self
+                    .goal_x
+                    .get()
+                    .unwrap_or_else(|| layout.caret(byte, at).x);
+                goal_x = Some(x);
+                match layout.move_vertically(byte, at, if up { -1 } else { 1 }, Some(x)) {
+                    Some((to, side)) => {
+                        value.move_to(char_index(layout.text(), to), shift);
+                        affinity = side;
+                    }
+                    None => value.move_to(if up { 0 } else { value.length() }, shift),
                 }
             }
             Key::Enter if multiline && !read_only => value.insert("\n", true),
@@ -315,6 +353,12 @@ impl TextFieldState {
                 _ => handled = false,
             },
         });
+        if handled {
+            if self.affinity.get() != affinity {
+                self.affinity.set(affinity);
+            }
+            self.goal_x.set(goal_x);
+        }
         // Run after the edit, so the handler sees the field as it is now.
         if let Some(submit) = submit {
             submit();
@@ -335,6 +379,8 @@ pub fn remember_text_field_state(initial: &str) -> TextFieldState {
                 anchor: end,
             }),
             submit: remember(Rc::default).get(),
+            affinity: remember(|| Affinity::Downstream),
+            goal_x: remember(Rc::default).get(),
         }
     })
 }
@@ -358,23 +404,53 @@ pub fn basic_text_field(modifier: Modifier, state: &TextFieldState) {
 }
 
 /// Emits an editable field of several lines: Enter starts a new one, and lines
-/// do not wrap. Size it with `modifier`; it clips what does not fit.
+/// longer than the field wrap at its width. Up and Down move by visual line, Home
+/// and End go to the ends of the visual line, and the field scrolls down to keep
+/// the caret in view. Size it with `modifier`; it clips what does not fit. See
+/// [`basic_text_area_no_wrap`] for lines that stay whole.
 #[track_caller]
 pub fn basic_text_area(modifier: Modifier, state: &TextFieldState) {
     group(|| {
         let focus = remember_focus();
         let options = TextFieldOptions {
-            read_only: false,
             multiline: true,
+            ..TextFieldOptions::default()
         };
         basic_text_field_in(modifier.clip(), Modifier::new(), state, &focus, options);
     });
 }
 
-/// Emits text the user can select and copy but not change.
+/// Like [`basic_text_area`], but lines do not wrap: a long line makes the field
+/// scroll sideways to keep the caret in view.
+#[track_caller]
+pub fn basic_text_area_no_wrap(modifier: Modifier, state: &TextFieldState) {
+    group(|| {
+        let focus = remember_focus();
+        let options = TextFieldOptions {
+            multiline: true,
+            no_wrap: true,
+            ..TextFieldOptions::default()
+        };
+        basic_text_field_in(modifier.clip(), Modifier::new(), state, &focus, options);
+    });
+}
+
+/// Emits text the user can select and copy but not change. Long lines wrap at the
+/// width available. Inside a [`selection_container`](crate::selection_container)
+/// the text is one block of a selection that spans several blocks.
 #[track_caller]
 pub fn selectable_text(modifier: Modifier, content: &str) {
     group(|| {
+        if let Some(scope) = LOCAL_SELECTION.current() {
+            let style = LOCAL_TEXT_STYLE.current();
+            let text = content.to_string();
+            emit_block(&scope, modifier, text.clone(), |editing| Content::Text {
+                content: text,
+                style,
+                editing: Some(editing),
+            });
+            return;
+        }
         let state = remember_text_field_state(content);
         if state.text() != content {
             state.set_text(content);
@@ -383,6 +459,7 @@ pub fn selectable_text(modifier: Modifier, content: &str) {
         let options = TextFieldOptions {
             read_only: true,
             multiline: true,
+            ..TextFieldOptions::default()
         };
         basic_text_field_in(modifier, Modifier::new(), &state, &focus, options);
     });
@@ -405,30 +482,69 @@ pub fn basic_text_field_in(
     let TextFieldOptions {
         read_only,
         multiline,
+        no_wrap,
     } = options;
     group(|| {
         let boundaries = remember(|| Rc::new(RefCell::new(Vec::<CharPosition>::new()))).get();
+        let layout: LayoutCell = remember(|| Rc::new(RefCell::new(None))).get();
         let value = state.value();
+        // Only a multiline field that wraps breaks lines at its width.
         let style = LOCAL_TEXT_STYLE.current();
+        let style = if multiline && !no_wrap {
+            style
+        } else {
+            style.wrap(TextWrap::None)
+        };
+
+        // An input method's composition is shown inline at the caret, underlined, and is not
+        // part of the value until the input method commits it.
+        let focused = focus.is_focused();
+        let preedit = focus
+            .preedit()
+            .filter(|preedit| focused && !read_only && !preedit.text.is_empty());
+        let (shown, underline, shown_caret) = match &preedit {
+            Some(preedit) => {
+                let mut shown = value.text.clone();
+                shown.insert_str(value.byte(value.cursor), &preedit.text);
+                let length = preedit.text.chars().count();
+                let inside = preedit
+                    .cursor
+                    .map(|(_, end)| preedit.text[..end.min(preedit.text.len())].chars().count());
+                (
+                    shown,
+                    Some((value.cursor, value.cursor + length)),
+                    Some(value.cursor + inside.unwrap_or(length)),
+                )
+            }
+            None => (value.text.clone(), None, Some(value.cursor)),
+        };
+        let composing = preedit.is_some();
+        // A composition hides the caret when the input method gives no cursor in it.
+        let caret_hidden = composing && preedit.as_ref().is_some_and(|p| p.cursor.is_none());
+        let shown_caret = shown_caret.unwrap_or(value.cursor);
 
         // Text longer than the field scrolls to keep the caret in view. This runs
         // after layout, when the caret's position is known.
         let across = remember_scroll_state();
         let down = remember_scroll_state();
         let on_layout: Rc<dyn Fn()> = {
-            let (state, focus) = (state.clone(), focus.clone());
-            let (boundaries, across, down) = (Rc::clone(&boundaries), across.clone(), down.clone());
-            let line_height = style.line_height;
+            let focus = focus.clone();
+            let (layout, across, down) = (Rc::clone(&layout), across.clone(), down.clone());
+            let affinity = state.affinity.clone();
             Rc::new(move || {
                 if !focus.is_focused() {
                     return;
                 }
-                let cursor = state.value().cursor;
-                if let Some(caret) = boundaries.borrow().get(cursor).copied() {
+                let Some(layout) = layout.borrow().clone() else {
+                    return;
+                };
+                let byte = value_byte(layout.text(), shown_caret);
+                let caret = layout.caret(byte, affinity.get());
+                if !multiline || no_wrap {
                     follow(&across, caret.x, 8.0);
-                    if multiline {
-                        follow(&down, caret.line as f32 * line_height, line_height);
-                    }
+                }
+                if multiline {
+                    follow(&down, caret.y, caret.height);
                 }
             })
         };
@@ -436,7 +552,6 @@ pub fn basic_text_field_in(
         // The caret blinks while the field has focus, and shows solid after any edit or move.
         let caret_on = remember(|| true);
         let blink = caret_on.clone();
-        let focused = focus.is_focused();
         launched_effect(
             (focused, value.cursor, value.text.len()),
             move |scope| async move {
@@ -453,15 +568,18 @@ pub fn basic_text_field_in(
         );
 
         let keys = state.clone();
-        let key_boundaries = Rc::clone(&boundaries);
-        let line_height = style.line_height;
+        let key_layout = Rc::clone(&layout);
+        // The character index and side of a wrap nearest to a point in the text.
         let nearest = {
-            let boundaries = Rc::clone(&boundaries);
+            let layout = Rc::clone(&layout);
             move |at: Offset| {
-                let positions = boundaries.borrow();
-                let last_line = positions.last().map_or(0, |last| last.line);
-                let line = ((at.y / line_height).floor().max(0.0) as u32).min(last_line);
-                nearest_on_line(&positions, line, at.x)
+                layout
+                    .borrow()
+                    .clone()
+                    .map_or((0, Affinity::Downstream), |layout| {
+                        let (byte, side) = layout.hit_test_with_affinity(at);
+                        (char_index(layout.text(), byte), side)
+                    })
             }
         };
         let (presses, drags) = (state.clone(), state.clone());
@@ -473,12 +591,16 @@ pub fn basic_text_field_in(
                     .focus(focus),
             )
             .focusable(focus, move |event| {
-                keys.handle_key(event, options, &key_boundaries)
+                keys.handle_key(event, options, &key_layout)
             })
             .chain(inner)
-            .chain(scrolling(multiline, &across, &down))
+            .chain(scrolling(options, &across, &down))
             .on_press(move |press| {
-                let index = press_at(press.position);
+                let (index, side) = press_at(press.position);
+                if presses.affinity.get() != side {
+                    presses.affinity.set(side);
+                }
+                presses.goal_x.set(None);
                 presses.edit(|value| match press.click_count {
                     2 => value.select_word(index),
                     3 => {
@@ -489,21 +611,29 @@ pub fn basic_text_field_in(
                 });
             })
             .on_drag(move |at| {
-                let index = drag_to(at);
+                let (index, side) = drag_to(at);
+                if drags.affinity.get() != side {
+                    drags.affinity.set(side);
+                }
                 drags.edit(|value| value.move_to(index, true));
             });
 
         emit(Node {
             modifier,
             content: Content::Text {
-                content: value.text.clone(),
+                content: shown,
                 style,
                 editing: Some(TextEditing {
-                    caret: (focused && caret_on.get() && !read_only).then_some(value.cursor),
-                    selection: value.selection(),
+                    caret: (focused && caret_on.get() && !read_only && !caret_hidden)
+                        .then_some(shown_caret),
+                    selection: if composing { None } else { value.selection() },
+                    underline,
+                    ime_caret: (focused && !read_only).then_some(shown_caret),
                     caret_color: style.color,
-                    selection_color: Color::rgba(74, 96, 214, 140),
+                    selection_color: SELECTION_COLOR,
+                    caret_affinity: state.affinity.get(),
                     boundaries,
+                    layout,
                     on_layout: Some(on_layout),
                 }),
             },

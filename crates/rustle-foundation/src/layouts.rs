@@ -155,7 +155,7 @@ impl Layout for Reveal {
 /// have started. For popups, menus and tooltips. Position it with `align`.
 #[track_caller]
 pub fn floating(modifier: Modifier, content: impl FnOnce()) {
-    layout(modifier.z_index(1), Floating, content);
+    layout(modifier.z_index_unclipped(1), Floating, content);
 }
 
 /// Measures children without limits and takes no space itself.

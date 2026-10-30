@@ -6,12 +6,14 @@
 mod layouts;
 mod lazy;
 mod linear;
+mod selection;
 mod text;
 mod text_field;
 
 pub use layouts::{backdrop, floating, flow_row, reveal};
 pub use lazy::{
-    LazyListState, lazy_column, lazy_list, lazy_row, lazy_vertical_grid, remember_lazy_list_state,
+    ItemAlign, LazyListState, lazy_column, lazy_list, lazy_list_keyed, lazy_row,
+    lazy_vertical_grid, remember_lazy_list_state,
 };
 pub use linear::{
     Alignment, Arrangement, column, column_arranged, column_with, row, row_arranged, row_with,
@@ -24,11 +26,16 @@ pub use text::{
 
 pub use rustle_ui::Modifier;
 pub use rustle_ui::{
-    BoxAlignment, Canvas, ContentScale, Focus, Key, KeyEvent, LOCAL_LAYOUT_DIRECTION,
-    LayoutDirection, Modifiers, Role, ScrollState, Semantics, canvas, is_rtl, remember_focus,
-    remember_scroll_state,
+    BoxAlignment, Canvas, ContentScale, Focus, Key, KeyCode, KeyEvent, KeyLocation,
+    LOCAL_LAYOUT_DIRECTION, LayoutDirection, Modifiers, PhysicalKey, PointerButton, PointerEvent,
+    PointerPhase, Preedit, PressEvent, Role, ScrollState, ScrollbarStyle, ScrollbarVisibility,
+    Semantics, canvas, is_rtl, remember_focus, remember_scroll_state,
+};
+pub use selection::{
+    SelectionPoint, SelectionState, remember_selection_state, selection_container,
+    selection_container_with,
 };
 pub use text_field::{
-    TextFieldOptions, TextFieldState, TextFieldValue, basic_text_area, basic_text_field,
-    basic_text_field_in, remember_text_field_state, selectable_text,
+    TextFieldOptions, TextFieldState, TextFieldValue, basic_text_area, basic_text_area_no_wrap,
+    basic_text_field, basic_text_field_in, remember_text_field_state, selectable_text,
 };

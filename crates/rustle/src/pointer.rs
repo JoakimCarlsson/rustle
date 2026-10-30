@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rustle_geometry::{Offset, Rect};
-use rustle_ui::{DisplayList, PressEvent};
+use rustle_ui::{DisplayList, PointerButton, PointerEvent, PointerPhase, PressEvent};
 use winit::window::CursorIcon;
 
 use crate::app::{App, Carrying, FollowEntry, HoverEntry};
@@ -63,12 +63,7 @@ impl App {
             return;
         };
         let before = hover_target(&self.display, self.pointer);
-        let clickable = self.display.hit_test(pointer).is_some();
-        window.set_cursor(if clickable {
-            CursorIcon::Pointer
-        } else {
-            CursorIcon::Default
-        });
+        window.set_cursor(self.cursor_icon_at(pointer));
         self.pointer = Some(pointer);
         self.update_following();
         if let Some(carrying) = &mut self.carrying
@@ -93,11 +88,115 @@ impl App {
             self.long_press = None;
         }
         self.update_hover();
+        self.drag_buttons(pointer);
         if let Some((on_drag, origin, _)) = self.dragging.clone() {
             on_drag(Offset::new(pointer.x - origin.x, pointer.y - origin.y));
         }
         if before != hover_target(&self.display, self.pointer) {
             window.request_redraw();
+        }
+    }
+
+    /// A pointer button went down or up where the pointer is: tells the areas that react to
+    /// `button` (see [`Modifier::on_pointer_button`](rustle_ui::Modifier::on_pointer_button)),
+    /// and for the primary button also does clicks, focus, drags and long presses.
+    pub(crate) fn button_input(&mut self, button: PointerButton, pressed: bool) {
+        let Some(pointer) = self.pointer else {
+            if button == PointerButton::Primary {
+                self.primary_button(pressed);
+            }
+            return;
+        };
+        if pressed {
+            if button == PointerButton::Primary {
+                self.primary_button(true);
+            }
+            let click_count = match (button, self.last_press) {
+                (PointerButton::Primary, Some((_, _, count))) => count,
+                _ => 1,
+            };
+            if let Some(region) = self.display.button_at(pointer, button) {
+                let (rect, on_event) = (region.rect, Rc::clone(&region.on_event));
+                let event = self.pointer_event(button, PointerPhase::Press, pointer, region.origin);
+                self.held_buttons.retain(|held| held.button != button);
+                self.held_buttons.push(HeldButton {
+                    button,
+                    rect,
+                    click_count,
+                });
+                on_event(&PointerEvent {
+                    click_count,
+                    ..event
+                });
+            }
+            return;
+        }
+        if let Some(index) = self
+            .held_buttons
+            .iter()
+            .position(|held| held.button == button)
+        {
+            let held = self.held_buttons.remove(index);
+            // The handler that runs is the current one for the area, not the one from the press.
+            let current = self
+                .display
+                .buttons
+                .iter()
+                .rev()
+                .find(|region| region.button == button && same_area(region.rect, held.rect))
+                .map(|region| (Rc::clone(&region.on_event), region.origin));
+            if let Some((on_event, origin)) = current {
+                let event = |phase| PointerEvent {
+                    click_count: held.click_count,
+                    ..self.pointer_event(button, phase, pointer, origin)
+                };
+                on_event(&event(PointerPhase::Release));
+                let over = self
+                    .display
+                    .button_at(pointer, button)
+                    .is_some_and(|region| same_area(region.rect, held.rect));
+                if over {
+                    on_event(&event(PointerPhase::Click));
+                }
+            }
+        }
+        if button == PointerButton::Primary {
+            self.primary_button(false);
+        }
+    }
+
+    /// An event for `button` at `pointer` in an area whose top-left corner is `origin`.
+    fn pointer_event(
+        &self,
+        button: PointerButton,
+        phase: PointerPhase,
+        pointer: Offset,
+        origin: Offset,
+    ) -> PointerEvent {
+        PointerEvent {
+            button,
+            phase,
+            position: Offset::new(pointer.x - origin.x, pointer.y - origin.y),
+            window_position: pointer,
+            modifiers: self.modifiers,
+            click_count: 1,
+        }
+    }
+
+    /// Tells the areas whose buttons are held that the pointer moved.
+    fn drag_buttons(&self, pointer: Offset) {
+        for held in &self.held_buttons {
+            let current =
+                self.display.buttons.iter().rev().find(|region| {
+                    region.button == held.button && same_area(region.rect, held.rect)
+                });
+            if let Some(region) = current {
+                let event = PointerEvent {
+                    click_count: held.click_count,
+                    ..self.pointer_event(held.button, PointerPhase::Drag, pointer, region.origin)
+                };
+                (Rc::clone(&region.on_event))(&event);
+            }
         }
     }
 
@@ -191,6 +290,8 @@ impl App {
             on_press(PressEvent {
                 position,
                 click_count,
+                button: PointerButton::Primary,
+                modifiers: self.modifiers,
             });
         }
     }
@@ -211,6 +312,14 @@ impl App {
         self.last_press = Some((now, at, count));
         count
     }
+}
+
+/// A pointer button that is down on an area that reacts to it.
+pub(crate) struct HeldButton {
+    pub(crate) button: PointerButton,
+    /// The area it went down on, which is how its handler is found again after relayout.
+    pub(crate) rect: Rect,
+    pub(crate) click_count: u32,
 }
 
 /// Identifies the clickable region under `pointer`, to tell when it changes.

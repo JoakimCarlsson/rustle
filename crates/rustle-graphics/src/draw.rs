@@ -22,6 +22,18 @@ pub enum TextAlign {
     Right,
 }
 
+/// Where lines of text break when they are wider than the space they have.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum TextWrap {
+    /// Between words, and inside a word only if it is wider than a whole line.
+    #[default]
+    Word,
+    /// Between any two characters.
+    Glyph,
+    /// Never: lines end only at line breaks and may be wider than the space they have.
+    None,
+}
+
 /// Which family of fonts text is set in.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum FontFamily {
@@ -30,7 +42,29 @@ pub enum FontFamily {
     Serif,
     Monospace,
     /// An installed font by name, falling back to the default if it is missing.
+    /// Use [`FontFamily::named`] to choose a family by a name only known at run time.
     Named(&'static str),
+}
+
+impl FontFamily {
+    /// An installed (or registered) font family by a name that is not a literal.
+    /// The name is kept for the rest of the program, once per distinct name, so
+    /// the family stays `Copy`.
+    pub fn named(name: &str) -> Self {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+        static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+        let mut names = NAMES
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(known) = names.get(name) {
+            return Self::Named(known);
+        }
+        let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+        names.insert(leaked);
+        Self::Named(leaked)
+    }
 }
 
 /// A run of text in one style, within a line of rich text.
@@ -41,6 +75,44 @@ pub struct StyledSpan {
     /// From 100 (thin) to 900 (black); 400 is normal.
     pub font_weight: u16,
     pub font_family: FontFamily,
+    /// Slanted letterforms (the font's italic, or an oblique if it has none).
+    pub italic: bool,
+    /// A line under the run, drawn by layout in the run's color.
+    pub underline: bool,
+    /// A line through the run, drawn by layout in the run's color.
+    pub strikethrough: bool,
+    /// A fill behind the run, drawn by layout.
+    pub background: Option<Color>,
+    /// The run's size in logical pixels, if it differs from the text's.
+    pub font_size: Option<f32>,
+    /// Extra space after every character, in logical pixels.
+    pub letter_spacing: f32,
+    /// Whether the font's ligatures (such as `fi`, or `=>` in a programming font) are used.
+    pub ligatures: bool,
+}
+
+impl StyledSpan {
+    /// A run of `text` with only a color, weight and family; everything else plain.
+    pub fn new(
+        text: impl Into<String>,
+        color: Color,
+        font_weight: u16,
+        font_family: FontFamily,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            color,
+            font_weight,
+            font_family,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+            background: None,
+            font_size: None,
+            letter_spacing: 0.0,
+            ligatures: true,
+        }
+    }
 }
 
 /// A backend-independent drawing instruction produced by layout, in paint order.
@@ -94,9 +166,15 @@ pub enum DrawCommand {
         font_family: FontFamily,
         align: TextAlign,
         max_lines: Option<usize>,
+        italic: bool,
+        /// Extra space after every character, in logical pixels.
+        letter_spacing: f32,
+        ligatures: bool,
+        wrap: TextWrap,
     },
-    /// Like `Text`, with runs of different color, weight and family. The size
-    /// and line height are shared.
+    /// Like `Text`, with runs that differ in color, weight, family, slant, size and
+    /// letter spacing. The line height is shared. Underlines, strikethroughs and
+    /// backgrounds are not drawn by this command: layout emits rectangles for them.
     RichText {
         x: f32,
         y: f32,
@@ -106,6 +184,7 @@ pub enum DrawCommand {
         line_height: f32,
         align: TextAlign,
         max_lines: Option<usize>,
+        wrap: TextWrap,
     },
     /// A picture stretched over `rect`, with rounded corners.
     Image {
@@ -142,6 +221,15 @@ pub enum DrawCommand {
     PushClip {
         rect: Rect,
     },
+    /// Like `PushClip`, with corners rounded by `radii` (top left, top right,
+    /// bottom right, bottom left), the edge antialiased, and applying to
+    /// everything drawn: rectangles, text, pictures and outlines alike. Ended
+    /// by the same `PopClip` as a rectangular clip, and may be nested in
+    /// either kind.
+    PushRoundedClip {
+        rect: Rect,
+        radii: [f32; 4],
+    },
     PopClip,
 }
 
@@ -160,6 +248,7 @@ impl DrawCommand {
             | Self::Image { rect, .. }
             | Self::Path { rect, .. }
             | Self::PushClip { rect }
+            | Self::PushRoundedClip { rect, .. }
             | Self::PushLayer { rect, .. } => shift(rect),
             Self::Text { x, y, .. } | Self::RichText { x, y, .. } => {
                 *x += dx;

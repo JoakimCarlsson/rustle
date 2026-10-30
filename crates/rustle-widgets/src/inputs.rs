@@ -90,8 +90,8 @@ pub fn text_area(modifier: Modifier, state: &TextFieldState, placeholder: &str) 
             }
             with_text_color(theme.on_surface, || {
                 let options = TextFieldOptions {
-                    read_only: false,
                     multiline: true,
+                    ..TextFieldOptions::default()
                 };
                 basic_text_field_in(
                     Modifier::new().fill_max_size(),

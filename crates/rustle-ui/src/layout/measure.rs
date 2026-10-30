@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Size};
-use rustle_text::{StyledSpan, TextMeasurer, TextStyle};
+use rustle_text::{StyledSpan, TextAlign, TextLayout, TextMeasurer, TextSpan, TextStyle};
 use rustle_unit::Constraints;
 
 use super::Children;
@@ -198,6 +198,10 @@ fn measure_modified(
             on_size_changed(inner.size);
             inner
         }
+        Element::Cursor(icon) => wrap(next(constraints), |inner| Paint::Cursor {
+            icon: *icon,
+            inner,
+        }),
         Element::Hover(on_hover) => wrap(next(constraints), |inner| Paint::Hover {
             on_hover: Rc::clone(on_hover),
             inner,
@@ -208,6 +212,12 @@ fn measure_modified(
         }),
         Element::ZIndex(z_index) => wrap(next(constraints), |inner| Paint::ZIndex {
             z_index: *z_index,
+            clipped: true,
+            inner,
+        }),
+        Element::ZIndexUnclipped(z_index) => wrap(next(constraints), |inner| Paint::ZIndex {
+            z_index: *z_index,
+            clipped: false,
             inner,
         }),
         Element::GraphicsLayer {
@@ -257,6 +267,10 @@ fn measure_modified(
             inner,
         }),
         Element::Clip => wrap(next(constraints), Paint::Clip),
+        Element::ClipRounded(radii) => wrap(next(constraints), |inner| Paint::ClipRounded {
+            radii: *radii,
+            inner,
+        }),
         Element::Scroll { state, vertical } => {
             let mut unbounded = constraints;
             if *vertical {
@@ -299,6 +313,16 @@ fn measure_modified(
             on_press: Rc::clone(on_press),
             inner,
         }),
+        Element::Button { button, on_event } => wrap(next(constraints), |inner| Paint::Button {
+            button: *button,
+            on_event: Rc::clone(on_event),
+            inner,
+        }),
+        Element::KeyEvent { on_key, preview } => wrap(next(constraints), |inner| Paint::KeyEvent {
+            on_key: Rc::clone(on_key),
+            preview: *preview,
+            inner,
+        }),
         Element::Drag(on_drag) => wrap(next(constraints), |inner| Paint::Drag {
             on_drag: Rc::clone(on_drag),
             inner,
@@ -312,29 +336,30 @@ fn measure_modified(
     }
 }
 
-/// Where the boundary before each character is, and after the last. Lines
-/// end at line breaks.
+/// The text shaped and broken into lines at `max_width`, with where the boundary before
+/// each character is, and after the last. Lines end at line breaks and where the text wraps.
 fn character_boundaries(
     content: &str,
     style: &TextStyle,
+    max_width: f32,
     text: &mut dyn TextMeasurer,
-) -> Vec<CharPosition> {
-    let mut boundaries = vec![CharPosition { x: 0.0, line: 0 }];
-    let (mut line, mut prefix) = (0_u32, String::new());
-    for character in content.chars() {
-        if character == '\n' {
-            line += 1;
-            prefix.clear();
-            boundaries.push(CharPosition { x: 0.0, line });
-        } else {
-            prefix.push(character);
-            boundaries.push(CharPosition {
-                x: text.measure(&prefix, style, f32::INFINITY).width,
-                line,
-            });
-        }
-    }
-    boundaries
+) -> (Rc<TextLayout>, Vec<CharPosition>) {
+    // The text is laid out from its start side; alignment only matters for text wider than its content.
+    let flow = TextStyle {
+        align: TextAlign::Start,
+        ..*style
+    };
+    let spans = [TextSpan::new(content).resolve(&flow)];
+    let layout = Rc::new(text.layout(&spans, &flow, max_width));
+    let boundaries = layout
+        .char_positions()
+        .into_iter()
+        .map(|(x, line)| CharPosition {
+            x,
+            line: line as u32,
+        })
+        .collect();
+    (layout, boundaries)
 }
 
 fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMeasurer) -> Measured {
@@ -345,8 +370,10 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
             editing,
         } => {
             let editing = editing.as_ref().map(|editing| {
-                let boundaries = character_boundaries(content, style, text);
+                let (layout, boundaries) =
+                    character_boundaries(content, style, constraints.max_width, text);
                 *editing.boundaries.borrow_mut() = boundaries.clone();
+                *editing.layout.borrow_mut() = Some(layout);
                 if let Some(on_layout) = &editing.on_layout {
                     on_layout();
                 }
@@ -361,8 +388,33 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
                 },
             }
         }
-        Content::RichText { spans, style } => {
+        Content::RichText {
+            spans,
+            style,
+            editing,
+        } => {
             let spans: Vec<StyledSpan> = spans.iter().map(|span| span.resolve(style)).collect();
+            let editing = editing.as_ref().map(|editing| {
+                let flow = TextStyle {
+                    align: TextAlign::Start,
+                    ..*style
+                };
+                let layout = Rc::new(text.layout(&spans, &flow, constraints.max_width));
+                let boundaries = layout
+                    .char_positions()
+                    .into_iter()
+                    .map(|(x, line)| CharPosition {
+                        x,
+                        line: line as u32,
+                    })
+                    .collect();
+                *editing.boundaries.borrow_mut() = boundaries;
+                *editing.layout.borrow_mut() = Some(layout);
+                if let Some(on_layout) = &editing.on_layout {
+                    on_layout();
+                }
+                editing.clone()
+            });
             Measured {
                 size: constraints.constrain(text.measure_spans(
                     &spans,
@@ -372,6 +424,7 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
                 paint: Paint::RichText {
                     spans,
                     style: *style,
+                    editing,
                 },
             }
         }

@@ -6,7 +6,7 @@ use glyphon::Color;
 use rustle_geometry::Rect;
 use rustle_graphics::DrawCommand;
 
-use crate::composite::Placement;
+use crate::composite::{Mask, Placement};
 use crate::quad::Instance;
 use crate::text::{Content, Setting, Shaped, legible_color, legible_weight, shape};
 use crate::{Renderer, image, path};
@@ -22,8 +22,19 @@ impl Renderer {
     ) -> Vec<Item> {
         let mut frames = vec![Frame::default()];
         let mut clips: Vec<Rect> = Vec::new();
+        // Whether each of `clips` is rounded, and so has a group of its own.
+        let mut rounded: Vec<bool> = Vec::new();
         let mut current = Layer::new(scissor(&clips, scale_factor, target));
         for command in commands {
+            // Nothing outside the clip or the target can show, so it is not
+            // shaped, tessellated or uploaded. Long lists that are not lazy
+            // would otherwise pay for every row on every frame.
+            if let Some(bounds) = bounds(command) {
+                let visible = current.scissor.unwrap_or((0, 0, target.0, target.1));
+                if outside(bounds, visible, scale_factor) {
+                    continue;
+                }
+            }
             match command {
                 DrawCommand::PushLayer {
                     rect,
@@ -44,6 +55,7 @@ impl Renderer {
                             rotation: *rotation,
                             scale: *scale,
                             opacity: *alpha,
+                            mask: None,
                         }),
                         scissor,
                     });
@@ -59,11 +71,46 @@ impl Renderer {
                 DrawCommand::PushClip { rect } => {
                     push_layer(&mut frames, current.take());
                     clips.push(*rect);
+                    rounded.push(false);
                     current = Layer::new(scissor(&clips, scale_factor, target));
+                }
+                DrawCommand::PushRoundedClip { rect, radii } => {
+                    push_layer(&mut frames, current.take());
+                    clips.push(*rect);
+                    let scissor = scissor(&clips, scale_factor, target);
+                    if radii.iter().all(|radius| *radius <= 0.0) {
+                        rounded.push(false);
+                    } else {
+                        rounded.push(true);
+                        let pixels = |value: f32| value * scale_factor;
+                        frames.push(Frame {
+                            items: Vec::new(),
+                            placement: Some(Placement {
+                                pivot: (0.0, 0.0),
+                                rotation: 0.0,
+                                scale: 1.0,
+                                opacity: 1.0,
+                                mask: Some(Mask {
+                                    rect: [
+                                        pixels(rect.origin.x),
+                                        pixels(rect.origin.y),
+                                        pixels(rect.size.width),
+                                        pixels(rect.size.height),
+                                    ],
+                                    radii: radii.map(pixels),
+                                }),
+                            }),
+                            scissor,
+                        });
+                    }
+                    current = Layer::new(scissor);
                 }
                 DrawCommand::PopClip => {
                     push_layer(&mut frames, current.take());
                     clips.pop();
+                    if rounded.pop() == Some(true) && frames.len() > 1 {
+                        close_group(&mut frames);
+                    }
                     current = Layer::new(scissor(&clips, scale_factor, target));
                 }
                 DrawCommand::Rect { .. }
@@ -120,10 +167,15 @@ impl Renderer {
                     font_family,
                     align,
                     max_lines,
+                    italic,
+                    letter_spacing,
+                    ligatures,
+                    wrap,
                 } => {
                     let font_weight = &legible_weight(*font_weight, *color);
+                    let generation = self.font_generation.get();
                     let cache_key = format!(
-                        "{content}\u{0}{font_weight}{font_family:?}{font_size}{line_height}{align:?}{max_lines:?}{width}"
+                        "{content}\u{0}{font_weight}{font_family:?}{font_size}{line_height}{align:?}{max_lines:?}{width}{italic}{letter_spacing}{ligatures}{wrap:?}{generation}"
                     );
                     let buffer = match self.shaped.get_mut(&cache_key) {
                         Some((buffer, used)) => {
@@ -132,17 +184,21 @@ impl Renderer {
                         }
                         None => {
                             let buffer = Rc::new(shape(
-                                &mut self.font_system,
+                                &mut self.font_system.borrow_mut(),
                                 Setting {
                                     content: Content::Plain {
                                         text: content,
                                         font_weight: *font_weight,
                                         font_family: *font_family,
+                                        italic: *italic,
+                                        letter_spacing: *letter_spacing,
+                                        ligatures: *ligatures,
                                     },
                                     font_size: *font_size,
                                     line_height: *line_height,
                                     align: *align,
                                     max_lines: *max_lines,
+                                    wrap: *wrap,
                                 },
                                 Some(*width + 1.0),
                             ));
@@ -166,18 +222,36 @@ impl Renderer {
                     line_height,
                     align,
                     max_lines,
+                    wrap,
                 } => {
-                    let buffer = Rc::new(shape(
-                        &mut self.font_system,
-                        Setting {
-                            content: Content::Rich(spans),
-                            font_size: *font_size,
-                            line_height: *line_height,
-                            align: *align,
-                            max_lines: *max_lines,
-                        },
-                        Some(*width + 1.0),
-                    ));
+                    // Shaping rich text is the costly part, so it is kept like plain text.
+                    let generation = self.font_generation.get();
+                    let cache_key = format!(
+                        "{spans:?}\u{1}{font_size}{line_height}{align:?}{max_lines:?}{width}{wrap:?}{generation}"
+                    );
+                    let buffer = match self.shaped.get_mut(&cache_key) {
+                        Some((buffer, used)) => {
+                            *used = self.frame;
+                            Rc::clone(buffer)
+                        }
+                        None => {
+                            let buffer = Rc::new(shape(
+                                &mut self.font_system.borrow_mut(),
+                                Setting {
+                                    content: Content::Rich(spans),
+                                    font_size: *font_size,
+                                    line_height: *line_height,
+                                    align: *align,
+                                    max_lines: *max_lines,
+                                    wrap: *wrap,
+                                },
+                                Some(*width + 1.0),
+                            ));
+                            self.shaped
+                                .insert(cache_key, (Rc::clone(&buffer), self.frame));
+                            buffer
+                        }
+                    };
                     current.texts.push(Shaped {
                         position: (*x, *y),
                         color: Color::rgb(255, 255, 255),
@@ -190,6 +264,7 @@ impl Renderer {
         self.paths.end_frame();
         let frame = self.frame;
         self.shaped.retain(|_, (_, used)| frame - *used < 240);
+        self.measured.retain(|_, (_, used)| frame - *used < 240);
         push_layer(&mut frames, current.take());
         while frames.len() > 1 {
             close_group(&mut frames);
@@ -293,4 +368,113 @@ fn scissor(clips: &[Rect], scale_factor: f32, target: (u32, u32)) -> Option<(u32
         right.saturating_sub(left),
         bottom.saturating_sub(top),
     ))
+}
+
+/// Where a command can draw, as left, top, right and bottom in logical pixels,
+/// erring on the large side; `None` for commands that draw nothing themselves.
+fn bounds(command: &DrawCommand) -> Option<(f32, f32, f32, f32)> {
+    let around = |rect: &Rect, grow: f32| {
+        (
+            rect.origin.x - grow,
+            rect.origin.y - grow,
+            rect.origin.x + rect.size.width + grow,
+            rect.origin.y + rect.size.height + grow,
+        )
+    };
+    // Glyphs can hang a little past their box, and a line can wrap onto more rows than it has breaks.
+    let text = |x: f32,
+                y: f32,
+                width: f32,
+                chars: usize,
+                breaks: usize,
+                size: f32,
+                line: f32,
+                max_lines: Option<usize>| {
+        let wrapped = (chars as f32 * size * 1.25 / width.max(1.0)).ceil() as usize + breaks + 1;
+        let lines = max_lines.map_or(wrapped, |max| max.min(wrapped));
+        (
+            x - size,
+            y - size,
+            x + width + size,
+            y + lines as f32 * line.max(size) + size,
+        )
+    };
+    Some(match command {
+        DrawCommand::Rect { rect, border, .. } => {
+            around(rect, border.map_or(0.0, |border| border.width) + 1.0)
+        }
+        DrawCommand::Gradient { rect, .. }
+        | DrawCommand::Arc { rect, .. }
+        | DrawCommand::Image { rect, .. }
+        | DrawCommand::Path { rect, .. } => around(rect, 2.0),
+        DrawCommand::Shadow { rect, blur, .. } => around(rect, blur * 2.0 + 2.0),
+        DrawCommand::Line {
+            from, to, width, ..
+        } => (
+            from.0.min(to.0) - width - 1.0,
+            from.1.min(to.1) - width - 1.0,
+            from.0.max(to.0) + width + 1.0,
+            from.1.max(to.1) + width + 1.0,
+        ),
+        DrawCommand::Text {
+            x,
+            y,
+            width,
+            content,
+            font_size,
+            line_height,
+            max_lines,
+            ..
+        } => text(
+            *x,
+            *y,
+            *width,
+            content.chars().count(),
+            content.matches('\n').count(),
+            *font_size,
+            *line_height,
+            *max_lines,
+        ),
+        DrawCommand::RichText {
+            x,
+            y,
+            width,
+            spans,
+            font_size,
+            line_height,
+            max_lines,
+            ..
+        } => {
+            let chars = spans.iter().map(|span| span.text.chars().count()).sum();
+            let breaks = spans
+                .iter()
+                .map(|span| span.text.matches('\n').count())
+                .sum();
+            text(
+                *x,
+                *y,
+                *width,
+                chars,
+                breaks,
+                *font_size,
+                *line_height,
+                *max_lines,
+            )
+        }
+        DrawCommand::PushLayer { .. }
+        | DrawCommand::PopLayer
+        | DrawCommand::PushClip { .. }
+        | DrawCommand::PushRoundedClip { .. }
+        | DrawCommand::PopClip => return None,
+    })
+}
+
+/// Whether `bounds` (logical pixels) lie entirely outside `visible` (physical pixels).
+fn outside(bounds: (f32, f32, f32, f32), visible: (u32, u32, u32, u32), scale_factor: f32) -> bool {
+    let (x, y, width, height) = visible;
+    let (left, top, right, bottom) = bounds;
+    right * scale_factor <= x as f32
+        || bottom * scale_factor <= y as f32
+        || left * scale_factor >= (x + width) as f32
+        || top * scale_factor >= (y + height) as f32
 }

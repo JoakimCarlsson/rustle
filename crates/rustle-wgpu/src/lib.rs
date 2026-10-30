@@ -6,6 +6,7 @@
 //! Commands are drawn in order. Consecutive rectangles are drawn together,
 //! then the text that follows them, so later commands paint over earlier ones.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
@@ -14,6 +15,7 @@ use glyphon::{Buffer, FontSystem, SwashCache, TextAtlas, TextRenderer, Viewport}
 
 mod composite;
 mod device;
+mod engine;
 mod frame;
 mod image;
 mod layers;
@@ -50,9 +52,15 @@ pub struct Renderer {
     format: wgpu::TextureFormat,
     surface_config: wgpu::SurfaceConfiguration,
 
-    font_system: FontSystem,
+    /// Shared with the text engine installed in `rustle-text`, which registers fonts and lays text out.
+    font_system: Rc<RefCell<FontSystem>>,
+    /// Counts fonts registered at run time, so cached text is shaped again.
+    font_generation: Rc<Cell<u64>>,
     /// Shaped text kept between frames, with the frame it was last used in.
     shaped: HashMap<String, (Rc<Buffer>, u64)>,
+    /// Sizes text measured for layout, keyed by a hash of what was measured,
+    /// with the frame they were last used in.
+    measured: HashMap<u64, (rustle_geometry::Size, u64)>,
     frame: u64,
     swash_cache: SwashCache,
     viewport: Viewport,
@@ -63,6 +71,7 @@ pub struct Renderer {
     images: Images,
     paths: Paths,
     composite: Composite,
+    layer_pool: std::cell::RefCell<frame::LayerPool>,
     /// The background as the surface takes it: linear on an sRGB surface.
     clear: wgpu::Color,
 

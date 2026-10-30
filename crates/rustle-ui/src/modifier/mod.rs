@@ -10,7 +10,8 @@ use std::rc::Rc;
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::Color;
 
-use crate::input::{DropHandler, Focus, KeyHandler, PressEvent};
+use crate::cursor::CursorIcon;
+use crate::input::{DropHandler, Focus, KeyHandler, PointerButton, PointerEvent, PressEvent};
 use crate::layout::BoxAlignment;
 use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
@@ -76,6 +77,8 @@ pub(crate) enum Element {
         color: Color,
     },
     ZIndex(i32),
+    /// Raised like `ZIndex`, but not cut to the clips around it.
+    ZIndexUnclipped(i32),
     Ring {
         color: Color,
         thickness: f32,
@@ -83,6 +86,7 @@ pub(crate) enum Element {
         sweep: f32,
     },
     Hover(Rc<dyn Fn(bool)>),
+    Cursor(CursorIcon),
     Placed(Rc<dyn Fn(Rect, Size)>),
     SizeChanged(Rc<dyn Fn(Size)>),
     LongPress(Rc<dyn Fn()>),
@@ -93,6 +97,7 @@ pub(crate) enum Element {
     DropTarget(DropHandler),
     Pinch(Rc<dyn Fn(f32)>),
     Clip,
+    ClipRounded([f32; 4]),
     Scroll {
         state: ScrollState,
         vertical: bool,
@@ -100,6 +105,14 @@ pub(crate) enum Element {
     Clickable(Rc<dyn Fn()>, bool),
     Semantics(Semantics),
     Press(Rc<dyn Fn(PressEvent)>),
+    Button {
+        button: PointerButton,
+        on_event: Rc<dyn Fn(&PointerEvent)>,
+    },
+    KeyEvent {
+        on_key: KeyHandler,
+        preview: bool,
+    },
     Drag(Rc<dyn Fn(Offset)>),
     Focusable {
         focus: Focus,

@@ -9,6 +9,24 @@ pub(crate) struct Placement {
     pub(crate) rotation: f32,
     pub(crate) scale: f32,
     pub(crate) opacity: f32,
+    /// Cuts the layer to a rounded rectangle as it is put on its parent.
+    pub(crate) mask: Option<Mask>,
+}
+
+/// A rounded rectangle in physical pixels that a layer is cut to, with an
+/// antialiased edge.
+///
+/// Rounded clips are done by drawing the clipped content to a layer and
+/// masking the layer as it is composited. A stencil would give a hard,
+/// aliased edge; a mask in each pipeline's fragment shader would have to be
+/// repeated for quads, glyphs, pictures and paths, and could not handle
+/// nesting. The layer costs a texture, so rectangular clips stay scissors.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Mask {
+    /// x, y, width and height.
+    pub(crate) rect: [f32; 4],
+    /// Top left, top right, bottom right and bottom left.
+    pub(crate) radii: [f32; 4],
 }
 
 #[repr(C)]
@@ -19,6 +37,10 @@ struct Params {
     rotation: [f32; 2],
     scale: f32,
     opacity: f32,
+    mask_rect: [f32; 4],
+    mask_radii: [f32; 4],
+    /// The first is 1 when the mask applies.
+    masked: [f32; 4],
 }
 
 pub(crate) struct Composite {
@@ -130,6 +152,9 @@ impl Composite {
             rotation: [placement.rotation.cos(), placement.rotation.sin()],
             scale: placement.scale,
             opacity: placement.opacity,
+            mask_rect: placement.mask.map_or([0.0; 4], |mask| mask.rect),
+            mask_radii: placement.mask.map_or([0.0; 4], |mask| mask.radii),
+            masked: [f32::from(u8::from(placement.mask.is_some())), 0.0, 0.0, 0.0],
         };
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite"),

@@ -5,7 +5,8 @@ use rustle_graphics::{Color, DrawCommand, ImageData};
 use rustle_text::{StyledSpan, TextStyle};
 
 use super::ContentScale;
-use crate::input::{DropHandler, Focus, KeyHandler, PressEvent};
+use crate::cursor::CursorIcon;
+use crate::input::{DropHandler, Focus, KeyHandler, PointerButton, PointerEvent, PressEvent};
 use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
 use crate::{CharPosition, TextEditing};
@@ -22,6 +23,7 @@ pub(super) enum Paint {
     RichText {
         spans: Vec<StyledSpan>,
         style: TextStyle,
+        editing: Option<TextEditing>,
     },
     Image {
         image: ImageData,
@@ -48,6 +50,8 @@ pub(super) enum Paint {
     },
     ZIndex {
         z_index: i32,
+        /// Whether the clips around the area also cut it.
+        clipped: bool,
         inner: Box<Measured>,
     },
     Ring {
@@ -55,6 +59,10 @@ pub(super) enum Paint {
         thickness: f32,
         start: f32,
         sweep: f32,
+        inner: Box<Measured>,
+    },
+    Cursor {
+        icon: CursorIcon,
         inner: Box<Measured>,
     },
     Hover {
@@ -125,6 +133,10 @@ pub(super) enum Paint {
         inner: Box<Measured>,
     },
     Clip(Box<Measured>),
+    ClipRounded {
+        radii: [f32; 4],
+        inner: Box<Measured>,
+    },
     Scroll {
         state: ScrollState,
         vertical: bool,
@@ -142,6 +154,16 @@ pub(super) enum Paint {
     },
     Press {
         on_press: Rc<dyn Fn(PressEvent)>,
+        inner: Box<Measured>,
+    },
+    Button {
+        button: PointerButton,
+        on_event: Rc<dyn Fn(&PointerEvent)>,
+        inner: Box<Measured>,
+    },
+    KeyEvent {
+        on_key: KeyHandler,
+        preview: bool,
         inner: Box<Measured>,
     },
     Drag {

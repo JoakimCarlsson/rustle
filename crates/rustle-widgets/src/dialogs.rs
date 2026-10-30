@@ -87,7 +87,7 @@ pub fn bottom_sheet(visible: bool, on_dismiss: impl Fn() + 'static, content: imp
         }
         let measured = std::rc::Rc::clone(&height);
         stack_aligned(
-            Modifier::new().fill_max_size().z_index(1),
+            Modifier::new().fill_max_size().z_index_unclipped(1),
             BoxAlignment::BottomCenter,
             || {
                 spacer(

@@ -1,7 +1,9 @@
 //! Creating the renderer: the device, the surface and what is built on them.
 
 use glyphon::{Cache, FontSystem, SwashCache, TextAtlas, Viewport};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::composite::Composite;
 use crate::image::Images;
@@ -108,6 +110,16 @@ impl Renderer {
         surface: Option<wgpu::Surface<'static>>,
         create_surface: Option<SurfaceFactory>,
     ) -> Self {
+        let font_system = Rc::new(RefCell::new(FontSystem::new()));
+        let font_generation = Rc::new(Cell::new(0));
+        let engine = Rc::new(crate::engine::Engine {
+            font_system: Rc::clone(&font_system),
+            generation: Rc::clone(&font_generation),
+        });
+        rustle_text::install_text_engine(engine.clone());
+        for data in rustle_text::take_pending_fonts() {
+            rustle_text::TextEngine::register_font(&*engine, data);
+        }
         let cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &cache);
         let atlas = TextAtlas::new(&device, &queue, &cache, format);
@@ -131,8 +143,10 @@ impl Renderer {
             queue,
             format,
             surface_config,
-            font_system: FontSystem::new(),
+            font_system,
+            font_generation,
             shaped: HashMap::new(),
+            measured: HashMap::new(),
             frame: 0,
             swash_cache: SwashCache::new(),
             viewport,
@@ -142,6 +156,7 @@ impl Renderer {
             images,
             paths,
             composite,
+            layer_pool: Default::default(),
             clear,
             surface,
             create_surface,

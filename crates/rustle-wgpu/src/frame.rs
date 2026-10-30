@@ -152,6 +152,7 @@ impl Renderer {
         );
         self.quads.set_viewport(&self.queue, target, scale_factor);
         self.images.begin_frame();
+        self.layer_pool.borrow_mut().begin_frame(target);
 
         let items = self.layers(commands, scale_factor, target);
         let mut next_text = 0;
@@ -244,21 +245,7 @@ impl Renderer {
                     scissor,
                     items: inner,
                 } => {
-                    let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("layer"),
-                        size: wgpu::Extent3d {
-                            width: target.0,
-                            height: target.1,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: self.format,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                            | wgpu::TextureUsages::TEXTURE_BINDING,
-                        view_formats: &[],
-                    });
+                    let texture = self.layer_texture(target);
                     let group_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                     self.draw_items(
                         encoder,
@@ -286,6 +273,30 @@ impl Renderer {
         Ok(())
     }
 
+    /// A texture to draw a group into, reused from an earlier frame if possible.
+    fn layer_texture(&self, target: (u32, u32)) -> std::rc::Rc<wgpu::Texture> {
+        let mut pool = self.layer_pool.borrow_mut();
+        let texture = pool.free.pop().unwrap_or_else(|| {
+            std::rc::Rc::new(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("layer"),
+                size: wgpu::Extent3d {
+                    width: target.0,
+                    height: target.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }))
+        });
+        pool.busy.push(std::rc::Rc::clone(&texture));
+        texture
+    }
+
     fn draw_layer(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -310,6 +321,28 @@ impl Renderer {
             self.text_renderers[index].render(&self.atlas, &self.viewport, pass)?;
         }
         Ok(())
+    }
+}
+
+/// Textures groups are drawn into: kept between frames, because clips and
+/// layers need one each every frame and creating them is slow.
+#[derive(Default)]
+pub(crate) struct LayerPool {
+    size: (u32, u32),
+    free: Vec<std::rc::Rc<wgpu::Texture>>,
+    /// Textures handed out this frame; free again when the next frame begins.
+    busy: Vec<std::rc::Rc<wgpu::Texture>>,
+}
+
+impl LayerPool {
+    /// Makes last frame's textures available, dropping them if the target changed size.
+    fn begin_frame(&mut self, target: (u32, u32)) {
+        if self.size != target {
+            self.size = target;
+            self.free.clear();
+            self.busy.clear();
+        }
+        self.free.append(&mut self.busy);
     }
 }
 

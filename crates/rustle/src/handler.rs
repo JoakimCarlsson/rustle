@@ -2,63 +2,66 @@
 
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Instant;
 
-use rustle_foundation::{Key, KeyEvent};
+use rustle_foundation::KeyEvent;
 use rustle_geometry::Offset;
-use rustle_wgpu::Renderer;
+use rustle_ui::PointerButton;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
-use winit::window::{Theme as WindowTheme, Window, WindowId};
+use winit::window::{Theme as WindowTheme, WindowId};
 
-use crate::app::{App, UserEvent, WindowState};
+use crate::app::{App, UserEvent};
 use crate::input;
 use crate::overlay::{carrying_overlay, feedback};
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
-        let attributes = Window::default_attributes()
-            .with_title("Rustle")
-            // Hidden until the accessibility adapter exists.
-            .with_visible(false)
-            .with_inner_size(LogicalSize::new(1920.0, 1080.0))
-            .with_min_inner_size(LogicalSize::new(360.0, 240.0));
-        let window = match event_loop.create_window(attributes) {
-            Ok(window) => Arc::new(window),
-            Err(error) => return self.fail(event_loop, error),
-        };
-
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(event_loop.owned_display_handle()),
-        ));
-        let Some(proxy) = self.proxy.clone() else {
-            return;
-        };
-        let adapter = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, proxy);
-        window.set_visible(true);
-        self.set_dark(window.theme() != Some(WindowTheme::Light));
-        rustle_ui::set_clipboard(Rc::new(input::SystemClipboard::new()));
-        let size = window.inner_size();
-        match Renderer::new(instance, window.clone(), (size.width, size.height)) {
-            Ok(renderer) => {
-                self.window = Some(WindowState {
-                    adapter,
-                    renderer,
-                    window,
-                });
-                self.relayout();
-            }
-            Err(error) => self.fail(event_loop, error),
-        }
+        self.resumed(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.about_to_wait(event_loop);
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Wake => {}
+            UserEvent::Accessibility(event) => {
+                self.accessibility_event_for(event.window_id, event.window_event)
+            }
+        }
+        self.woken();
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        self.window_event_for(event_loop, id, event);
+    }
+}
+
+impl App {
+    /// Opens the window and its renderer, unless they are open already.
+    pub(crate) fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        let options = self.options.clone();
+        let state = match self.open_native(event_loop, &options) {
+            Ok(state) => state,
+            Err(error) => return self.fail(event_loop, error),
+        };
+        self.set_dark(state.window.theme() != Some(WindowTheme::Light));
+        rustle_ui::set_clipboard(Rc::new(input::SystemClipboard::new()));
+        self.window = Some(state);
+        self.register_main();
+        self.relayout();
+        self.sync_windows(event_loop);
+    }
+
+    /// Waits for the next long press that is due, or for the next event.
+    pub(crate) fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.sync_windows(event_loop);
         let Some((due, _, _)) = &self.long_press else {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
@@ -75,19 +78,17 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
-        match event {
-            UserEvent::Wake => {}
-            UserEvent::Accessibility(event) => self.accessibility_event(event.window_event),
-        }
+    /// Composes and lays out again what state changes dirtied, and keeps frames coming.
+    pub(crate) fn woken(&mut self) {
         if self.composition.recompose() {
-            self.relayout();
+            self.relayout_all();
         }
         self.apply_focus_request();
         self.request_redraw_for_frames();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+    /// Reacts to what happened to the window.
+    pub(crate) fn window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         if matches!(event, WindowEvent::RedrawRequested) {
             self.run_frame();
         }
@@ -128,12 +129,12 @@ impl ApplicationHandler<UserEvent> for App {
                 match touch.phase {
                     TouchPhase::Started => {
                         self.pointer_moved(at);
-                        self.primary_button(true);
+                        self.button_input(PointerButton::Primary, true);
                     }
                     TouchPhase::Moved => self.pointer_moved(at),
                     TouchPhase::Ended | TouchPhase::Cancelled => {
                         self.pointer_moved(at);
-                        self.primary_button(false);
+                        self.button_input(PointerButton::Primary, false);
                         self.pointer = None;
                     }
                 }
@@ -165,9 +166,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseInput {
                 state: button_state,
-                button: MouseButton::Left,
+                button,
                 ..
-            } => self.primary_button(button_state == ElementState::Pressed),
+            } => self.button_input(
+                input::pointer_button(button),
+                button_state == ElementState::Pressed,
+            ),
             WindowEvent::DroppedFile(path) => {
                 // The platform gives no position, so the file goes where the pointer last was.
                 if let Some(pointer) = self.pointer
@@ -201,7 +205,18 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.key_event(event);
             }
+            WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
+                if self.debug_input {
+                    eprintln!("rustle input: input method composing {text:?} {cursor:?}");
+                }
+                self.set_preedit(text, cursor);
+            }
+            WindowEvent::Ime(Ime::Enabled | Ime::Disabled) => {
+                self.set_preedit(String::new(), None);
+            }
             WindowEvent::Ime(Ime::Commit(text)) => {
+                // The composition ends with the commit.
+                self.set_preedit(String::new(), None);
                 if self.debug_input {
                     eprintln!("rustle input: input method committed {text:?}");
                 }
@@ -210,12 +225,7 @@ impl ApplicationHandler<UserEvent> for App {
                     *typed == text && when.elapsed() < std::time::Duration::from_millis(60)
                 });
                 if !repeated {
-                    self.key_event(KeyEvent {
-                        key: Key::Other,
-                        text: Some(text),
-                        modifiers: self.modifiers,
-                        pressed: true,
-                    });
+                    self.key_event(KeyEvent::typed(text, self.modifiers));
                 }
             }
             WindowEvent::RedrawRequested => {

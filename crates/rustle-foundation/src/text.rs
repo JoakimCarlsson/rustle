@@ -3,6 +3,8 @@ use rustle_runtime::CompositionLocal;
 use rustle_text::{TextSpan, TextStyle};
 use rustle_ui::{Content, ContentScale, Modifier, Node, emit};
 
+use crate::selection::{LOCAL_SELECTION, emit_block};
+
 /// The style `text` is set in. Provide another value to restyle everything below.
 pub static LOCAL_TEXT_STYLE: CompositionLocal<TextStyle> =
     CompositionLocal::new(TextStyle::default);
@@ -51,8 +53,9 @@ pub fn image(modifier: Modifier, image: &ImageData, scale: ContentScale) {
     });
 }
 
-/// Emits a line of text made of runs in their own colors, weights or fonts,
-/// set in the current [`LOCAL_TEXT_STYLE`].
+/// Emits text made of runs in their own colors, weights, fonts, slants, sizes and
+/// letter spacing, with underlines, strikethroughs and backgrounds, set in the
+/// current [`LOCAL_TEXT_STYLE`]. Long lines wrap at the width available.
 #[track_caller]
 pub fn rich_text(spans: Vec<TextSpan>) {
     rich_text_with(Modifier::new(), spans);
@@ -61,11 +64,23 @@ pub fn rich_text(spans: Vec<TextSpan>) {
 /// Emits rich text with `modifier`.
 #[track_caller]
 pub fn rich_text_with(modifier: Modifier, spans: Vec<TextSpan>) {
+    let style = LOCAL_TEXT_STYLE.current();
+    if let Some(scope) = LOCAL_SELECTION.current() {
+        // Inside a selection container the text is one block of its selection.
+        let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+        emit_block(&scope, modifier, text, |editing| Content::RichText {
+            spans,
+            style,
+            editing: Some(editing),
+        });
+        return;
+    }
     emit(Node {
         modifier,
         content: Content::RichText {
             spans,
-            style: LOCAL_TEXT_STYLE.current(),
+            style,
+            editing: None,
         },
     });
 }

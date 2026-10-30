@@ -16,6 +16,7 @@ use winit::window::Window;
 
 use crate::preview::snapshot;
 use crate::saved;
+use crate::window::WindowOptions;
 
 /// What wakes the event loop.
 pub(crate) enum UserEvent {
@@ -31,6 +32,21 @@ impl From<accesskit_winit::Event> for UserEvent {
     }
 }
 
+impl From<Wake> for UserEvent {
+    fn from(_: Wake) -> Self {
+        Self::Wake
+    }
+}
+
+/// The user event a host's event loop receives when state changed or a frame was requested.
+///
+/// A host whose event loop carries its own user event type implements `From<Wake>` for it
+/// and calls [`Host::wake`](crate::Host::wake) when it receives it.
+pub struct Wake;
+
+/// Makes the accessibility adapter of a window, which needs the event loop's proxy.
+pub(crate) type MakeAdapter = Box<dyn Fn(&ActiveEventLoop, &Window) -> accesskit_winit::Adapter>;
+
 /// Composes `root` and shows it in a native window until closed.
 ///
 /// The whole root is composed again, on the event loop, whenever state it
@@ -38,7 +54,14 @@ impl From<accesskit_winit::Event> for UserEvent {
 /// loop drawing for as long as they run; otherwise it sleeps until something happens.
 ///
 /// Exits the process with status 1 if the window or renderer cannot be set up.
-pub fn run(mut root: impl FnMut() + 'static) {
+pub fn run(root: impl FnMut() + 'static) {
+    run_with(WindowOptions::default(), root);
+}
+
+/// Like [`run`], with the first window opened as `options` describes.
+///
+/// Further windows are opened from the composition with [`window`](crate::window).
+pub fn run_with(options: WindowOptions, mut root: impl FnMut() + 'static) {
     // Developer tool: draw one frame without a window and write it as a PNG.
     //   RUSTLE_SNAPSHOT=out.png [RUSTLE_SNAPSHOT_SIZE=1280x800] [RUSTLE_SNAPSHOT_LIGHT=1]
     //   [RUSTLE_SNAPSHOT_INPUT="click:x,y;type:text;key:Backspace"] replays input first
@@ -62,57 +85,46 @@ pub fn run(mut root: impl FnMut() + 'static) {
     let dark = Rc::new(Cell::new(true));
     let provided = {
         let dark = Rc::clone(&dark);
-        move || rustle_foundation::LOCAL_SYSTEM_DARK.provide(dark.get(), &mut root)
+        move || {
+            crate::window::in_main_window(|| {
+                rustle_foundation::LOCAL_SYSTEM_DARK.provide(dark.get(), &mut root)
+            })
+        }
     };
-    let mut app = App {
-        dark,
-        composition: rustle_ui::composition(provided),
-        started: Instant::now(),
-        display: DisplayList::default(),
-        pointer: None,
-        focused: None,
-        typed: None,
-        debug_input: std::env::var_os("RUSTLE_DEBUG_INPUT").is_some(),
-        long_press: None,
-        hovered: Vec::new(),
-        following: Vec::new(),
-        dragging: None,
-        carrying: None,
-        modifiers: Modifiers::default(),
-        last_press: None,
-        pressed: None,
-        proxy: None,
-        window: None,
-        error: None,
-    };
-
     let result = EventLoop::<UserEvent>::with_user_event()
         .build()
         .and_then(|event_loop| {
-            // State changes wake the event loop instead of being polled for. A
-            // new composition is dirty, so the first wake-up also composes it.
             let proxy = event_loop.create_proxy();
-            let wake = proxy.clone();
-            app.composition.on_invalidate(move || {
-                let _ = wake.send_event(UserEvent::Wake);
+            let mut app = App::new(provided, dark, options, adapter_with(proxy.clone()), {
+                let proxy = proxy.clone();
+                move || {
+                    let _ = proxy.send_event(UserEvent::Wake);
+                }
             });
-            // Animations ask for frames; only then does the loop keep redrawing.
-            let wake = proxy.clone();
-            app.composition.on_frame_request(move || {
-                let _ = wake.send_event(UserEvent::Wake);
-            });
-            app.proxy = Some(proxy.clone());
+            // A new composition is dirty, so the first wake-up also composes it.
             let _ = proxy.send_event(UserEvent::Wake);
             event_loop.set_control_flow(ControlFlow::Wait);
-            event_loop.run_app(&mut app)
+            let result = event_loop.run_app(&mut app);
+            if let Some(error) = app.error {
+                eprintln!("rustle: {error}");
+                process::exit(1);
+            }
+            result
         });
     if let Err(error) = result {
-        app.error = Some(error.to_string());
-    }
-    if let Some(error) = app.error {
         eprintln!("rustle: {error}");
         process::exit(1);
     }
+}
+
+/// Makes accessibility adapters whose requests arrive as `T` on the event loop of `proxy`.
+pub(crate) fn adapter_with<T>(proxy: EventLoopProxy<T>) -> MakeAdapter
+where
+    T: From<accesskit_winit::Event> + Send + 'static,
+{
+    Box::new(move |event_loop, window| {
+        accesskit_winit::Adapter::with_event_loop_proxy(event_loop, window, proxy.clone())
+    })
 }
 
 /// An area following the pointer, and what to tell it when the pointer leaves.
@@ -165,13 +177,27 @@ pub(crate) struct App {
     pub(crate) modifiers: Modifiers,
     /// When and where the primary button last went down, and how many in a row.
     pub(crate) last_press: Option<(Instant, Offset, u32)>,
+    /// Pointer buttons that are down, for the areas that react to them.
+    pub(crate) held_buttons: Vec<crate::pointer::HeldButton>,
+    /// The caret area last reported to the input method, so it is only sent when it moves.
+    pub(crate) ime_area: Option<Rect>,
     /// The handler of the region the primary button went down on.
     /// Where the primary button went down on something clickable. Areas are
     /// told apart by where they are, not by their handlers, because every
     /// recomposition makes new handlers, and an animation recomposes every frame.
     pub(crate) pressed: Option<Rect>,
-    pub(crate) proxy: Option<EventLoopProxy<UserEvent>>,
+    /// How the window looks when it opens.
+    pub(crate) options: WindowOptions,
+    /// Makes the window's accessibility adapter once the window exists.
+    pub(crate) make_adapter: MakeAdapter,
     pub(crate) window: Option<WindowState>,
+    /// The registry key of the window the fields above belong to.
+    pub(crate) key: u64,
+    /// The input state of every window. The active one's is in the fields above and its
+    /// entry here is empty (see `crate::windows`).
+    pub(crate) slots: Vec<crate::windows::WindowCtx>,
+    /// Which of `slots` is in the fields above. The main window is always slot 0.
+    pub(crate) active: usize,
     pub(crate) error: Option<String>,
 }
 
@@ -182,12 +208,69 @@ pub(crate) struct WindowState {
 }
 
 impl App {
+    /// An application that composes `root`, with no window until the event loop resumes.
+    ///
+    /// `wake` is called, from any thread, when state changed or a frame was requested, and
+    /// must make the event loop call [`App::recompose_and_layout`].
+    pub(crate) fn new(
+        root: impl FnMut() + 'static,
+        dark: Rc<Cell<bool>>,
+        options: WindowOptions,
+        make_adapter: MakeAdapter,
+        wake: impl Fn() + Clone + Send + Sync + 'static,
+    ) -> Self {
+        let mut composition = rustle_ui::composition(root);
+        // State changes wake the event loop instead of being polled for.
+        let invalidated = wake.clone();
+        composition.on_invalidate(invalidated);
+        // Animations ask for frames; only then does the loop keep redrawing.
+        crate::window::set_wake(Rc::new(wake.clone()));
+        composition.on_frame_request(wake);
+        Self {
+            dark,
+            composition,
+            started: Instant::now(),
+            display: DisplayList::default(),
+            pointer: None,
+            focused: None,
+            typed: None,
+            debug_input: std::env::var_os("RUSTLE_DEBUG_INPUT").is_some(),
+            long_press: None,
+            hovered: Vec::new(),
+            following: Vec::new(),
+            dragging: None,
+            carrying: None,
+            modifiers: Modifiers::default(),
+            last_press: None,
+            held_buttons: Vec::new(),
+            ime_area: None,
+            pressed: None,
+            options,
+            make_adapter,
+            window: None,
+            key: crate::window::MAIN,
+            slots: vec![crate::windows::WindowCtx::default()],
+            active: 0,
+            error: None,
+        }
+    }
+
     /// Lays the latest tree out for the current window and asks for a redraw.
     ///
     /// Text is measured by the renderer, so this waits until the window exists
     /// and the first pass has produced a tree.
     pub(crate) fn relayout(&mut self) {
-        let (Some(state), Some(tree)) = (&mut self.window, self.composition.output()) else {
+        let tree = if self.key == crate::window::MAIN {
+            self.composition.output().cloned()
+        } else {
+            crate::window::REGISTRY.with(|r| {
+                r.borrow()
+                    .entries
+                    .get(&self.key)
+                    .and_then(|e| e.tree.clone())
+            })
+        };
+        let (Some(state), Some(tree)) = (&mut self.window, tree.as_ref()) else {
             return;
         };
         let scale_factor = state.window.scale_factor() as f32;
@@ -199,6 +282,8 @@ impl App {
         self.display = rustle_ui::display_list(tree, constraints, &mut state.renderer);
         state.window.request_redraw();
         self.update_hover();
+        self.refresh_cursor();
+        self.sync_ime_area();
         self.update_accessibility();
     }
 
@@ -216,16 +301,16 @@ impl App {
             self.composition.run_frame(self.started.elapsed());
         }
         if self.composition.recompose() {
-            self.relayout();
+            self.relayout_all();
         }
     }
 
     /// Keeps frames coming for as long as something wants one.
     pub(crate) fn request_redraw_for_frames(&self) {
-        if self.composition.has_pending_frame()
-            && let Some(state) = &self.window
-        {
-            state.window.request_redraw();
+        if self.composition.has_pending_frame() {
+            for state in self.native_windows() {
+                state.window.request_redraw();
+            }
         }
     }
 

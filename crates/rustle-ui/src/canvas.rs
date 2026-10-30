@@ -3,7 +3,8 @@
 //! A canvas: an area drawn with shapes, lines and text in its own coordinates.
 
 use rustle_geometry::{Offset, Rect, Size};
-use rustle_graphics::{Border, Color, DrawCommand, FontFamily, Path, TextAlign};
+use rustle_graphics::{Border, Color, DrawCommand, FontFamily, Path, StyledSpan, TextAlign};
+use rustle_text::{Affinity, TextLayout, TextSpan, TextStyle};
 
 /// Collects what is drawn on a canvas, with (0, 0) at its top-left corner.
 pub struct Canvas {
@@ -243,7 +244,124 @@ impl Canvas {
             font_family: FontFamily::SansSerif,
             align,
             max_lines: Some(1),
+            italic: false,
+            letter_spacing: 0.0,
+            ligatures: true,
+            wrap: rustle_graphics::TextWrap::Word,
         });
+    }
+
+    /// Text in `style` with its box's top-left corner at (`x`, `y`), wrapped at
+    /// `max_width` if there is one, with `style`'s slant, letter spacing, ligatures,
+    /// underline and strikethrough. Returns its [`TextLayout`], for drawing a caret or
+    /// a selection over it with [`Canvas::selection`] and [`Canvas::caret`].
+    pub fn draw_text(
+        &mut self,
+        x: f32,
+        y: f32,
+        content: &str,
+        style: &TextStyle,
+        max_width: Option<f32>,
+    ) -> TextLayout {
+        let layout = rustle_text::layout_text(content, style, max_width);
+        let width = max_width.unwrap_or(layout.size().width);
+        self.commands.push(DrawCommand::Text {
+            x,
+            y,
+            width,
+            content: content.to_string(),
+            color: style.color,
+            font_size: style.font_size,
+            line_height: style.line_height,
+            font_weight: style.font_weight.0,
+            font_family: style.font_family,
+            align: style.align,
+            max_lines: style.max_lines,
+            italic: style.italic,
+            letter_spacing: style.letter_spacing,
+            ligatures: style.ligatures,
+            wrap: style.wrap,
+        });
+        let keep = |color| color;
+        self.commands.extend(layout.decoration_commands(
+            Offset::new(x, y),
+            style.underline,
+            style.strikethrough,
+            &keep,
+        ));
+        layout
+    }
+
+    /// Rich text with its box's top-left corner at (`x`, `y`), wrapped at `max_width`
+    /// if there is one: runs that differ in color, weight, family, slant, size,
+    /// letter spacing, ligatures, underline, strikethrough and background. Anything a
+    /// span leaves unset comes from `style`. Returns its [`TextLayout`].
+    pub fn draw_rich_text(
+        &mut self,
+        x: f32,
+        y: f32,
+        spans: &[TextSpan],
+        style: &TextStyle,
+        max_width: Option<f32>,
+    ) -> TextLayout {
+        let layout = rustle_text::layout_spans(spans, style, max_width);
+        let resolved: Vec<StyledSpan> = spans.iter().map(|span| span.resolve(style)).collect();
+        let keep = |color| color;
+        let origin = Offset::new(x, y);
+        self.commands
+            .extend(layout.background_commands(origin, &keep));
+        self.commands.push(DrawCommand::RichText {
+            x,
+            y,
+            width: max_width.unwrap_or(layout.size().width),
+            spans: resolved,
+            font_size: style.font_size,
+            line_height: style.line_height,
+            align: style.align,
+            max_lines: style.max_lines,
+            wrap: style.wrap,
+        });
+        self.commands
+            .extend(layout.decoration_commands(origin, false, false, &keep));
+        layout
+    }
+
+    /// Highlights the text from byte offset `start` to `end` of `layout`, which was
+    /// drawn with its top-left corner at (`x`, `y`). Draw it before the text.
+    pub fn selection(
+        &mut self,
+        x: f32,
+        y: f32,
+        layout: &TextLayout,
+        start: usize,
+        end: usize,
+        color: Color,
+    ) {
+        for rect in layout.selection_rects(start, end) {
+            self.rect(
+                x + rect.origin.x,
+                y + rect.origin.y,
+                rect.size.width,
+                rect.size.height,
+                color,
+            );
+        }
+    }
+
+    /// A caret `width` wide at byte `offset` of `layout`, which was drawn with its
+    /// top-left corner at (`x`, `y`).
+    pub fn caret(
+        &mut self,
+        x: f32,
+        y: f32,
+        layout: &TextLayout,
+        offset: usize,
+        affinity: Affinity,
+        width: f32,
+        color: Color,
+    ) {
+        let at = layout.caret(offset, affinity);
+        self.rect(x + at.x - width / 2.0, y + at.y, width, at.height, color);
     }
 
     /// Everything after this, until [`Canvas::pop_clip`], is cut to a rectangle.
@@ -253,6 +371,16 @@ impl Canvas {
         });
     }
 
+    /// Everything after this, until [`Canvas::pop_clip`], is cut to a rectangle
+    /// with rounded corners and an antialiased edge.
+    pub fn push_rounded_clip(&mut self, x: f32, y: f32, width: f32, height: f32, radius: f32) {
+        self.commands.push(DrawCommand::PushRoundedClip {
+            rect: Self::rect_at(x, y, width, height),
+            radii: [radius; 4],
+        });
+    }
+
+    /// Ends the latest [`Canvas::push_clip`] or [`Canvas::push_rounded_clip`].
     pub fn pop_clip(&mut self) {
         self.commands.push(DrawCommand::PopClip);
     }

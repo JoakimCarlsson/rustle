@@ -1,11 +1,22 @@
-//! Text styles and the measuring interface layout uses.
+//! Text styles, glyph-level layout and the interfaces layout and renderers use.
 //!
 //! The renderer implements [`TextMeasurer`], so layout can size text without
-//! depending on a font system.
+//! depending on a font system, and installs a text engine that [`layout_text`],
+//! [`layout_spans`], [`font_families`] and [`register_font`] use. That is how a
+//! composable or a `canvas` closure asks where lines break and where a caret goes.
+
+mod engine;
+mod layout;
 
 use rustle_geometry::Size;
 use rustle_graphics::Color;
-pub use rustle_graphics::{FontFamily, StyledSpan, TextAlign};
+pub use rustle_graphics::{FontFamily, StyledSpan, TextAlign, TextWrap};
+
+pub use engine::{
+    TextEngine, font_families, install_text_engine, layout_spans, layout_styled, layout_text,
+    register_font, take_pending_fonts,
+};
+pub use layout::{Affinity, Caret, Cluster, LineLayout, TextLayout};
 
 /// How heavy the strokes of a font are, from 100 (thin) to 900 (black).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,6 +40,18 @@ pub struct TextStyle {
     pub align: TextAlign,
     /// Lines beyond this are cut off and the last one ends in an ellipsis.
     pub max_lines: Option<usize>,
+    /// Slanted letterforms.
+    pub italic: bool,
+    /// A line under all of the text.
+    pub underline: bool,
+    /// A line through all of the text.
+    pub strikethrough: bool,
+    /// Extra space after every character, in logical pixels.
+    pub letter_spacing: f32,
+    /// Whether the font's ligatures are used. On by default.
+    pub ligatures: bool,
+    /// Where lines break when they are too wide.
+    pub wrap: TextWrap,
 }
 
 impl Default for TextStyle {
@@ -41,6 +64,12 @@ impl Default for TextStyle {
             font_family: FontFamily::SansSerif,
             align: TextAlign::Start,
             max_lines: None,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0.0,
+            ligatures: true,
+            wrap: TextWrap::Word,
         }
     }
 }
@@ -55,6 +84,14 @@ impl TextStyle {
         Self {
             font_size,
             line_height: font_size * Self::default().line_height / Self::default().font_size,
+            ..self
+        }
+    }
+
+    /// Sets the height of a line in logical pixels, independent of the font size.
+    pub fn line_height(self, line_height: f32) -> Self {
+        Self {
+            line_height,
             ..self
         }
     }
@@ -89,6 +126,57 @@ impl TextStyle {
     pub fn bold(self) -> Self {
         self.font_weight(FontWeight::BOLD)
     }
+
+    /// Slanted letterforms.
+    pub fn italic(self) -> Self {
+        Self {
+            italic: true,
+            ..self
+        }
+    }
+
+    /// Underlines all of the text.
+    pub fn underline(self) -> Self {
+        Self {
+            underline: true,
+            ..self
+        }
+    }
+
+    /// Strikes through all of the text.
+    pub fn strikethrough(self) -> Self {
+        Self {
+            strikethrough: true,
+            ..self
+        }
+    }
+
+    /// Extra space after every character, in logical pixels.
+    pub fn letter_spacing(self, letter_spacing: f32) -> Self {
+        Self {
+            letter_spacing,
+            ..self
+        }
+    }
+
+    /// Turns the font's ligatures on or off. Turn them off in code, where `=>` should stay two characters.
+    pub fn ligatures(self, ligatures: bool) -> Self {
+        Self { ligatures, ..self }
+    }
+
+    /// Where lines break when they are wider than the space they have.
+    pub fn wrap(self, wrap: TextWrap) -> Self {
+        Self { wrap, ..self }
+    }
+
+    /// The size a span without a size of its own is set in, and the factor line height has to it.
+    pub fn line_height_ratio(&self) -> f32 {
+        if self.font_size > 0.0 {
+            self.line_height / self.font_size
+        } else {
+            1.0
+        }
+    }
 }
 
 /// A run of text within rich text. Anything left unset comes from the text style around it.
@@ -98,6 +186,14 @@ pub struct TextSpan {
     pub color: Option<Color>,
     pub font_weight: Option<FontWeight>,
     pub font_family: Option<FontFamily>,
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
+    /// A fill behind the run. Unlike the others it has no counterpart in [`TextStyle`].
+    pub background: Option<Color>,
+    pub font_size: Option<f32>,
+    pub letter_spacing: Option<f32>,
+    pub ligatures: Option<bool>,
 }
 
 impl TextSpan {
@@ -107,6 +203,13 @@ impl TextSpan {
             color: None,
             font_weight: None,
             font_family: None,
+            italic: None,
+            underline: None,
+            strikethrough: None,
+            background: None,
+            font_size: None,
+            letter_spacing: None,
+            ligatures: None,
         }
     }
 
@@ -129,6 +232,49 @@ impl TextSpan {
         self
     }
 
+    /// Slanted letterforms.
+    pub fn italic(mut self) -> Self {
+        self.italic = Some(true);
+        self
+    }
+
+    /// A line under the run, in the run's color.
+    pub fn underline(mut self) -> Self {
+        self.underline = Some(true);
+        self
+    }
+
+    /// A line through the run, in the run's color.
+    pub fn strikethrough(mut self) -> Self {
+        self.strikethrough = Some(true);
+        self
+    }
+
+    /// A fill behind the run, as tall as its line.
+    pub fn background(mut self, color: Color) -> Self {
+        self.background = Some(color);
+        self
+    }
+
+    /// Sets the run in `font_size` logical pixels instead of the text's size. The
+    /// line height grows with it if it is the tallest run on its line.
+    pub fn font_size(mut self, font_size: f32) -> Self {
+        self.font_size = Some(font_size);
+        self
+    }
+
+    /// Extra space after every character of the run, in logical pixels.
+    pub fn letter_spacing(mut self, letter_spacing: f32) -> Self {
+        self.letter_spacing = Some(letter_spacing);
+        self
+    }
+
+    /// Turns the font's ligatures on or off for the run.
+    pub fn ligatures(mut self, ligatures: bool) -> Self {
+        self.ligatures = Some(ligatures);
+        self
+    }
+
     /// This span with what it leaves unset taken from `style`.
     pub fn resolve(&self, style: &TextStyle) -> StyledSpan {
         StyledSpan {
@@ -136,6 +282,13 @@ impl TextSpan {
             color: self.color.unwrap_or(style.color),
             font_weight: self.font_weight.unwrap_or(style.font_weight).0,
             font_family: self.font_family.unwrap_or(style.font_family),
+            italic: self.italic.unwrap_or(style.italic),
+            underline: self.underline.unwrap_or(style.underline),
+            strikethrough: self.strikethrough.unwrap_or(style.strikethrough),
+            background: self.background,
+            font_size: self.font_size,
+            letter_spacing: self.letter_spacing.unwrap_or(style.letter_spacing),
+            ligatures: self.ligatures.unwrap_or(style.ligatures),
         }
     }
 }
@@ -146,6 +299,10 @@ pub trait TextMeasurer {
     /// are wider than `max_width`. An infinite `max_width` never wraps.
     fn measure(&mut self, content: &str, style: &TextStyle, max_width: f32) -> Size;
 
-    /// The size of `spans` set one after another, which share `style`'s size and line height.
+    /// The size of `spans` set one after another, which share `style`'s line height.
     fn measure_spans(&mut self, spans: &[StyledSpan], style: &TextStyle, max_width: f32) -> Size;
+
+    /// `spans` shaped and broken into lines, with the position of every cluster.
+    /// An infinite `max_width` never wraps.
+    fn layout(&mut self, spans: &[StyledSpan], style: &TextStyle, max_width: f32) -> TextLayout;
 }

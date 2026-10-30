@@ -3,7 +3,8 @@ use std::rc::Rc;
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::DrawCommand;
 
-use crate::input::{DropHandler, Focus, KeyHandler, PressEvent};
+use crate::cursor::CursorIcon;
+use crate::input::{DropHandler, Focus, KeyHandler, PointerButton, PointerEvent, PressEvent};
 use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
 
@@ -20,6 +21,13 @@ pub struct DisplayList {
     pub focusables: Vec<FocusRegion>,
     /// Areas that react to a press, in paint order.
     pub presses: Vec<PressRegion>,
+    /// Areas that react to a pointer button other than (or as well as) the primary one, in paint order.
+    pub buttons: Vec<ButtonRegion>,
+    /// Areas that see key events without holding focus, in paint order (outermost first).
+    pub key_handlers: Vec<KeyRegion>,
+    /// Where the caret of the focused text field is, in the window, for placing an input
+    /// method's candidate popup. `None` when no text field is being edited.
+    pub ime_area: Option<Rect>,
     /// Areas that follow a drag, in paint order.
     pub drags: Vec<DragRegion>,
     /// Areas that want to know when the pointer is over them, in paint order.
@@ -36,8 +44,16 @@ pub struct DisplayList {
     pub file_drops: Vec<FileDropRegion>,
     /// Areas that react to a pinch gesture, in paint order.
     pub pinches: Vec<PinchRegion>,
+    /// Areas that choose the mouse cursor, in paint order, so later ones are on top.
+    pub cursors: Vec<CursorRegion>,
     /// What the areas mean, in paint order, for assistive technology.
     pub semantics: Vec<SemanticsNode>,
+}
+
+/// An area that chooses the mouse cursor, cut to what is visible.
+pub struct CursorRegion {
+    pub rect: Rect,
+    pub icon: CursorIcon,
 }
 
 /// What an area means, where it is, and what activating it does.
@@ -61,6 +77,27 @@ pub struct PressRegion {
     /// Where the area's top-left corner is, before it was cut to what is visible.
     pub origin: Offset,
     pub on_press: Rc<dyn Fn(PressEvent)>,
+}
+
+/// An area that reacts to one pointer button, cut to what is visible.
+pub struct ButtonRegion {
+    pub rect: Rect,
+    /// Where the area's top-left corner is, before it was cut to what is visible.
+    pub origin: Offset,
+    /// The button this reacts to.
+    pub button: PointerButton,
+    pub on_event: Rc<dyn Fn(&PointerEvent)>,
+}
+
+/// An area that sees key events that happen inside it, cut to what is visible.
+pub struct KeyRegion {
+    pub rect: Rect,
+    /// The focusable areas painted inside this one, as indices into [`DisplayList::focusables`].
+    /// A key event for one of them reaches this handler too.
+    pub focusables: std::ops::Range<usize>,
+    /// Whether this sees the event before the focused area (a preview) instead of after it.
+    pub preview: bool,
+    pub on_key: KeyHandler,
 }
 
 /// An area that can be picked up, cut to what is visible.
@@ -240,12 +277,57 @@ impl DisplayList {
             .any(|region| contains(region.rect, point))
     }
 
+    /// The cursor the topmost cursor region containing `point` asks for, if any.
+    pub fn cursor_at(&self, point: Offset) -> Option<CursorIcon> {
+        self.cursors
+            .iter()
+            .rev()
+            .find(|region| contains(region.rect, point))
+            .map(|region| region.icon)
+    }
+
     /// The topmost drag region containing `point`.
     pub fn drag_at(&self, point: Offset) -> Option<&DragRegion> {
         self.drags
             .iter()
             .rev()
             .find(|region| contains(region.rect, point))
+    }
+
+    /// The topmost region reacting to `button` that contains `point`.
+    pub fn button_at(&self, point: Offset, button: PointerButton) -> Option<&ButtonRegion> {
+        self.buttons
+            .iter()
+            .rev()
+            .find(|region| region.button == button && contains(region.rect, point))
+    }
+
+    /// Gives `event` to the handlers it goes through, stopping at the first that handles it,
+    /// and returns whether one did. The order is: [`Modifier::on_preview_key_event`](crate::Modifier::on_preview_key_event)
+    /// areas around the focused area, outermost first; the focused area; then
+    /// [`Modifier::on_key_event`](crate::Modifier::on_key_event) areas around it, innermost first.
+    /// With no focused area, every such area in the window is "around" it.
+    pub fn dispatch_key(&self, focused: Option<&Focus>, event: &crate::KeyEvent) -> bool {
+        let index = focused.and_then(|focus| {
+            self.focusables
+                .iter()
+                .position(|region| region.focus.id() == focus.id())
+        });
+        // Handlers are cloned out first: running one may change state, not this list.
+        let around: Vec<&KeyRegion> = self
+            .key_handlers
+            .iter()
+            .filter(|region| index.is_none_or(|index| region.focusables.contains(&index)))
+            .collect();
+        let preview = around.iter().filter(|region| region.preview);
+        let bubble = around.iter().rev().filter(|region| !region.preview);
+        let focused = index.map(|index| &self.focusables[index].on_key);
+        let handlers: Vec<KeyHandler> = preview
+            .map(|region| Rc::clone(&region.on_key))
+            .chain(focused.map(Rc::clone))
+            .chain(bubble.map(|region| Rc::clone(&region.on_key)))
+            .collect();
+        handlers.iter().any(|handler| handler(event))
     }
 
     /// The topmost press region containing `point`.
@@ -262,5 +344,190 @@ impl DisplayList {
             .iter()
             .rev()
             .find(|region| region.vertical == vertical && contains(region.rect, point))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use rustle_text::{StyledSpan, TextMeasurer, TextStyle};
+    use rustle_unit::Constraints;
+
+    use super::*;
+    use crate::{
+        Key, KeyEvent, Modifier, Modifiers, Overlay, PointerButton, canvas, composition,
+        display_list, layout, remember_focus,
+    };
+
+    struct NoText;
+
+    impl TextMeasurer for NoText {
+        fn measure(&mut self, _: &str, _: &TextStyle, _: f32) -> Size {
+            Size::new(0.0, 0.0)
+        }
+        fn measure_spans(&mut self, _: &[StyledSpan], _: &TextStyle, _: f32) -> Size {
+            Size::new(0.0, 0.0)
+        }
+        fn layout(&mut self, _: &[StyledSpan], _: &TextStyle, _: f32) -> rustle_text::TextLayout {
+            unimplemented!("the tests lay out no text")
+        }
+    }
+
+    type Log = Rc<RefCell<Vec<&'static str>>>;
+
+    fn recorder(
+        log: &Log,
+        name: &'static str,
+        handled: bool,
+    ) -> impl Fn(&KeyEvent) -> bool + use<> {
+        let log = Rc::clone(log);
+        move |_| {
+            log.borrow_mut().push(name);
+            handled
+        }
+    }
+
+    /// outer(preview, bubble) > inner(bubble) > field a; outer > field b.
+    fn keyed(log: &Log, stop_at: &'static str) -> (DisplayList, Vec<Focus>) {
+        let foci = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let (log, foci) = (Rc::clone(log), Rc::clone(&foci));
+            move || {
+                let (a, b) = (remember_focus(), remember_focus());
+                foci.borrow_mut().clear();
+                foci.borrow_mut().extend([a.clone(), b.clone()]);
+                let outer = Modifier::new()
+                    .size(100.0, 100.0)
+                    .on_preview_key_event(recorder(&log, "preview", stop_at == "preview"))
+                    .on_key_event(recorder(&log, "outer", stop_at == "outer"));
+                layout(outer, Overlay::default(), || {
+                    let inner = Modifier::new().size(40.0, 40.0).on_key_event(recorder(
+                        &log,
+                        "inner",
+                        stop_at == "inner",
+                    ));
+                    layout(inner, Overlay::default(), || {
+                        canvas(
+                            Modifier::new()
+                                .size(10.0, 10.0)
+                                .focusable(&a, recorder(&log, "a", stop_at == "a")),
+                            |_| {},
+                        );
+                    });
+                    canvas(
+                        Modifier::new()
+                            .size(10.0, 10.0)
+                            .focusable(&b, recorder(&log, "b", false)),
+                        |_| {},
+                    );
+                });
+            }
+        };
+        let mut composition = composition(root);
+        composition.compose();
+        let tree = composition.output().expect("composed");
+        let display = display_list(
+            &tree,
+            Constraints::loose(Size::new(200.0, 200.0)),
+            &mut NoText,
+        );
+        let foci = foci.borrow().clone();
+        (display, foci)
+    }
+
+    #[test]
+    fn keys_bubble_from_the_focused_area_outwards() {
+        let log = Log::default();
+        let (display, foci) = keyed(&log, "none");
+        let event = KeyEvent::press(Key::F(5), Modifiers::NONE);
+        assert!(!display.dispatch_key(Some(&foci[0]), &event));
+        assert_eq!(*log.borrow(), ["preview", "a", "inner", "outer"]);
+        log.borrow_mut().clear();
+        // Field b is not inside `inner`.
+        assert!(!display.dispatch_key(Some(&foci[1]), &event));
+        assert_eq!(*log.borrow(), ["preview", "b", "outer"]);
+    }
+
+    #[test]
+    fn a_handler_stops_the_event() {
+        for (stop, seen) in [
+            ("preview", vec!["preview"]),
+            ("a", vec!["preview", "a"]),
+            ("inner", vec!["preview", "a", "inner"]),
+        ] {
+            let log = Log::default();
+            let (display, foci) = keyed(&log, stop);
+            let event = KeyEvent::press(Key::Escape, Modifiers::NONE);
+            assert!(display.dispatch_key(Some(&foci[0]), &event));
+            assert_eq!(*log.borrow(), seen);
+        }
+    }
+
+    #[test]
+    fn with_no_focus_every_handler_sees_the_key_innermost_first() {
+        let log = Log::default();
+        let (display, _) = keyed(&log, "none");
+        let event = KeyEvent::press(Key::F(1), Modifiers::CTRL);
+        assert!(!display.dispatch_key(None, &event));
+        assert_eq!(*log.borrow(), ["preview", "inner", "outer"]);
+    }
+
+    #[test]
+    fn button_regions_are_found_by_button() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let root = {
+            let seen = Rc::clone(&seen);
+            move || {
+                let secondary = Rc::clone(&seen);
+                let middle = Rc::clone(&seen);
+                canvas(
+                    Modifier::new()
+                        .size(50.0, 50.0)
+                        .on_secondary_click(move |event| secondary.borrow_mut().push(event.button))
+                        .on_middle_click(move |event| middle.borrow_mut().push(event.button)),
+                    |_| {},
+                );
+            }
+        };
+        let mut composition = composition(root);
+        composition.compose();
+        let tree = composition.output().expect("composed");
+        let display = display_list(
+            &tree,
+            Constraints::loose(Size::new(200.0, 200.0)),
+            &mut NoText,
+        );
+        let at = Offset::new(10.0, 10.0);
+        assert!(display.button_at(at, PointerButton::Primary).is_none());
+        assert!(
+            display
+                .button_at(Offset::new(80.0, 10.0), PointerButton::Middle)
+                .is_none()
+        );
+        for button in [PointerButton::Secondary, PointerButton::Middle] {
+            let region = display.button_at(at, button).expect("region");
+            (region.on_event)(&crate::PointerEvent {
+                button,
+                phase: crate::PointerPhase::Click,
+                position: at,
+                window_position: at,
+                modifiers: Modifiers::NONE,
+                click_count: 1,
+            });
+            // A press is not a click.
+            (region.on_event)(&crate::PointerEvent {
+                phase: crate::PointerPhase::Press,
+                button,
+                position: at,
+                window_position: at,
+                modifiers: Modifiers::NONE,
+                click_count: 1,
+            });
+        }
+        assert_eq!(
+            *seen.borrow(),
+            [PointerButton::Secondary, PointerButton::Middle]
+        );
     }
 }

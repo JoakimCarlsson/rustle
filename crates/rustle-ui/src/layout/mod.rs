@@ -18,8 +18,9 @@ pub use alignment::{BoxAlignment, ContentScale, Overlay};
 pub use children::Children;
 pub use paint::display_list;
 pub use regions::{
-    DisplayList, DragRegion, DragSourceRegion, DropTargetRegion, FileDropRegion, FocusRegion,
-    HitRegion, HoverRegion, PressRegion, ScrollRegion, SemanticsNode,
+    ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
+    FileDropRegion, FocusRegion, HitRegion, HoverRegion, KeyRegion, PressRegion, ScrollRegion,
+    SemanticsNode,
 };
 
 /// Decides how a node sizes and places its children.

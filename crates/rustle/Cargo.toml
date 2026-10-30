@@ -37,6 +37,25 @@ path = "../../examples/hello_world/main.rs"
 name = "advance"
 path = "../../examples/advance/main.rs"
 
+# Times a frame of a few thousand nodes with an animating value.
+[[example]]
+name = "bench"
+path = "../../examples/bench/main.rs"
+
+[[example]]
+name = "multi_window"
+path = "../../examples/multi_window/main.rs"
+
+# Rich text spans, wrapped text areas, glyph-level layout and selection across blocks.
+[[example]]
+name = "text"
+path = "../../examples/text/main.rs"
+
+# Rounded clips, a pinned chat list and scrollbars.
+[[example]]
+name = "graphics"
+path = "../../examples/graphics/main.rs"
+
 [features]
 # More Phosphor weights; the regular weight is always there.
 icons-thin = ["rustle-icons/thin"]
