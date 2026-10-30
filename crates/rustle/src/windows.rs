@@ -126,9 +126,7 @@ impl App {
                 .create_window(options.attributes())
                 .map_err(|error| error.to_string())?,
         );
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
-            Box::new(event_loop.owned_display_handle()),
-        ));
+        let instance = shared_instance(event_loop);
         let adapter = (self.make_adapter)(event_loop, &window);
         if options.visible {
             window.set_visible(true);
@@ -344,4 +342,24 @@ impl App {
             state.window.set_cursor(self.cursor_icon_at(pointer));
         }
     }
+}
+
+thread_local! {
+    /// The one wgpu instance every window draws through.
+    static INSTANCE: std::cell::OnceCell<wgpu::Instance> = const { std::cell::OnceCell::new() };
+}
+
+/// The wgpu instance shared by all windows, made on first use.
+///
+/// Each window used to make its own. Dropping one window's instance while another's was in use
+/// crashed some Vulkan drivers (NVIDIA on Wayland) inside the next frame's swapchain acquire.
+fn shared_instance(event_loop: &ActiveEventLoop) -> wgpu::Instance {
+    INSTANCE.with(|cell| {
+        cell.get_or_init(|| {
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
+                event_loop.owned_display_handle(),
+            )))
+        })
+        .clone()
+    })
 }
