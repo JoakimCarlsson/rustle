@@ -1,5 +1,6 @@
 //! Text: shaping with glyphon, drawing it, and measuring it for layout.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use glyphon::cosmic_text::{
@@ -84,28 +85,12 @@ impl TextMeasurer for Renderer {
             *used = self.frame;
             return *size;
         }
-        let buffer = shape(
+        let size = measure_plain(
             &mut self.font_system.borrow_mut(),
-            Setting {
-                content: Content::Plain {
-                    text: content,
-                    font_weight: legible_weight(style.font_weight.0, style.color),
-                    font_family: style.font_family,
-                    italic: style.italic,
-                    letter_spacing: style.letter_spacing,
-                    ligatures: style.ligatures,
-                },
-                font_size: style.font_size,
-                line_height: style.line_height,
-                align: TextAlign::Start,
-                max_lines: style.max_lines,
-                wrap: style.wrap,
-            },
-            max_width.is_finite().then_some(max_width),
+            content,
+            style,
+            max_width,
         );
-        // A trailing line break leaves an empty last line the shaper does not report.
-        let breaks = content.matches('\n').count() as u32 + 1;
-        let size = Self::size_of(&buffer, style.line_height, breaks);
         self.measured.insert(key, (size, self.frame));
         size
     }
@@ -123,19 +108,7 @@ impl TextMeasurer for Renderer {
             *used = self.frame;
             return *size;
         }
-        let buffer = shape(
-            &mut self.font_system.borrow_mut(),
-            Setting {
-                content: Content::Rich(spans),
-                font_size: style.font_size,
-                line_height: style.line_height,
-                align: TextAlign::Start,
-                max_lines: style.max_lines,
-                wrap: style.wrap,
-            },
-            max_width.is_finite().then_some(max_width),
-        );
-        let size = Self::size_of(&buffer, style.line_height, 0);
+        let size = measure_rich(&mut self.font_system.borrow_mut(), spans, style, max_width);
         self.measured.insert(key, (size, self.frame));
         size
     }
@@ -157,21 +130,119 @@ fn measure_key(fill: impl FnOnce(&mut std::collections::hash_map::DefaultHasher)
     hasher.finish()
 }
 
-impl Renderer {
-    fn size_of(buffer: &Buffer, line_height: f32, at_least: u32) -> Size {
-        // Lines are as tall as their tallest run, which is more than `line_height` when a span has a larger size.
-        let (width, height, lines) =
-            buffer
-                .layout_runs()
-                .fold((0.0_f32, 0.0_f32, 0_u32), |(width, height, lines), run| {
-                    (
-                        width.max(run.line_w),
-                        height + run.line_height.max(line_height),
-                        lines + 1,
-                    )
-                });
-        let missing = at_least.max(1).saturating_sub(lines);
-        Size::new(width, height + missing as f32 * line_height)
+/// The size of `content` set in `style`, wrapped at `max_width` if it is finite.
+fn measure_plain(
+    font_system: &mut FontSystem,
+    content: &str,
+    style: &TextStyle,
+    max_width: f32,
+) -> Size {
+    let buffer = shape(
+        font_system,
+        Setting {
+            content: Content::Plain {
+                text: content,
+                font_weight: legible_weight(style.font_weight.0, style.color),
+                font_family: style.font_family,
+                italic: style.italic,
+                letter_spacing: style.letter_spacing,
+                ligatures: style.ligatures,
+            },
+            font_size: style.font_size,
+            line_height: style.line_height,
+            align: TextAlign::Start,
+            max_lines: style.max_lines,
+            wrap: style.wrap,
+        },
+        max_width.is_finite().then_some(max_width),
+    );
+    // A trailing line break leaves an empty last line the shaper does not report.
+    let breaks = content.matches('\n').count() as u32 + 1;
+    size_of_buffer(&buffer, style.line_height, breaks)
+}
+
+/// The size of `spans` set in `style`, wrapped at `max_width` if it is finite.
+fn measure_rich(
+    font_system: &mut FontSystem,
+    spans: &[StyledSpan],
+    style: &TextStyle,
+    max_width: f32,
+) -> Size {
+    let buffer = shape(
+        font_system,
+        Setting {
+            content: Content::Rich(spans),
+            font_size: style.font_size,
+            line_height: style.line_height,
+            align: TextAlign::Start,
+            max_lines: style.max_lines,
+            wrap: style.wrap,
+        },
+        max_width.is_finite().then_some(max_width),
+    );
+    size_of_buffer(&buffer, style.line_height, 0)
+}
+
+fn size_of_buffer(buffer: &Buffer, line_height: f32, at_least: u32) -> Size {
+    // Lines are as tall as their tallest run, which is more than `line_height` when a span has a larger size.
+    let (width, height, lines) =
+        buffer
+            .layout_runs()
+            .fold((0.0_f32, 0.0_f32, 0_u32), |(width, height, lines), run| {
+                (
+                    width.max(run.line_w),
+                    height + run.line_height.max(line_height),
+                    lines + 1,
+                )
+            });
+    let missing = at_least.max(1).saturating_sub(lines);
+    Size::new(width, height + missing as f32 * line_height)
+}
+
+/// Measures and lays out text with the fonts of this thread, without a GPU.
+///
+/// What a host uses to lay an interface out on a thread that has no renderer, when the
+/// renderer that draws it lives on another one. It shares its fonts with every
+/// [`Renderer`] made on the thread.
+pub struct TextMetrics {
+    font_system: Rc<RefCell<FontSystem>>,
+}
+
+impl TextMetrics {
+    /// A measurer using the fonts of this thread, which are loaded the first time one is needed.
+    pub fn new() -> Self {
+        let (font_system, _) = crate::device::shared_fonts();
+        Self { font_system }
+    }
+}
+
+impl Default for TextMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TextMeasurer for TextMetrics {
+    fn measure(&mut self, content: &str, style: &TextStyle, max_width: f32) -> Size {
+        measure_plain(
+            &mut self.font_system.borrow_mut(),
+            content,
+            style,
+            max_width,
+        )
+    }
+
+    fn measure_spans(&mut self, spans: &[StyledSpan], style: &TextStyle, max_width: f32) -> Size {
+        measure_rich(&mut self.font_system.borrow_mut(), spans, style, max_width)
+    }
+
+    fn layout(&mut self, spans: &[StyledSpan], style: &TextStyle, max_width: f32) -> TextLayout {
+        layout_spans(
+            &mut self.font_system.borrow_mut(),
+            spans,
+            style,
+            max_width.is_finite().then_some(max_width),
+        )
     }
 }
 

@@ -56,9 +56,17 @@ path = "../../examples/text/main.rs"
 name = "graphics"
 path = "../../examples/graphics/main.rs"
 
+# An interface inside a host that owns the GPU device, checked headless.
+[[example]]
+name = "embedded"
+path = "../../examples/embedded/main.rs"
+
 [features]
 # More Phosphor weights; the regular weight is always there.
 icons-thin = ["rustle-icons/thin"]
 icons-light = ["rustle-icons/light"]
 icons-bold = ["rustle-icons/bold"]
 icons-fill = ["rustle-icons/fill"]
+
+[dev-dependencies]
+pollster = "1.0.1"

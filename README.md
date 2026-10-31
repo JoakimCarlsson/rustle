@@ -38,6 +38,7 @@ It is a full-window dashboard in a restrained, monochrome style, and everything 
 - **Animation:** `animate_*_as_state`, `Animatable`, tween and spring.
 - **Navigation:** a back stack and a host.
 - **Accessibility:** a semantics tree sent to the platform's screen reader API.
+- **Embedding:** `rustle::Embedded` runs an interface inside a host that owns the window, the GPU device and the frame. The host gives it the size, the pointer, the wheel, the keys and the input method, learns from each whether the interface used the event (`Modifier::blocks_pointer` makes a panel's empty space count), draws it into its own texture, can replace the root without rebuilding the renderer, backs `remember_saveable` with its own `Saver`, and draws its own content into an area the interface reserves with `viewport`.
 
 See [docs/architecture.md](docs/architecture.md) for the crates, what belongs in each, the frame flow, and the current limitations.
 
@@ -47,6 +48,8 @@ See [docs/architecture.md](docs/architecture.md) for the crates, what belongs in
 make fmt
 make lint
 ```
+
+`cargo run --example embedded -p rustle` checks the embedding API without a window: it clicks, types through an input method, replaces the root and draws two interfaces into textures it made.
 
 To see what a change looks like without opening a window, draw one frame offscreen to a PNG:
 

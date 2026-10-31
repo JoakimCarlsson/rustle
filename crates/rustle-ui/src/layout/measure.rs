@@ -185,6 +185,7 @@ fn measure_modified(
             on_pinch: Rc::clone(on_pinch),
             inner,
         }),
+        Element::BlocksPointer => wrap(next(constraints), Paint::BlocksPointer),
         Element::PointerMove(on_move) => wrap(next(constraints), |inner| Paint::PointerMove {
             on_move: Rc::clone(on_move),
             inner,

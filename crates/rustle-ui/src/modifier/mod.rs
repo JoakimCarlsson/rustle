@@ -96,6 +96,7 @@ pub(crate) enum Element {
     DragSource(Rc<dyn std::any::Any>),
     DropTarget(DropHandler),
     Pinch(Rc<dyn Fn(f32)>),
+    BlocksPointer,
     Clip,
     ClipRounded([f32; 4]),
     Scroll {

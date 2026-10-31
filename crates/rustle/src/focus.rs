@@ -2,11 +2,10 @@
 
 use rustle_foundation::{Focus, Key, KeyEvent};
 use rustle_ui::{Preedit, take_focus_request};
-use winit::dpi::{LogicalPosition, LogicalSize};
 
-use crate::app::App;
+use crate::interface::Interface;
 
-impl App {
+impl Interface {
     /// Moves focus to `focus`, telling the old and new owners.
     pub(crate) fn set_focus(&mut self, focus: Option<Focus>) {
         let same = match (&self.focused, &focus) {
@@ -26,15 +25,10 @@ impl App {
             new.set_focused(true);
         }
         self.focused = focus;
-        // An input method only gets keys while something wants text, so it
-        // cannot take keys from the rest of the application.
-        if let Some(state) = &self.window {
-            state
-                .window
-                .set_ime_allowed(self.focused.is_some() && self.ime_allowed());
-        }
+        self.focus_changed = true;
     }
 
+    /// Moves focus to what the application asked for, if it asked.
     pub(crate) fn apply_focus_request(&mut self) {
         if let Some(focus) = take_focus_request() {
             self.set_focus(Some(focus));
@@ -48,34 +42,17 @@ impl App {
         }
     }
 
-    /// Tells the window where the caret is, once per move, so the input method's
-    /// candidate popup appears next to it.
-    pub(crate) fn sync_ime_area(&mut self) {
-        let area = self.display.ime_area.filter(|_| self.focused.is_some());
-        if area == self.ime_area {
-            return;
-        }
-        self.ime_area = area;
-        if let (Some(area), Some(state)) = (area, &self.window) {
-            let scale = state.window.scale_factor();
-            state.window.set_ime_cursor_area(
-                LogicalPosition::new(area.origin.x as f64, area.origin.y as f64)
-                    .to_physical::<f64>(scale),
-                LogicalSize::new(area.size.width as f64, area.size.height as f64)
-                    .to_physical::<f64>(scale),
-            );
-        }
-    }
-
     /// Gives a key event to the areas that preview keys (outermost first), then the focused
     /// area, then those that see what it left unhandled (innermost first). If none handled
     /// it, does its default: Tab moves focus along and Escape drops it.
-    pub(crate) fn key_event(&mut self, event: KeyEvent) {
+    ///
+    /// Returns whether the key was used: handled by an area, or acted on by its default.
+    pub(crate) fn key_event(&mut self, event: KeyEvent) -> bool {
         if self.display.dispatch_key(self.focused.as_ref(), &event) {
-            return;
+            return true;
         }
         if !event.pressed {
-            return;
+            return false;
         }
         match event.key {
             Key::Tab => {
@@ -94,9 +71,14 @@ impl App {
                 };
                 let next = next.map(|index| regions[index].focus.clone());
                 self.set_focus(next);
+                true
             }
-            Key::Escape => self.set_focus(None),
-            _ => {}
+            Key::Escape => {
+                let had_focus = self.focused.is_some();
+                self.set_focus(None);
+                had_focus
+            }
+            _ => false,
         }
     }
 }

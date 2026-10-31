@@ -4,10 +4,12 @@ use std::process;
 
 mod accessibility;
 mod app;
+mod embedded;
 mod focus;
 mod handler;
 mod host;
 mod input;
+mod interface;
 mod overlay;
 mod pointer;
 mod preview;
@@ -17,6 +19,7 @@ mod windows;
 
 pub use accesskit_winit::Event as AccessibilityEvent;
 pub use app::{Wake, run, run_with};
+pub use embedded::Embedded;
 pub use host::Host;
 pub use preview::preview;
 pub use window::{ResizeEdge, WindowHandle, WindowOptions, current_window, window};
@@ -36,7 +39,7 @@ pub use rustle_foundation::{
     column, column_arranged, column_with, floating, flow_row, image, lazy_column, lazy_list,
     lazy_list_keyed, lazy_row, lazy_vertical_grid, remember_lazy_list_state, reveal, rich_text,
     rich_text_with, row, row_arranged, row_with, spacer, stack, stack_aligned, stack_with, text,
-    text_styled, text_with,
+    text_styled, text_with, viewport, viewport_with,
 };
 pub use rustle_foundation::{
     Focus, Key, KeyCode, KeyEvent, KeyLocation, LOCAL_LAYOUT_DIRECTION, LOCAL_SYSTEM_DARK,
@@ -49,6 +52,7 @@ pub use rustle_foundation::{
     SelectionPoint, SelectionState, basic_text_area_no_wrap, remember_selection_state,
     selection_container, selection_container_with,
 };
+pub use rustle_geometry::{Offset, Rect, Size};
 pub use rustle_graphics::TextWrap;
 pub use rustle_graphics::{Color, ImageData, TextAlign};
 pub use rustle_macros::composable;
@@ -58,6 +62,7 @@ pub use rustle_runtime::{
     group, key, launched_effect, memo, produce_state, remember, remember_saveable,
     remember_state_list, remember_state_map, remember_updated_state, side_effect,
 };
+pub use rustle_runtime::{Saver, set_saver};
 pub use rustle_text::{
     Affinity, Caret, Cluster, FontFamily, FontWeight, LineLayout, TextLayout, TextSpan, TextStyle,
     font_families, layout_spans, layout_text, register_font,
@@ -106,7 +111,7 @@ pub mod prelude {
         snackbar, spacer, sparkline, spring, stack, stack_aligned, stack_with, styled_button,
         surface, surface_with, swipe_to_dismiss, switch, system_theme, tab_row, table_cell,
         table_row, tabs_list, text, text_area, text_button, text_field, text_field_focused,
-        text_styled, text_with, theme, title, tooltip, top_app_bar, tween, window,
+        text_styled, text_with, theme, title, tooltip, top_app_bar, tween, viewport, window,
     };
 }
 

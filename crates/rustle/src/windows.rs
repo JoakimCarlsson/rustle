@@ -8,33 +8,20 @@
 
 use std::mem;
 use std::sync::Arc;
-use std::time::Instant;
 
-use rustle_foundation::Focus;
-use rustle_geometry::Offset;
-use rustle_ui::DisplayList;
 use rustle_wgpu::Renderer;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Theme as WindowTheme, Window, WindowId};
 
-use crate::app::{App, Carrying, Drag, FollowEntry, HoverEntry, LongPress, WindowState};
+use crate::app::{App, WindowState};
+use crate::interface::Interface;
 use crate::window::{Entry, MAIN, REGISTRY, WindowOptions};
 
 /// The state of one window while another is being served.
 #[derive(Default)]
 pub(crate) struct WindowCtx {
     pub(crate) key: u64,
-    pub(crate) display: DisplayList,
-    pub(crate) pointer: Option<Offset>,
-    pub(crate) focused: Option<Focus>,
-    pub(crate) typed: Option<(Instant, String)>,
-    pub(crate) long_press: Option<LongPress>,
-    pub(crate) hovered: Vec<HoverEntry>,
-    pub(crate) following: Vec<FollowEntry>,
-    pub(crate) dragging: Option<Drag>,
-    pub(crate) carrying: Option<Carrying>,
-    pub(crate) last_press: Option<(Instant, Offset, u32)>,
-    pub(crate) pressed: Option<rustle_geometry::Rect>,
+    pub(crate) ui: Interface,
     pub(crate) options: WindowOptions,
     pub(crate) window: Option<WindowState>,
 }
@@ -43,17 +30,7 @@ impl App {
     /// Swaps the per-window fields with `ctx`.
     fn exchange(&mut self, ctx: &mut WindowCtx) {
         mem::swap(&mut self.key, &mut ctx.key);
-        mem::swap(&mut self.display, &mut ctx.display);
-        mem::swap(&mut self.pointer, &mut ctx.pointer);
-        mem::swap(&mut self.focused, &mut ctx.focused);
-        mem::swap(&mut self.typed, &mut ctx.typed);
-        mem::swap(&mut self.long_press, &mut ctx.long_press);
-        mem::swap(&mut self.hovered, &mut ctx.hovered);
-        mem::swap(&mut self.following, &mut ctx.following);
-        mem::swap(&mut self.dragging, &mut ctx.dragging);
-        mem::swap(&mut self.carrying, &mut ctx.carrying);
-        mem::swap(&mut self.last_press, &mut ctx.last_press);
-        mem::swap(&mut self.pressed, &mut ctx.pressed);
+        self.ui.exchange(&mut ctx.ui);
         mem::swap(&mut self.options, &mut ctx.options);
         mem::swap(&mut self.window, &mut ctx.window);
     }
@@ -127,7 +104,11 @@ impl App {
                 .map_err(|error| error.to_string())?,
         );
         let instance = shared_instance(event_loop);
-        let adapter = (self.make_adapter)(event_loop, &window);
+        let make_adapter = self
+            .make_adapter
+            .as_ref()
+            .ok_or("this application has no native windows")?;
+        let adapter = make_adapter(event_loop, &window);
         if options.visible {
             window.set_visible(true);
         }
@@ -171,10 +152,10 @@ impl App {
         for key in cancelled {
             if let Some(index) = (0..self.slots.len()).find(|&i| self.slot_key(i) == key) {
                 self.activate(index);
-                self.pressed = None;
-                self.dragging = None;
-                self.carrying = None;
-                self.long_press = None;
+                self.ui.pressed = None;
+                self.ui.dragging = None;
+                self.ui.carrying = None;
+                self.ui.long_press = None;
             }
         }
         for key in closes {
@@ -307,40 +288,81 @@ impl App {
         self.options.ime_allowed
     }
 
-    /// Whether the pointer is over a clickable area, for the cursor icon.
-    pub(crate) fn cursor_icon_at(&self, pointer: Offset) -> winit::window::CursorIcon {
-        use winit::window::CursorIcon as W;
-        let icon = self.display.cursor_at(pointer).or_else(|| {
-            self.display
-                .hit_test(pointer)
-                .map(|_| rustle_ui::CursorIcon::Pointer)
-        });
-        match icon.unwrap_or_default() {
-            rustle_ui::CursorIcon::Default => W::Default,
-            rustle_ui::CursorIcon::Pointer => W::Pointer,
-            rustle_ui::CursorIcon::Text => W::Text,
-            rustle_ui::CursorIcon::Crosshair => W::Crosshair,
-            rustle_ui::CursorIcon::Grab => W::Grab,
-            rustle_ui::CursorIcon::Grabbing => W::Grabbing,
-            rustle_ui::CursorIcon::NotAllowed => W::NotAllowed,
-            rustle_ui::CursorIcon::Wait => W::Wait,
-            rustle_ui::CursorIcon::Move => W::Move,
-            rustle_ui::CursorIcon::EwResize => W::EwResize,
-            rustle_ui::CursorIcon::NsResize => W::NsResize,
-            rustle_ui::CursorIcon::NeswResize => W::NeswResize,
-            rustle_ui::CursorIcon::NwseResize => W::NwseResize,
-            rustle_ui::CursorIcon::ColResize => W::ColResize,
-            rustle_ui::CursorIcon::RowResize => W::RowResize,
+    /// Shows the cursor the area under a stationary pointer asks for, after a new layout.
+    pub(crate) fn refresh_cursor(&self) {
+        if self.ui.pointer.is_some()
+            && let Some(state) = &self.window
+            && !self.ui.carrying.as_ref().is_some_and(|c| c.active)
+        {
+            state.window.set_cursor(winit_cursor(self.ui.cursor()));
         }
     }
 
-    /// Shows the cursor the area under a stationary pointer asks for, after a new layout.
-    pub(crate) fn refresh_cursor(&self) {
-        if let (Some(pointer), Some(state)) = (self.pointer, &self.window)
-            && !self.carrying.as_ref().is_some_and(|c| c.active)
-        {
-            state.window.set_cursor(self.cursor_icon_at(pointer));
+    /// Does what input asked of the window: redraws, shows the cursor, and allows or forbids
+    /// the input method as focus moves.
+    pub(crate) fn apply_effects(&mut self) {
+        if self.ui.take_focus_changed() {
+            // An input method only gets keys while something wants text, so it
+            // cannot take keys from the rest of the application.
+            self.ui.ime_area = None;
+            let allowed = self.ui.focused.is_some() && self.ime_allowed();
+            if let Some(state) = &self.window {
+                state.window.set_ime_allowed(allowed);
+            }
         }
+        if self.ui.take_redraw()
+            && let Some(state) = &self.window
+        {
+            state.window.request_redraw();
+        }
+    }
+
+    /// Shows the cursor for a pointer that just moved.
+    pub(crate) fn show_cursor(&self) {
+        if let Some(state) = &self.window {
+            state.window.set_cursor(winit_cursor(self.ui.cursor()));
+        }
+    }
+
+    /// Tells the window where the caret is, once per move, so the input method's
+    /// candidate popup appears next to it.
+    pub(crate) fn sync_ime_area(&mut self) {
+        let area = self.ui.caret_area();
+        if area == self.ui.ime_area {
+            return;
+        }
+        self.ui.ime_area = area;
+        if let (Some(area), Some(state)) = (area, &self.window) {
+            let scale = state.window.scale_factor();
+            state.window.set_ime_cursor_area(
+                winit::dpi::LogicalPosition::new(area.origin.x as f64, area.origin.y as f64)
+                    .to_physical::<f64>(scale),
+                winit::dpi::LogicalSize::new(area.size.width as f64, area.size.height as f64)
+                    .to_physical::<f64>(scale),
+            );
+        }
+    }
+}
+
+/// Turns Rustle's cursor icon into winit's.
+fn winit_cursor(icon: rustle_ui::CursorIcon) -> winit::window::CursorIcon {
+    use winit::window::CursorIcon as W;
+    match icon {
+        rustle_ui::CursorIcon::Default => W::Default,
+        rustle_ui::CursorIcon::Pointer => W::Pointer,
+        rustle_ui::CursorIcon::Text => W::Text,
+        rustle_ui::CursorIcon::Crosshair => W::Crosshair,
+        rustle_ui::CursorIcon::Grab => W::Grab,
+        rustle_ui::CursorIcon::Grabbing => W::Grabbing,
+        rustle_ui::CursorIcon::NotAllowed => W::NotAllowed,
+        rustle_ui::CursorIcon::Wait => W::Wait,
+        rustle_ui::CursorIcon::Move => W::Move,
+        rustle_ui::CursorIcon::EwResize => W::EwResize,
+        rustle_ui::CursorIcon::NsResize => W::NsResize,
+        rustle_ui::CursorIcon::NeswResize => W::NeswResize,
+        rustle_ui::CursorIcon::NwseResize => W::NwseResize,
+        rustle_ui::CursorIcon::ColResize => W::ColResize,
+        rustle_ui::CursorIcon::RowResize => W::RowResize,
     }
 }
 

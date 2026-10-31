@@ -1,10 +1,8 @@
 //! The window's event handler: creating the window, and reacting to what happens to it.
 
-use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::Instant;
 
-use rustle_foundation::KeyEvent;
 use rustle_geometry::Offset;
 use rustle_ui::PointerButton;
 use winit::application::ApplicationHandler;
@@ -14,7 +12,6 @@ use winit::window::{Theme as WindowTheme, WindowId};
 
 use crate::app::{App, UserEvent};
 use crate::input;
-use crate::overlay::{carrying_overlay, feedback};
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -62,14 +59,14 @@ impl App {
     /// Waits for the next long press that is due, or for the next event.
     pub(crate) fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.sync_windows(event_loop);
-        let Some((due, _, _)) = &self.long_press else {
+        let Some((due, _, _)) = &self.ui.long_press else {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         };
         if Instant::now() >= *due {
-            if let Some((_, on_long_press, _)) = self.long_press.take() {
+            if let Some((_, on_long_press, _)) = self.ui.long_press.take() {
                 // The press has become a long press, so it is no longer a click.
-                self.pressed = None;
+                self.ui.pressed = None;
                 on_long_press();
             }
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -83,7 +80,8 @@ impl App {
         if self.composition.recompose() {
             self.relayout_all();
         }
-        self.apply_focus_request();
+        self.ui.apply_focus_request();
+        self.apply_effects();
         self.request_redraw_for_frames();
     }
 
@@ -95,7 +93,7 @@ impl App {
         let Some(state) = &mut self.window else {
             return;
         };
-        if self.debug_input
+        if self.ui.debug_input
             && !matches!(
                 event,
                 WindowEvent::RedrawRequested | WindowEvent::CursorMoved { .. }
@@ -117,7 +115,8 @@ impl App {
                     (position.x / scale_factor) as f32,
                     (position.y / scale_factor) as f32,
                 );
-                self.pointer_moved(pointer);
+                self.ui.pointer_moved(pointer);
+                self.show_cursor();
             }
             WindowEvent::Touch(touch) => {
                 let scale_factor = state.window.scale_factor();
@@ -128,14 +127,19 @@ impl App {
                 // A finger is a pointer that is only there while it touches.
                 match touch.phase {
                     TouchPhase::Started => {
-                        self.pointer_moved(at);
-                        self.button_input(PointerButton::Primary, true);
+                        self.ui.pointer_moved(at);
+                        self.show_cursor();
+                        self.ui.button_input(PointerButton::Primary, true);
                     }
-                    TouchPhase::Moved => self.pointer_moved(at),
+                    TouchPhase::Moved => {
+                        self.ui.pointer_moved(at);
+                        self.show_cursor();
+                    }
                     TouchPhase::Ended | TouchPhase::Cancelled => {
-                        self.pointer_moved(at);
-                        self.button_input(PointerButton::Primary, false);
-                        self.pointer = None;
+                        self.ui.pointer_moved(at);
+                        self.show_cursor();
+                        self.ui.button_input(PointerButton::Primary, false);
+                        self.ui.pointer = None;
                     }
                 }
             }
@@ -148,103 +152,40 @@ impl App {
                         (delta.x as f32 / scale_factor, delta.y as f32 / scale_factor)
                     }
                 };
-                if let Some(pointer) = self.pointer {
-                    for (vertical, amount) in [(true, dy), (false, dx)] {
-                        if amount != 0.0
-                            && let Some(region) = self.display.scroll_at(pointer, vertical)
-                        {
-                            region.state.scroll_by(-amount);
-                        }
-                    }
-                }
+                self.ui.wheel(Offset::new(dx, dy));
             }
-            WindowEvent::CursorLeft { .. } => {
-                self.pointer = None;
-                state.window.request_redraw();
-                self.update_following();
-                self.update_hover();
-            }
+            WindowEvent::CursorLeft { .. } => self.ui.pointer_left(),
             WindowEvent::MouseInput {
                 state: button_state,
                 button,
                 ..
-            } => self.button_input(
+            } => self.ui.button_input(
                 input::pointer_button(button),
                 button_state == ElementState::Pressed,
             ),
-            WindowEvent::DroppedFile(path) => {
-                // The platform gives no position, so the file goes where the pointer last was.
-                if let Some(pointer) = self.pointer
-                    && let Some(region) = self.display.file_drop_at(pointer)
-                {
-                    let on_drop = Rc::clone(&region.on_drop);
-                    on_drop(path);
-                }
-            }
-            WindowEvent::PinchGesture { delta, .. } => {
-                if let Some(pointer) = self.pointer
-                    && let Some(region) = self.display.pinch_at(pointer)
-                {
-                    let on_pinch = Rc::clone(&region.on_pinch);
-                    on_pinch(delta as f32);
-                }
-            }
+            WindowEvent::DroppedFile(path) => self.ui.file_dropped(path),
+            WindowEvent::PinchGesture { delta, .. } => self.ui.pinch(delta as f32),
             WindowEvent::ThemeChanged(theme) => self.set_dark(theme == WindowTheme::Dark),
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = input::modifiers(modifiers.state());
+                self.ui.modifiers = input::modifiers(modifiers.state());
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                let event = input::key_event(&event, self.modifiers);
-                if self.debug_input {
+                let event = input::key_event(&event, self.ui.modifiers);
+                if self.ui.debug_input {
                     eprintln!("rustle input: key {event:?}");
                 }
-                if event.pressed
-                    && let Some(text) = &event.text
-                {
-                    self.typed = Some((Instant::now(), text.clone()));
-                }
-                self.key_event(event);
+                self.ui.keyboard(event);
             }
-            WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
-                if self.debug_input {
-                    eprintln!("rustle input: input method composing {text:?} {cursor:?}");
-                }
-                self.set_preedit(text, cursor);
-            }
+            WindowEvent::Ime(Ime::Preedit(text, cursor)) => self.ui.preedit(text, cursor),
             WindowEvent::Ime(Ime::Enabled | Ime::Disabled) => {
-                self.set_preedit(String::new(), None);
+                self.ui.preedit(String::new(), None);
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                // The composition ends with the commit.
-                self.set_preedit(String::new(), None);
-                if self.debug_input {
-                    eprintln!("rustle input: input method committed {text:?}");
-                }
-                // Some input methods deliver text a key press already typed.
-                let repeated = self.typed.as_ref().is_some_and(|(when, typed)| {
-                    *typed == text && when.elapsed() < std::time::Duration::from_millis(60)
-                });
-                if !repeated {
-                    self.key_event(KeyEvent::typed(text, self.modifiers));
-                }
+                self.ui.commit(text);
             }
             WindowEvent::RedrawRequested => {
                 let scale_factor = state.window.scale_factor() as f32;
-                let carried = carrying_overlay(&self.display, self.carrying.as_ref(), self.pointer);
-                let feedback = if carried.is_some() {
-                    None
-                } else {
-                    feedback(&self.display, self.pointer, &self.pressed)
-                };
-                let commands = match (feedback, carried) {
-                    (None, None) => Cow::Borrowed(self.display.commands.as_slice()),
-                    (feedback, carried) => {
-                        let mut commands = self.display.commands.clone();
-                        commands.extend(feedback);
-                        commands.extend(carried.into_iter().flatten());
-                        Cow::Owned(commands)
-                    }
-                };
+                let commands = self.ui.commands();
                 match state.renderer.render(&commands, scale_factor) {
                     Ok(true) => {}
                     Ok(false) => state.window.request_redraw(),
@@ -254,6 +195,7 @@ impl App {
             }
             _ => {}
         }
-        self.apply_focus_request();
+        self.ui.apply_focus_request();
+        self.apply_effects();
     }
 }

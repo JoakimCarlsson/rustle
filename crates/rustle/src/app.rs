@@ -6,14 +6,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rustle_foundation::{Focus, Modifiers};
-use rustle_geometry::{Offset, Rect, Size};
-use rustle_ui::{Composition, DisplayList};
+use rustle_geometry::Size;
+use rustle_ui::Composition;
 use rustle_unit::Constraints;
 use rustle_wgpu::Renderer;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::Window;
 
+use crate::interface::Interface;
 use crate::preview::snapshot;
 use crate::saved;
 use crate::window::WindowOptions;
@@ -61,7 +61,7 @@ pub fn run(root: impl FnMut() + 'static) {
 /// Like [`run`], with the first window opened as `options` describes.
 ///
 /// Further windows are opened from the composition with [`window`](crate::window).
-pub fn run_with(options: WindowOptions, mut root: impl FnMut() + 'static) {
+pub fn run_with(options: WindowOptions, root: impl FnMut() + 'static) {
     // Developer tool: draw one frame without a window and write it as a PNG.
     //   RUSTLE_SNAPSHOT=out.png [RUSTLE_SNAPSHOT_SIZE=1280x800] [RUSTLE_SNAPSHOT_LIGHT=1]
     //   [RUSTLE_SNAPSHOT_INPUT="click:x,y;type:text;key:Backspace"] replays input first
@@ -83,24 +83,23 @@ pub fn run_with(options: WindowOptions, mut root: impl FnMut() + 'static) {
     }
     rustle_runtime::set_saver(Rc::new(saved::FileSaver::open()));
     let dark = Rc::new(Cell::new(true));
-    let provided = {
-        let dark = Rc::clone(&dark);
-        move || {
-            crate::window::in_main_window(|| {
-                rustle_foundation::LOCAL_SYSTEM_DARK.provide(dark.get(), &mut root)
-            })
-        }
-    };
+    let provided = provided(root, Rc::clone(&dark));
     let result = EventLoop::<UserEvent>::with_user_event()
         .build()
         .and_then(|event_loop| {
             let proxy = event_loop.create_proxy();
-            let mut app = App::new(provided, dark, options, adapter_with(proxy.clone()), {
-                let proxy = proxy.clone();
-                move || {
-                    let _ = proxy.send_event(UserEvent::Wake);
-                }
-            });
+            let mut app = App::new(
+                provided,
+                dark,
+                options,
+                Some(adapter_with(proxy.clone())),
+                {
+                    let proxy = proxy.clone();
+                    move || {
+                        let _ = proxy.send_event(UserEvent::Wake);
+                    }
+                },
+            );
             // A new composition is dirty, so the first wake-up also composes it.
             let _ = proxy.send_event(UserEvent::Wake);
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -117,6 +116,18 @@ pub fn run_with(options: WindowOptions, mut root: impl FnMut() + 'static) {
     }
 }
 
+/// Wraps `root` so it sees the main window's handle and the system appearance in `dark`.
+pub(crate) fn provided(
+    mut root: impl FnMut() + 'static,
+    dark: Rc<Cell<bool>>,
+) -> impl FnMut() + 'static {
+    move || {
+        crate::window::in_main_window(|| {
+            rustle_foundation::LOCAL_SYSTEM_DARK.provide(dark.get(), &mut root)
+        })
+    }
+}
+
 /// Makes accessibility adapters whose requests arrive as `T` on the event loop of `proxy`.
 pub(crate) fn adapter_with<T>(proxy: EventLoopProxy<T>) -> MakeAdapter
 where
@@ -127,73 +138,21 @@ where
     })
 }
 
-/// An area following the pointer, and what to tell it when the pointer leaves.
-pub(crate) type FollowEntry = (Rect, Rc<dyn Fn(Option<Offset>)>);
-
-/// An area the pointer is over, and what to tell it when the pointer leaves.
-pub(crate) type HoverEntry = (Rect, Rc<dyn Fn(bool)>);
-
-/// A press that becomes a long press if it is held: when, what, and where it began.
-pub(crate) type LongPress = (Instant, Rc<dyn Fn()>, Offset);
-
-/// Something picked up by a drag source: what it carries, where the press began, and
-/// whether the pointer has moved far enough for it to count as a drag.
-pub(crate) struct Carrying {
-    pub(crate) payload: Rc<dyn std::any::Any>,
-    pub(crate) began: Offset,
-    pub(crate) active: bool,
-    /// Where the picked-up area is, and which of the display list's commands draw it.
-    pub(crate) rect: Rect,
-    pub(crate) commands: std::ops::Range<usize>,
-}
-
-/// A drag in progress: its handler, and where its area's corner is.
-pub(crate) type Drag = (Rc<dyn Fn(Offset)>, Offset, Option<Rc<dyn Fn()>>);
-
 pub(crate) struct App {
     /// Whether the system is set to a dark appearance, as the root sees it.
     pub(crate) dark: Rc<Cell<bool>>,
     pub(crate) composition: Composition,
     pub(crate) started: Instant,
-    pub(crate) display: DisplayList,
-    /// Where the pointer is, in logical pixels, while it is over the window.
-    pub(crate) pointer: Option<Offset>,
-    /// What has keyboard focus.
-    pub(crate) focused: Option<Focus>,
-    /// Text a key press just typed, so the same text arriving again from an input method is not typed twice.
-    pub(crate) typed: Option<(Instant, String)>,
-    /// Whether to print the input the window receives (`RUSTLE_DEBUG_INPUT`).
-    pub(crate) debug_input: bool,
-    /// A long press waiting for its time: when it is due, what to run, and where it began.
-    pub(crate) long_press: Option<LongPress>,
-    /// The hover handlers of the areas the pointer is over.
-    pub(crate) hovered: Vec<HoverEntry>,
-    /// The areas whose pointer-move handlers have been told where the pointer is.
-    pub(crate) following: Vec<FollowEntry>,
-    /// The handler following a drag, and where its area's corner is.
-    pub(crate) dragging: Option<Drag>,
-    /// What was picked up with `drag_source`, and where, until the button is released.
-    pub(crate) carrying: Option<Carrying>,
-    pub(crate) modifiers: Modifiers,
-    /// When and where the primary button last went down, and how many in a row.
-    pub(crate) last_press: Option<(Instant, Offset, u32)>,
-    /// Pointer buttons that are down, for the areas that react to them.
-    pub(crate) held_buttons: Vec<crate::pointer::HeldButton>,
-    /// The caret area last reported to the input method, so it is only sent when it moves.
-    pub(crate) ime_area: Option<Rect>,
-    /// The handler of the region the primary button went down on.
-    /// Where the primary button went down on something clickable. Areas are
-    /// told apart by where they are, not by their handlers, because every
-    /// recomposition makes new handlers, and an animation recomposes every frame.
-    pub(crate) pressed: Option<Rect>,
+    /// What the window being served shows, and what input did to it.
+    pub(crate) ui: Interface,
     /// How the window looks when it opens.
     pub(crate) options: WindowOptions,
     /// Makes the window's accessibility adapter once the window exists.
-    pub(crate) make_adapter: MakeAdapter,
+    pub(crate) make_adapter: Option<MakeAdapter>,
     pub(crate) window: Option<WindowState>,
     /// The registry key of the window the fields above belong to.
     pub(crate) key: u64,
-    /// The input state of every window. The active one's is in the fields above and its
+    /// The state of every window. The active one's is in the fields above and its
     /// entry here is empty (see `crate::windows`).
     pub(crate) slots: Vec<crate::windows::WindowCtx>,
     /// Which of `slots` is in the fields above. The main window is always slot 0.
@@ -216,7 +175,7 @@ impl App {
         root: impl FnMut() + 'static,
         dark: Rc<Cell<bool>>,
         options: WindowOptions,
-        make_adapter: MakeAdapter,
+        make_adapter: Option<MakeAdapter>,
         wake: impl Fn() + Clone + Send + Sync + 'static,
     ) -> Self {
         let mut composition = rustle_ui::composition(root);
@@ -230,21 +189,7 @@ impl App {
             dark,
             composition,
             started: Instant::now(),
-            display: DisplayList::default(),
-            pointer: None,
-            focused: None,
-            typed: None,
-            debug_input: std::env::var_os("RUSTLE_DEBUG_INPUT").is_some(),
-            long_press: None,
-            hovered: Vec::new(),
-            following: Vec::new(),
-            dragging: None,
-            carrying: None,
-            modifiers: Modifiers::default(),
-            last_press: None,
-            held_buttons: Vec::new(),
-            ime_area: None,
-            pressed: None,
+            ui: Interface::new(),
             options,
             make_adapter,
             window: None,
@@ -279,9 +224,10 @@ impl App {
             size.width as f32 / scale_factor,
             size.height as f32 / scale_factor,
         ));
-        self.display = rustle_ui::display_list(tree, constraints, &mut state.renderer);
+        self.ui.display = rustle_ui::display_list(tree, constraints, &mut state.renderer);
+        self.ui.redraw = false;
         state.window.request_redraw();
-        self.update_hover();
+        self.ui.update_hover();
         self.refresh_cursor();
         self.sync_ime_area();
         self.update_accessibility();

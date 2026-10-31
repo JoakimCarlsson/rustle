@@ -101,7 +101,7 @@ impl App {
             return;
         };
         let scale_factor = state.window.scale_factor();
-        let (display, focused) = (&self.display, self.focused.as_ref());
+        let (display, focused) = (&self.ui.display, self.ui.focused.as_ref());
         state
             .adapter
             .update_if_active(|| tree(display, scale_factor, focused));
@@ -113,7 +113,7 @@ impl App {
             accesskit_winit::WindowEvent::InitialTreeRequested => self.update_accessibility(),
             accesskit_winit::WindowEvent::ActionRequested(request) => {
                 let described = index_of(request.target_node)
-                    .and_then(|index| self.display.semantics.get(index));
+                    .and_then(|index| self.ui.display.semantics.get(index));
                 match request.action {
                     Action::Click => {
                         if let Some(on_click) = described.and_then(|node| node.on_click.clone()) {
@@ -122,7 +122,7 @@ impl App {
                     }
                     Action::Focus => {
                         let focus = described.and_then(|node| node.semantics.focus.clone());
-                        self.set_focus(focus);
+                        self.ui.set_focus(focus);
                     }
                     _ => {}
                 }

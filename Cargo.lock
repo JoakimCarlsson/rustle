@@ -2350,6 +2350,7 @@ dependencies = [
  "accesskit",
  "accesskit_winit",
  "arboard",
+ "pollster",
  "rustle-animation",
  "rustle-charts",
  "rustle-foundation",

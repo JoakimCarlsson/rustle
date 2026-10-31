@@ -101,6 +101,7 @@ pub(super) enum Paint {
         on_pinch: Rc<dyn Fn(f32)>,
         inner: Box<Measured>,
     },
+    BlocksPointer(Box<Measured>),
     Alpha {
         alpha: f32,
         inner: Box<Measured>,

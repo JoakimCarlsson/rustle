@@ -28,8 +28,9 @@ thread_local! {
 /// Font data registered before any renderer exists, which the renderer adds when it starts.
 static PENDING: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
-/// Makes `engine` the one the text functions use on this thread. Renderers call this
-/// when they are created.
+/// Makes `engine` the one the text functions use on this thread, replacing any before it.
+/// A renderer calls this once per thread, when the first is created, and renderers made
+/// after it on the same thread use that engine too.
 pub fn install_text_engine(engine: Rc<dyn TextEngine>) {
     ENGINE.with(|slot| *slot.borrow_mut() = Some(engine));
 }

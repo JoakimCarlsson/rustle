@@ -44,6 +44,9 @@ pub struct DisplayList {
     pub file_drops: Vec<FileDropRegion>,
     /// Areas that react to a pinch gesture, in paint order.
     pub pinches: Vec<PinchRegion>,
+    /// Areas that count as used by the interface wherever the pointer is over them, in paint
+    /// order. See [`Modifier::blocks_pointer`](crate::Modifier::blocks_pointer).
+    pub blockers: Vec<Rect>,
     /// Areas that choose the mouse cursor, in paint order, so later ones are on top.
     pub cursors: Vec<CursorRegion>,
     /// What the areas mean, in paint order, for assistive technology.
@@ -198,6 +201,33 @@ pub(super) fn intersect(a: Rect, b: Rect) -> Rect {
 }
 
 impl DisplayList {
+    /// Whether any area that reacts to the pointer or blocks it contains `point`: clickable,
+    /// pressable, draggable, scrollable, focusable, hoverable, a drag source, a drop target,
+    /// one that listens to a pointer button, or one marked
+    /// [`blocks_pointer`](crate::Modifier::blocks_pointer). A host that shares the window
+    /// with the interface uses it to tell whether the pointer is over the interface or over
+    /// what lies beneath.
+    pub fn interactive_at(&self, point: Offset) -> bool {
+        let over = |rect: Rect| contains(rect, point);
+        self.blocks_pointer_at(point)
+            || self.regions.iter().any(|region| over(region.rect))
+            || self.scrolls.iter().any(|region| over(region.rect))
+            || self.focusables.iter().any(|region| over(region.rect))
+            || self.presses.iter().any(|region| over(region.rect))
+            || self.buttons.iter().any(|region| over(region.rect))
+            || self.drags.iter().any(|region| over(region.rect))
+            || self.hovers.iter().any(|region| over(region.rect))
+            || self.long_presses.iter().any(|region| over(region.rect))
+            || self.pointer_moves.iter().any(|region| over(region.rect))
+            || self.drag_sources.iter().any(|region| over(region.rect))
+            || self.drop_targets.iter().any(|region| over(region.rect))
+    }
+
+    /// Whether an area marked [`blocks_pointer`](crate::Modifier::blocks_pointer) contains `point`.
+    pub fn blocks_pointer_at(&self, point: Offset) -> bool {
+        self.blockers.iter().any(|rect| contains(*rect, point))
+    }
+
     /// The topmost clickable region containing `point`.
     pub fn hit_test(&self, point: Offset) -> Option<&HitRegion> {
         self.regions
@@ -529,5 +559,42 @@ mod tests {
             *seen.borrow(),
             [PointerButton::Secondary, PointerButton::Middle]
         );
+    }
+
+    #[test]
+    fn an_area_that_blocks_the_pointer_counts_as_used_where_nothing_reacts() {
+        let mut composition = composition(|| {
+            layout(
+                Modifier::new().size(100.0, 100.0),
+                Overlay::default(),
+                || {
+                    canvas(Modifier::new().size(40.0, 40.0), |_| {});
+                    layout(
+                        Modifier::new()
+                            .offset(50.0, 0.0)
+                            .size(40.0, 40.0)
+                            .blocks_pointer(),
+                        Overlay::default(),
+                        || {
+                            canvas(Modifier::new().size(10.0, 10.0).clickable(|| {}), |_| {});
+                        },
+                    );
+                },
+            );
+        });
+        composition.compose();
+        let tree = composition.output().expect("composed");
+        let display = display_list(
+            tree,
+            Constraints::loose(Size::new(200.0, 200.0)),
+            &mut NoText,
+        );
+        let first = Offset::new(10.0, 10.0);
+        let panel_empty_space = Offset::new(80.0, 30.0);
+        let outside = Offset::new(95.0, 90.0);
+        assert!(!display.interactive_at(first), "plain content is not used");
+        assert!(display.interactive_at(panel_empty_space));
+        assert!(display.blocks_pointer_at(panel_empty_space));
+        assert!(!display.interactive_at(outside));
     }
 }

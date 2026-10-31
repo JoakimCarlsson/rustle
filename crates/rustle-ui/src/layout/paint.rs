@@ -607,6 +607,10 @@ impl<'a> Painter<'a> {
                 });
                 self.paint(inner, origin);
             }
+            Paint::BlocksPointer(inner) => {
+                self.list.blockers.push(self.visible(rect));
+                self.paint(inner, origin);
+            }
             Paint::PointerMove { on_move, inner } => {
                 let index = self.list.pointer_moves.len();
                 self.list.pointer_moves.push(PointerMoveRegion {

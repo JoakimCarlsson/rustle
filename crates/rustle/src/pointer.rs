@@ -1,16 +1,14 @@
 //! Pointer, touch and press handling: hover, drag, drop and clicks.
 
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Instant;
 
 use rustle_geometry::{Offset, Rect};
 use rustle_ui::{DisplayList, PointerButton, PointerEvent, PointerPhase, PressEvent};
-use winit::window::CursorIcon;
 
-use crate::app::{App, Carrying, FollowEntry, HoverEntry};
+use crate::interface::{Carrying, FollowEntry, HoverEntry, Interface};
 
-impl App {
+impl Interface {
     /// Tells the areas that follow the pointer where it is, or that it left.
     pub(crate) fn update_following(&mut self) {
         let mut now: Vec<(FollowEntry, Offset)> = Vec::new();
@@ -59,11 +57,7 @@ impl App {
 
     /// The pointer moved to `pointer`, in logical pixels.
     pub(crate) fn pointer_moved(&mut self, pointer: Offset) {
-        let Some(window) = self.window.as_ref().map(|state| Arc::clone(&state.window)) else {
-            return;
-        };
         let before = hover_target(&self.display, self.pointer);
-        window.set_cursor(self.cursor_icon_at(pointer));
         self.pointer = Some(pointer);
         self.update_following();
         if let Some(carrying) = &mut self.carrying
@@ -78,8 +72,7 @@ impl App {
             .as_ref()
             .is_some_and(|carrying| carrying.active)
         {
-            window.set_cursor(CursorIcon::Grabbing);
-            window.request_redraw();
+            self.redraw = true;
         }
         // Moving away from where the press began is not a long press.
         if let Some((_, _, began)) = &self.long_press
@@ -93,7 +86,7 @@ impl App {
             on_drag(Offset::new(pointer.x - origin.x, pointer.y - origin.y));
         }
         if before != hover_target(&self.display, self.pointer) {
-            window.request_redraw();
+            self.redraw = true;
         }
     }
 
@@ -219,9 +212,7 @@ impl App {
             .pointer
             .and_then(|pointer| self.display.hit_test(pointer))
             .map(|region| region.rect);
-        if let Some(state) = &self.window {
-            state.window.request_redraw();
-        }
+        self.redraw = true;
         if !pressed {
             // Something carried over a drop target is dropped on it.
             let carrying = self.carrying.take();

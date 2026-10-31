@@ -14,8 +14,10 @@ impl Renderer {
     /// Returns `Ok(false)` if no frame was presented and the caller should
     /// try again later.
     pub fn render(&mut self, commands: &[DrawCommand], scale_factor: f32) -> Result<bool> {
-        let (Some(surface), Some(create_surface)) = (&self.surface, &self.create_surface) else {
-            return Err("this renderer has no window; use `snapshot`".into());
+        let (Some(surface), Some(create_surface), Some(instance)) =
+            (&self.surface, &self.create_surface, &self.instance)
+        else {
+            return Err("this renderer has no window; use `snapshot` or `render_into`".into());
         };
         let frame = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
@@ -27,7 +29,7 @@ impl Renderer {
                 return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                let surface = create_surface(&self.instance)?;
+                let surface = create_surface(instance)?;
                 surface.configure(&self.device, &self.surface_config);
                 self.surface = Some(surface);
                 return Ok(false);
@@ -44,6 +46,28 @@ impl Renderer {
         self.queue.present(frame);
         self.atlas.trim();
         Ok(true)
+    }
+
+    /// Records drawing `commands` into `view` on the caller's `encoder`, which the caller
+    /// submits, and leaves presenting to the caller.
+    ///
+    /// `view` is a texture of this renderer's format and `size` physical pixels. `clear` is
+    /// the color to clear it to first, or `None` to draw over what it holds, which is how an
+    /// interface goes over a frame the host has already drawn. Call it at most once per
+    /// submission, because the renderer keeps one set of uniforms between submissions.
+    pub fn render_into(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        size: (u32, u32),
+        commands: &[DrawCommand],
+        scale_factor: f32,
+        clear: Option<wgpu::Color>,
+    ) -> Result<()> {
+        self.resize(size.0, size.1);
+        self.record(encoder, commands, scale_factor, view, clear)?;
+        self.atlas.trim();
+        Ok(())
     }
 
     /// Draws one frame into a picture and returns its size and straight RGBA
@@ -142,6 +166,23 @@ impl Renderer {
         scale_factor: f32,
         view: &wgpu::TextureView,
     ) -> Result<wgpu::CommandEncoder> {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.record(&mut encoder, commands, scale_factor, view, Some(self.clear))?;
+        Ok(encoder)
+    }
+
+    /// Uploads what `commands` need and records drawing them into `view` on `encoder`, at
+    /// the size the renderer is configured for, clearing `view` to `clear` first if given.
+    fn record(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        commands: &[DrawCommand],
+        scale_factor: f32,
+        view: &wgpu::TextureView,
+        clear: Option<wgpu::Color>,
+    ) -> Result<()> {
         let target = (self.surface_config.width, self.surface_config.height);
         self.viewport.update(
             &self.queue,
@@ -157,12 +198,7 @@ impl Renderer {
         let items = self.layers(commands, scale_factor, target);
         let mut next_text = 0;
         let prepared = self.prepare_items(items, scale_factor, target, &mut next_text)?;
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        self.draw_items(&mut encoder, view, &prepared, Some(self.clear), target)?;
-        Ok(encoder)
+        self.draw_items(encoder, view, &prepared, clear, target)
     }
 
     /// Uploads what each layer of `items` needs, in drawing order.

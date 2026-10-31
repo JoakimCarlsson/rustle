@@ -28,6 +28,8 @@ use image::Images;
 use path::Paths;
 use quad::Quads;
 
+pub use text::TextMetrics;
+
 type SurfaceFactory = Box<
     dyn Fn(
         &wgpu::Instance,
@@ -46,7 +48,8 @@ fn srgb_to_linear(value: f32) -> f32 {
 }
 
 pub struct Renderer {
-    instance: wgpu::Instance,
+    /// Recreates a lost surface; a renderer given its device by a host has none.
+    instance: Option<wgpu::Instance>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,

@@ -8,7 +8,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
-use crate::app::{App, Wake, adapter_with};
+use crate::app::{App, Wake, adapter_with, provided};
 use crate::saved;
 use crate::window::WindowOptions;
 
@@ -45,15 +45,7 @@ impl Host {
     {
         rustle_runtime::set_saver(Rc::new(saved::FileSaver::open()));
         let dark = Rc::new(Cell::new(true));
-        let provided = {
-            let dark = Rc::clone(&dark);
-            let mut root = root;
-            move || {
-                crate::window::in_main_window(|| {
-                    rustle_foundation::LOCAL_SYSTEM_DARK.provide(dark.get(), &mut root)
-                })
-            }
-        };
+        let provided = provided(root, Rc::clone(&dark));
         let wake = {
             let proxy = proxy.clone();
             move || {
@@ -61,7 +53,7 @@ impl Host {
             }
         };
         Self {
-            app: App::new(provided, dark, options, adapter_with(proxy), wake),
+            app: App::new(provided, dark, options, Some(adapter_with(proxy)), wake),
         }
     }
 

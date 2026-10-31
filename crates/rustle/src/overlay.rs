@@ -4,7 +4,7 @@ use rustle_geometry::{Offset, Rect};
 use rustle_graphics::{Border, Color, DrawCommand};
 use rustle_ui::DisplayList;
 
-use crate::app::Carrying;
+use crate::interface::Carrying;
 use crate::pointer::same_area;
 
 /// What is drawn on top while something is carried: the drop target under the

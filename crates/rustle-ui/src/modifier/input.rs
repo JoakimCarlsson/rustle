@@ -44,6 +44,18 @@ impl Modifier {
         self.then(Element::Pinch(Rc::new(on_pinch)))
     }
 
+    /// Makes the area count as used by the interface wherever the pointer is over it, even
+    /// where nothing in it reacts to the pointer, such as the empty space of a panel.
+    ///
+    /// A host that shares its window with the interface, and gives the pointer to whatever
+    /// the interface does not use, asks [`DisplayList::interactive_at`](crate::DisplayList::interactive_at).
+    /// Without this, only the parts of a panel that react to the pointer answer yes, and a
+    /// click on its background would go through to what lies beneath. It changes nothing
+    /// inside the interface: areas under this one still get their events.
+    pub fn blocks_pointer(self) -> Self {
+        self.then(Element::BlocksPointer)
+    }
+
     /// A click, a double click and a long press on the same area.
     pub fn combined_clickable(
         self,

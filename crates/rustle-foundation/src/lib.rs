@@ -9,6 +9,7 @@ mod linear;
 mod selection;
 mod text;
 mod text_field;
+mod viewport;
 
 pub use layouts::{backdrop, floating, flow_row, reveal};
 pub use lazy::{
@@ -23,6 +24,7 @@ pub use text::{
     LOCAL_SYSTEM_DARK, LOCAL_TEXT_STYLE, image, is_system_in_dark_theme, rich_text, rich_text_with,
     text, text_styled, text_with,
 };
+pub use viewport::{viewport, viewport_with};
 
 pub use rustle_ui::Modifier;
 pub use rustle_ui::{
