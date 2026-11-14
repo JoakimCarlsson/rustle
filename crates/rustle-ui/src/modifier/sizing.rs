@@ -1,8 +1,10 @@
-use rustle_unit::Dp;
+use std::rc::Rc;
+
+use rustle_unit::{Constraints, Dp};
 
 use super::Element;
 use super::Modifier;
-use crate::layout::BoxAlignment;
+use crate::layout::{BoxAlignment, IntrinsicSize, Measurable, Placement};
 use crate::scroll::ScrollState;
 
 impl Modifier {
@@ -123,12 +125,52 @@ impl Modifier {
         self.then(Element::AspectRatio(ratio))
     }
 
-    /// Moves the element without changing the space it takes.
+    /// Moves the element without changing the space it takes. A positive `x`
+    /// moves toward the end of the line, so it moves left when the layout
+    /// direction is right to left; see [`Modifier::absolute_offset`].
     pub fn offset(self, x: impl Into<Dp>, y: impl Into<Dp>) -> Self {
+        let x = x.into().0;
+        self.then(Element::Offset {
+            x: if crate::is_rtl() { -x } else { x },
+            y: y.into().0,
+        })
+    }
+
+    /// Moves the element without changing the space it takes, a positive `x`
+    /// always moving right, whatever the layout direction.
+    pub fn absolute_offset(self, x: impl Into<Dp>, y: impl Into<Dp>) -> Self {
         self.then(Element::Offset {
             x: x.into().0,
             y: y.into().0,
         })
+    }
+
+    /// Sizes the element's width to its content's intrinsic width, the
+    /// smallest that does not cut it off ([`IntrinsicSize::Min`]) or the one
+    /// it wants with room to spare ([`IntrinsicSize::Max`]), within the
+    /// constraints. Use it to make a column's children as wide as the widest.
+    pub fn width_intrinsic(self, size: IntrinsicSize) -> Self {
+        self.then(Element::IntrinsicWidth(size))
+    }
+
+    /// Sizes the element's height to its content's intrinsic height at the
+    /// width it gets; see [`Modifier::width_intrinsic`].
+    pub fn height_intrinsic(self, size: IntrinsicSize) -> Self {
+        self.then(Element::IntrinsicHeight(size))
+    }
+
+    /// Takes over measuring and placing what comes after it in the chain.
+    ///
+    /// `layout` gets a [`Measurable`] for that content and the constraints
+    /// from the parent. It measures the content with whatever constraints it
+    /// likes, then returns the element's size and where the content goes. For
+    /// example, padding that depends on the content, or content measured
+    /// with its first baseline-like offset removed.
+    pub fn layout(
+        self,
+        layout: impl Fn(&mut Measurable<'_>, Constraints) -> Placement + 'static,
+    ) -> Self {
+        self.then(Element::Layout(Rc::new(layout)))
     }
 
     /// Shares the space left in a row or column with the other weighted
@@ -198,18 +240,25 @@ impl Modifier {
     }
 
     /// Lets the content scroll vertically, however tall it is.
+    ///
+    /// The area is described to assistive technology as a group that can be asked
+    /// to scroll up or down.
     pub fn vertical_scroll(self, state: &ScrollState) -> Self {
-        self.then(Element::Scroll {
+        self.semantics(state.semantics(true)).then(Element::Scroll {
             state: state.clone(),
             vertical: true,
         })
     }
 
     /// Lets the content scroll horizontally, however wide it is.
+    ///
+    /// The area is described to assistive technology as a group that can be asked
+    /// to scroll left or right.
     pub fn horizontal_scroll(self, state: &ScrollState) -> Self {
-        self.then(Element::Scroll {
-            state: state.clone(),
-            vertical: false,
-        })
+        self.semantics(state.semantics(false))
+            .then(Element::Scroll {
+                state: state.clone(),
+                vertical: false,
+            })
     }
 }

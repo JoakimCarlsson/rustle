@@ -3,13 +3,17 @@
 //! A canvas: an area drawn with shapes, lines and text in its own coordinates.
 
 use rustle_geometry::{Offset, Rect, Size};
-use rustle_graphics::{Border, Color, DrawCommand, FontFamily, Path, StyledSpan, TextAlign};
+use rustle_graphics::{
+    Border, Color, DrawCommand, FontFamily, LayerEffect, Path, ShaderBrush, StyledSpan, TextAlign,
+};
 use rustle_text::{Affinity, TextLayout, TextSpan, TextStyle};
 
 /// Collects what is drawn on a canvas, with (0, 0) at its top-left corner.
 pub struct Canvas {
     size: Size,
     commands: Vec<DrawCommand>,
+    /// Where in `commands` the content of the area goes, once `draw_content` was called.
+    content: Option<usize>,
 }
 
 impl Canvas {
@@ -17,7 +21,20 @@ impl Canvas {
         Self {
             size,
             commands: Vec::new(),
+            content: None,
         }
+    }
+
+    /// The commands, and where in them the content of the area goes if it was asked for.
+    pub(crate) fn finish_with_content(self) -> (Vec<DrawCommand>, Option<usize>) {
+        (self.commands, self.content)
+    }
+
+    /// Draws the content of the area here, so what is drawn before is behind it and what
+    /// is drawn after is over it. Only meaningful in [`Modifier::draw_with_content`](crate::Modifier::draw_with_content);
+    /// on a plain [`canvas`](crate::canvas) there is no content and it does nothing.
+    pub fn draw_content(&mut self) {
+        self.content = Some(self.commands.len());
     }
 
     pub(crate) fn finish(self) -> Vec<DrawCommand> {
@@ -117,6 +134,108 @@ impl Canvas {
             angle: degrees.to_radians(),
             corner_radius: radius,
         });
+    }
+
+    /// A rectangle blending from `from` at `center` (fractions of the rectangle,
+    /// (0.5, 0.5) is its middle) to `to` at `radius` pixels from it.
+    pub fn radial_gradient(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        corner_radius: f32,
+        center: (f32, f32),
+        radius: f32,
+        from: Color,
+        to: Color,
+    ) {
+        self.commands.push(DrawCommand::RadialGradient {
+            rect: Self::rect_at(x, y, width, height),
+            center,
+            radius,
+            from,
+            to,
+            corner_radius,
+        });
+    }
+
+    /// A rectangle blending from `from` to `to` once around `center` (fractions of the
+    /// rectangle), clockwise from `start_degrees` (0 pointing right).
+    pub fn sweep_gradient(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        corner_radius: f32,
+        center: (f32, f32),
+        start_degrees: f32,
+        from: Color,
+        to: Color,
+    ) {
+        self.commands.push(DrawCommand::SweepGradient {
+            rect: Self::rect_at(x, y, width, height),
+            center,
+            start: start_degrees.to_radians(),
+            from,
+            to,
+            corner_radius,
+        });
+    }
+
+    /// A rectangle filled by the fragment shader of `brush`. See [`ShaderBrush`].
+    pub fn shader(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        corner_radius: f32,
+        brush: &ShaderBrush,
+    ) {
+        self.commands.push(DrawCommand::Shader {
+            rect: Self::rect_at(x, y, width, height),
+            corner_radius,
+            brush: brush.clone(),
+        });
+    }
+
+    /// Replaces what is drawn so far inside a rounded rectangle with a Gaussian blur
+    /// of it, `blur` pixels of standard deviation. See [`DrawCommand::BackdropBlur`].
+    pub fn backdrop_blur(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        corner_radius: f32,
+        blur: f32,
+    ) {
+        self.commands.push(DrawCommand::BackdropBlur {
+            rect: Self::rect_at(x, y, width, height),
+            corner_radius,
+            blur,
+        });
+    }
+
+    /// Runs `draw` and puts everything it draws on what is below as one picture, as
+    /// `effect` says: blurred (cut to the rectangle), recolored, blended and faded.
+    pub fn with_effect(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        effect: LayerEffect,
+        draw: impl FnOnce(&mut Canvas),
+    ) {
+        self.commands.push(DrawCommand::PushEffect {
+            rect: Self::rect_at(x, y, width, height),
+            effect,
+        });
+        draw(self);
+        self.commands.push(DrawCommand::PopEffect);
     }
 
     /// A soft blur of a rounded rectangle: a glow when `color` is bright, a drop

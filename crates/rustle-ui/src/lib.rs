@@ -9,6 +9,7 @@ use rustle_text::{TextSpan, TextStyle};
 
 mod canvas;
 mod cursor;
+mod gesture;
 mod input;
 mod layout;
 mod modifier;
@@ -16,10 +17,20 @@ mod scroll;
 mod semantics;
 
 #[cfg(test)]
+mod restartable_tests;
+#[cfg(test)]
+mod semantics_tests;
+#[cfg(test)]
 mod skippable_tests;
 
 pub use canvas::Canvas;
 pub use cursor::CursorIcon;
+pub use gesture::{
+    AnchoredDraggableState, Axis, DraggableState, NestedScrollConnection, PointerId, PointerInput,
+    PointerInputHandler, PointerInputPhase, PointerKind, PointerSample, ScrollableState,
+    TransformableState, VelocityTracker, remember_anchored_draggable_state,
+    remember_draggable_state, remember_scrollable_state, remember_transformable_state,
+};
 pub use input::{
     Clipboard, DropHandler, Focus, Key, KeyCode, KeyEvent, KeyHandler, KeyLocation, Modifiers,
     PhysicalKey, PointerButton, PointerEvent, PointerPhase, Preedit, PressEvent, clipboard,
@@ -28,12 +39,14 @@ pub use input::{
 pub use layout::ContentScale;
 pub use layout::{
     BoxAlignment, ButtonRegion, Children, CursorRegion, DisplayList, DragRegion, DragSourceRegion,
-    DropTargetRegion, FileDropRegion, FocusRegion, HitRegion, HoverRegion, KeyRegion, Layout,
-    LayoutResult, Overlay, PressRegion, ScrollRegion, SemanticsNode, display_list,
+    DropTargetRegion, FileDropRegion, FocusRegion, HitRegion, HoverRegion, IntrinsicSize,
+    KeyRegion, Layout, LayoutResult, Measurable, Overlay, Placement, PointerInputRegion,
+    PressRegion, ScrollRegion, SemanticsNode, SubcomposeResult, SubcomposeScope, display_list,
+    subcompose_layout,
 };
 pub use modifier::Modifier;
 pub use scroll::{ScrollState, ScrollbarStyle, ScrollbarVisibility, remember_scroll_state};
-pub use semantics::{Role, Semantics};
+pub use semantics::{CustomAction, LiveRegion, Role, ScrollDirection, Semantics};
 
 /// Which way layouts run: the start of a row is on the left in `Ltr` and on the right in `Rtl`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -125,6 +138,10 @@ pub enum Content {
         image: ImageData,
         scale: ContentScale,
     },
+    /// One node, produced by a restartable block (see [`restartable`]) that can be composed
+    /// again alone. It lays out and paints as the node it last produced, and its layout is
+    /// kept while nothing it depends on has changed.
+    Scope(rustle_runtime::Scope),
     /// Children arranged by a layout policy.
     Layout {
         policy: Rc<dyn Layout>,
@@ -319,6 +336,32 @@ pub fn skippable<D: PartialEq + 'static>(deps: D, content: impl FnOnce()) {
         uncollected.is_none_or(|nodes| nodes.is_empty()),
         "composables can only be called during composition"
     );
+}
+
+/// Runs `content` like a block of composables, as one node that is composed again alone
+/// when state it read changes.
+///
+/// The block remembers the state it read. When that changes, only this block runs
+/// again, in place: the code around it does not run, and its layout is measured again
+/// while the layout of everything else that did not change is reused. Calling it again
+/// from running code with equal `deps` and unchanged reads skips it, like
+/// [`skippable`]. Pass everything `content` takes from outside in `deps`.
+///
+/// It stands for a single node: when `content` emits exactly one, that is the node;
+/// otherwise the nodes are placed over each other by an [`Overlay`], as a root is.
+/// State read by the code around the block, rather than inside it, still composes
+/// that code again.
+///
+/// # Panics
+///
+/// Panics when called outside composition.
+#[track_caller]
+pub fn restartable<D: PartialEq + 'static>(deps: D, content: impl Fn() + 'static) {
+    let scope = rustle_runtime::restartable(deps, move || compose(&content));
+    emit(Node {
+        modifier: Modifier::new(),
+        content: Content::Scope(scope),
+    });
 }
 
 /// Emits an area drawn by `draw`, which paints shapes, lines and text in the

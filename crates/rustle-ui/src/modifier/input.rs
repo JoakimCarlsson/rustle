@@ -29,7 +29,17 @@ impl Modifier {
     /// Makes the area something that can be picked up and dragged onto a
     /// [`Modifier::drop_target`], carrying `payload`.
     pub fn drag_source(self, payload: impl std::any::Any) -> Self {
-        self.then(Element::DragSource(Rc::new(payload)))
+        self.drag_source_button(PointerButton::Primary, payload)
+    }
+
+    /// Like [`drag_source`](Self::drag_source), picked up by holding `button` instead of the
+    /// primary one, and dropped when that button is released. A secondary-button drag does not
+    /// move focus or press anything.
+    pub fn drag_source_button(self, button: PointerButton, payload: impl std::any::Any) -> Self {
+        self.then(Element::DragSource {
+            payload: Rc::new(payload),
+            button,
+        })
     }
 
     /// Calls `on_drop` with the payload of a [`Modifier::drag_source`] released over
@@ -81,6 +91,14 @@ impl Modifier {
         self.then(Element::Placed(Rc::new(on_placed)))
     }
 
+    /// Calls `on_globally_positioned` with the area's rectangle in the window,
+    /// in logical pixels, each time the display is built. Like
+    /// [`Modifier::on_placed`] without the window size. Not a place to
+    /// change state; write to a cell instead.
+    pub fn on_globally_positioned(self, on_positioned: impl Fn(Rect) + 'static) -> Self {
+        self.on_placed(move |rect, _| on_positioned(rect))
+    }
+
     /// Calls `on_move` with where the pointer is, relative to the area's top-left
     /// corner, each time it moves over the area, and with `None` when it leaves.
     pub fn on_pointer_move(self, on_move: impl Fn(Option<Offset>) + 'static) -> Self {
@@ -105,6 +123,12 @@ impl Modifier {
     /// description covers the same area and can be activated.
     pub fn semantics(self, semantics: Semantics) -> Self {
         self.then(Element::Semantics(semantics))
+    }
+
+    /// Describes the area for assistive technology and drops every description inside it,
+    /// so the area is read as `semantics` alone, whatever it holds.
+    pub fn clear_and_set_semantics(self, semantics: Semantics) -> Self {
+        self.semantics(semantics.clearing_descendants())
     }
 
     /// Runs `on_press` as soon as the primary button goes down on the area, with

@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Rect, Size};
-use rustle_graphics::{Border, Color, DrawCommand};
+use rustle_graphics::{Border, Color, DrawCommand, LayerEffect};
 use rustle_text::{TextMeasurer, TextSpan};
 use rustle_unit::Constraints;
 
@@ -11,9 +11,10 @@ use super::measured::{Measured, Paint};
 use super::regions::{
     ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
     FileDropRegion, FocusRegion, HitRegion, HoverRegion, KeyRegion, LongPressRegion, PinchRegion,
-    PointerMoveRegion, PressRegion, ScrollRegion, SemanticsNode, intersect,
+    PointerInputRegion, PointerMoveRegion, PressRegion, ScrollRegion, SemanticsNode, intersect,
 };
 use crate::Node;
+use crate::modifier::Fill;
 use crate::scroll::{ScrollState, ScrollbarVisibility, thumb};
 use crate::semantics::{Role, Semantics};
 
@@ -24,15 +25,31 @@ pub fn display_list(
     text: &mut dyn TextMeasurer,
 ) -> DisplayList {
     let measured = measure_node(root, constraints, text);
+    let window = Size::new(
+        if constraints.max_width.is_finite() {
+            constraints.max_width
+        } else {
+            measured.size.width
+        },
+        if constraints.max_height.is_finite() {
+            constraints.max_height
+        } else {
+            measured.size.height
+        },
+    );
     let mut painter = Painter {
         pending_end: None,
         deferred: Vec::new(),
         alpha: 1.0,
         merging: 0,
+        clearing: 0,
+        parents: Vec::new(),
+        merged_text: Vec::new(),
+        merged_labels: Vec::new(),
         list: DisplayList::default(),
         clips: Vec::new(),
         clip_radii: Vec::new(),
-        window: measured.size,
+        window,
     };
     painter.paint(&measured, Offset::default());
     painter.paint_deferred();
@@ -47,6 +64,11 @@ struct Deferred<'a> {
     /// The clips around it where it was declared, outermost first, which cut it
     /// as well unless it is unclipped.
     clips: Vec<(Rect, Option<[f32; 4]>)>,
+    /// The semantics it was declared inside, innermost last, so what it describes is still
+    /// their child.
+    parents: Vec<usize>,
+    /// How many enclosing semantics drop every description inside them.
+    clearing: usize,
     measured: &'a Measured,
 }
 
@@ -60,6 +82,14 @@ struct Painter<'a> {
     alpha: f32,
     /// How many enclosing semantics merge the text inside into themselves.
     merging: usize,
+    /// How many enclosing semantics drop every description inside them.
+    clearing: usize,
+    /// The semantics being painted inside, as indices into the list, innermost last.
+    parents: Vec<usize>,
+    /// The text found inside each merging semantics, innermost last.
+    merged_text: Vec<Vec<String>>,
+    /// The described areas whose label was made by merging the text inside them.
+    merged_labels: Vec<usize>,
     list: DisplayList,
     /// The clips in effect, innermost last, cutting hit and scroll regions.
     clips: Vec<Rect>,
@@ -85,11 +115,56 @@ impl<'a> Painter<'a> {
                         None => self.push_clip(*rect),
                     }
                 }
+                self.parents = raised.parents;
+                self.clearing = raised.clearing;
+                let merging = self.merging_node();
+                if merging.is_some() {
+                    self.merging += 1;
+                    self.merged_text.push(Vec::new());
+                }
                 self.paint(raised.measured, raised.origin);
+                if let Some(index) = merging {
+                    self.merging -= 1;
+                    let text = self.merged_text.pop().unwrap_or_default();
+                    self.add_merged_text(index, text);
+                }
                 for _ in &raised.clips {
                     self.pop_clip();
                 }
             }
+        }
+    }
+
+    /// The innermost enclosing described area that merges the text inside it, if any, among
+    /// the semantics being painted inside.
+    fn merging_node(&self) -> Option<usize> {
+        (self.clearing == 0)
+            .then(|| {
+                self.parents
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|index| self.list.semantics[*index].semantics.merge_descendants)
+            })
+            .flatten()
+    }
+
+    /// Gives the area at `index`, which merges its content, the `text` found in content that
+    /// was painted after it was finished: it becomes the label, or is added to a label made
+    /// by merging.
+    fn add_merged_text(&mut self, index: usize, text: Vec<String>) {
+        if text.is_empty() {
+            return;
+        }
+        let merged_labels = &self.merged_labels;
+        let node = &mut self.list.semantics[index].semantics;
+        match &mut node.label {
+            None => node.label = Some(text.join(" ")),
+            Some(label) if merged_labels.contains(&index) => {
+                label.push(' ');
+                label.push_str(&text.join(" "));
+            }
+            Some(_) => {}
         }
     }
 
@@ -106,6 +181,87 @@ impl<'a> Painter<'a> {
             a: (f32::from(color.a) * self.alpha).round() as u8,
             ..color
         }
+    }
+
+    /// Draws `fill` over `rect`, faded by the alpha modifiers in effect.
+    fn paint_fill(&mut self, fill: &Fill, rect: Rect) {
+        let command = match fill {
+            Fill::Radial {
+                from,
+                to,
+                center,
+                radius,
+                corner_radius,
+            } => DrawCommand::RadialGradient {
+                rect,
+                center: *center,
+                radius: *radius,
+                from: self.faded(*from),
+                to: self.faded(*to),
+                corner_radius: *corner_radius,
+            },
+            Fill::Sweep {
+                from,
+                to,
+                center,
+                start,
+                corner_radius,
+            } => DrawCommand::SweepGradient {
+                rect,
+                center: *center,
+                start: *start,
+                from: self.faded(*from),
+                to: self.faded(*to),
+                corner_radius: *corner_radius,
+            },
+            Fill::Shader {
+                brush,
+                corner_radius,
+            } => {
+                let shader = DrawCommand::Shader {
+                    rect,
+                    corner_radius: *corner_radius,
+                    brush: brush.clone(),
+                };
+                if self.alpha < 1.0 {
+                    let effect = LayerEffect {
+                        alpha: self.alpha,
+                        ..LayerEffect::default()
+                    };
+                    self.list
+                        .commands
+                        .push(DrawCommand::PushEffect { rect, effect });
+                    self.list.commands.push(shader);
+                    DrawCommand::PopEffect
+                } else {
+                    shader
+                }
+            }
+            Fill::BackdropBlur {
+                blur,
+                corner_radius,
+            } => DrawCommand::BackdropBlur {
+                rect,
+                corner_radius: *corner_radius,
+                blur: *blur,
+            },
+            Fill::DropShadow {
+                dx,
+                dy,
+                blur,
+                color,
+                corner_radius,
+            } => DrawCommand::Shadow {
+                rect: Rect::new(
+                    Offset::new(rect.origin.x + dx, rect.origin.y + dy),
+                    rect.size,
+                ),
+                corner_radius: *corner_radius,
+                blur: *blur,
+                color: self.faded(*color),
+            },
+        };
+        self.list.commands.push(command);
     }
 
     fn push_clip(&mut self, rect: Rect) {
@@ -227,6 +383,32 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// Adds a description of `rect` inside the semantics being painted and returns its index.
+    fn push_semantics(&mut self, rect: Rect, semantics: Semantics) -> usize {
+        let index = self.list.semantics.len();
+        self.list.semantics.push(SemanticsNode {
+            rect: self.visible(rect),
+            semantics,
+            parent: self.parents.last().copied(),
+            on_click: None,
+        });
+        index
+    }
+
+    /// Describes text as a label of its own, or gives it to the merging semantics around
+    /// it, or drops it when they clear what is inside.
+    fn describe_text(&mut self, rect: Rect, text: String) {
+        if self.clearing > 0 {
+            return;
+        }
+        match self.merged_text.last_mut() {
+            Some(merged) => merged.push(text),
+            None => {
+                self.push_semantics(rect, Semantics::new(Role::Label).label(text));
+            }
+        }
+    }
+
     /// Paints `measured` once at `origin`, deferring raised descendants and consuming rich spans.
     fn paint(&mut self, measured: &'a Measured, origin: Offset) {
         let rect = Rect::new(origin, measured.size);
@@ -236,12 +418,8 @@ impl<'a> Painter<'a> {
                 style,
                 editing,
             } => {
-                if self.merging == 0 && editing.is_none() {
-                    self.list.semantics.push(SemanticsNode {
-                        rect: self.visible(rect),
-                        semantics: Semantics::new(Role::Label).label(content.clone()),
-                        on_click: None,
-                    });
+                if editing.is_none() {
+                    self.describe_text(rect, content.clone());
                 }
                 // The shaped text, when it is being edited: wrapped lines, selection and caret come from it.
                 let edit_layout = editing
@@ -403,15 +581,9 @@ impl<'a> Painter<'a> {
                 style,
                 editing,
             } => {
-                let mut spans = spans.take();
-                if self.merging == 0 {
-                    let label: String = spans.iter().map(|span| span.text.as_str()).collect();
-                    self.list.semantics.push(SemanticsNode {
-                        rect: self.visible(rect),
-                        semantics: Semantics::new(Role::Label).label(label),
-                        on_click: None,
-                    });
-                }
+                let mut spans = spans.clone();
+                let label: String = spans.iter().map(|span| span.text.as_str()).collect();
+                self.describe_text(rect, label);
                 if let Some(editing) = editing
                     && let Some(layout) = editing.layout.borrow().clone()
                     && let Some((start, end)) = editing.selection
@@ -478,12 +650,8 @@ impl<'a> Painter<'a> {
                 }
             }
             Paint::Image { image, scale } => {
-                if self.merging == 0 {
-                    self.list.semantics.push(SemanticsNode {
-                        rect: self.visible(rect),
-                        semantics: Semantics::new(Role::Image),
-                        on_click: None,
-                    });
+                if self.merging == 0 && self.clearing == 0 {
+                    self.push_semantics(rect, Semantics::new(Role::Image));
                 }
                 let (width, height) = (image.width() as f32, image.height() as f32);
                 let fit = (measured.size.width / width).min(measured.size.height / height);
@@ -511,6 +679,7 @@ impl<'a> Painter<'a> {
                     self.pop_clip();
                 }
             }
+            Paint::Shared(shared) => self.paint(shared, origin),
             Paint::Children(children) => {
                 for (offset, child) in children {
                     self.paint(child, Offset::new(origin.x + offset.x, origin.y + offset.y));
@@ -528,6 +697,37 @@ impl<'a> Painter<'a> {
                     border: None,
                 });
                 self.paint(inner, origin);
+            }
+            Paint::Draw { draw, inner } => {
+                let (commands, content) = draw(measured.size);
+                let count = commands.len();
+                for (index, command) in commands.into_iter().enumerate() {
+                    if content == Some(index) {
+                        self.paint(inner, origin);
+                    }
+                    self.list
+                        .commands
+                        .push(command.translated(origin.x, origin.y));
+                }
+                if content == Some(count) {
+                    self.paint(inner, origin);
+                }
+            }
+            Paint::Fill { fill, inner } => {
+                self.paint_fill(fill, rect);
+                self.paint(inner, origin);
+            }
+            Paint::Effect { effect, inner } => {
+                let faded = LayerEffect {
+                    alpha: effect.alpha * self.alpha,
+                    ..*effect
+                };
+                self.list.commands.push(DrawCommand::PushEffect {
+                    rect,
+                    effect: faded,
+                });
+                self.paint(inner, origin);
+                self.list.commands.push(DrawCommand::PopEffect);
             }
             Paint::Gradient {
                 from,
@@ -574,11 +774,16 @@ impl<'a> Painter<'a> {
                 self.paint(inner, origin);
                 self.pending_end = None;
             }
-            Paint::DragSource { payload, inner } => {
+            Paint::DragSource {
+                payload,
+                button,
+                inner,
+            } => {
                 let start = self.list.commands.len();
                 let index = self.list.drag_sources.len();
                 self.list.drag_sources.push(DragSourceRegion {
                     rect: self.visible(rect),
+                    button: *button,
                     payload: Rc::clone(payload),
                     commands: start..start,
                 });
@@ -596,6 +801,14 @@ impl<'a> Painter<'a> {
                 self.list.file_drops.push(FileDropRegion {
                     rect: self.visible(rect),
                     on_drop: Rc::clone(on_drop),
+                });
+                self.paint(inner, origin);
+            }
+            Paint::PointerInput { on_event, inner } => {
+                self.list.pointer_inputs.push(PointerInputRegion {
+                    rect: self.visible(rect),
+                    origin,
+                    on_event: Rc::clone(on_event),
                 });
                 self.paint(inner, origin);
             }
@@ -671,6 +884,8 @@ impl<'a> Painter<'a> {
                     origin,
                     alpha: self.alpha,
                     clips,
+                    parents: self.parents.clone(),
+                    clearing: self.clearing,
                     measured: inner,
                 });
             }
@@ -801,21 +1016,36 @@ impl<'a> Painter<'a> {
                 self.paint(inner, origin);
             }
             Paint::Semantics { semantics, inner } => {
-                let index = self.list.semantics.len();
                 let regions = self.list.regions.len();
-                self.list.semantics.push(SemanticsNode {
-                    rect: self.visible(rect),
-                    semantics: semantics.clone(),
-                    on_click: None,
+                let described = (self.clearing == 0).then(|| {
+                    let index = self.push_semantics(rect, semantics.clone());
+                    self.parents.push(index);
+                    index
                 });
-                if semantics.merge_descendants {
+                let merges = described.is_some() && semantics.merge_descendants;
+                if merges {
                     self.merging += 1;
+                    self.merged_text.push(Vec::new());
+                }
+                if semantics.clear_descendants {
+                    self.clearing += 1;
                 }
                 self.paint(inner, origin);
-                if semantics.merge_descendants {
-                    self.merging -= 1;
+                if semantics.clear_descendants {
+                    self.clearing -= 1;
                 }
-                // Activating the description does what clicking the area does.
+                let Some(index) = described else {
+                    return;
+                };
+                self.parents.pop();
+                if merges {
+                    self.merging -= 1;
+                    let text = self.merged_text.pop().unwrap_or_default();
+                    if self.list.semantics[index].semantics.label.is_none() && !text.is_empty() {
+                        self.merged_labels.push(index);
+                    }
+                    self.add_merged_text(index, text);
+                }
                 self.list.semantics[index].on_click = self.list.regions[regions..]
                     .iter()
                     .find(|region| region.rect == self.list.semantics[index].rect)

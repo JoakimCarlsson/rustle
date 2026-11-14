@@ -1,7 +1,11 @@
-use rustle_graphics::Color;
+use std::rc::Rc;
+
+use rustle_geometry::Size;
+use rustle_graphics::{BlendMode, Color, ColorFilter, LayerEffect, ShaderBrush};
 use rustle_unit::Dp;
 
-use super::{Element, Modifier};
+use super::{Element, Fill, Modifier};
+use crate::Canvas;
 
 impl Modifier {
     /// Fills the area with `color`.
@@ -113,5 +117,144 @@ impl Modifier {
             start: start_degrees.to_radians(),
             sweep: sweep.clamp(0.0, 1.0),
         })
+    }
+
+    /// Draws on a [`Canvas`] the size of the area, behind its content and what is
+    /// before it in the chain, as `background` does. `draw` runs each time the
+    /// interface is painted.
+    pub fn draw_behind(self, draw: impl Fn(&mut Canvas) + 'static) -> Self {
+        self.then(Element::Draw(Rc::new(move |size: Size| {
+            let mut canvas = Canvas::new(size);
+            draw(&mut canvas);
+            let (commands, _) = canvas.finish_with_content();
+            let end = commands.len();
+            (commands, Some(end))
+        })))
+    }
+
+    /// Draws on a [`Canvas`] the size of the area, with the content drawn where `draw`
+    /// calls [`Canvas::draw_content`]: what it draws before is behind the content and
+    /// what it draws after is over it. If it never calls it, the content is not drawn
+    /// (and takes no input), like `drawWithContent` in Compose.
+    pub fn draw_with_content(self, draw: impl Fn(&mut Canvas) + 'static) -> Self {
+        self.then(Element::Draw(Rc::new(move |size: Size| {
+            let mut canvas = Canvas::new(size);
+            draw(&mut canvas);
+            canvas.finish_with_content()
+        })))
+    }
+
+    /// Fills the area, with corners rounded to `corner_radius`, with what the
+    /// fragment shader of `brush` computes for each point. See [`ShaderBrush`] for what
+    /// the WGSL source may use. A shader that does not compile is reported and not drawn.
+    pub fn shader(self, brush: ShaderBrush, corner_radius: impl Into<Dp>) -> Self {
+        self.then(Element::Fill(Fill::Shader {
+            brush,
+            corner_radius: corner_radius.into().0,
+        }))
+    }
+
+    /// Fills the area with a blend from `from` at `center` (fractions of the area:
+    /// (0.5, 0.5) is its middle) to `to` at `radius` from it, with corners rounded to `corner_radius`.
+    pub fn background_radial_gradient(
+        self,
+        from: Color,
+        to: Color,
+        center: (f32, f32),
+        radius: impl Into<Dp>,
+        corner_radius: impl Into<Dp>,
+    ) -> Self {
+        self.then(Element::Fill(Fill::Radial {
+            from,
+            to,
+            center,
+            radius: radius.into().0,
+            corner_radius: corner_radius.into().0,
+        }))
+    }
+
+    /// Fills the area with a blend from `from` to `to` once around `center` (fractions
+    /// of the area), clockwise starting `start_degrees` from pointing right, with corners
+    /// rounded to `corner_radius`. The two ends meet at the start, so use the same color
+    /// for both for a seamless wheel.
+    pub fn background_sweep_gradient(
+        self,
+        from: Color,
+        to: Color,
+        center: (f32, f32),
+        start_degrees: f32,
+        corner_radius: impl Into<Dp>,
+    ) -> Self {
+        self.then(Element::Fill(Fill::Sweep {
+            from,
+            to,
+            center,
+            start: start_degrees.to_radians(),
+            corner_radius: corner_radius.into().0,
+        }))
+    }
+
+    /// Casts a soft shadow of the area, moved by (`dx`, `dy`) and blurred with a
+    /// Gaussian of `blur / 2` standard deviation, behind the content.
+    pub fn drop_shadow(
+        self,
+        dx: impl Into<Dp>,
+        dy: impl Into<Dp>,
+        blur: impl Into<Dp>,
+        color: Color,
+        corner_radius: impl Into<Dp>,
+    ) -> Self {
+        self.then(Element::Fill(Fill::DropShadow {
+            dx: dx.into().0,
+            dy: dy.into().0,
+            blur: blur.into().0,
+            color,
+            corner_radius: corner_radius.into().0,
+        }))
+    }
+
+    /// Blurs what is already drawn behind the area, in its rounded rectangle, with a
+    /// Gaussian of `blur` standard deviation: frosted glass. Follow it with a
+    /// translucent `background` for a tint. See [`rustle_graphics::DrawCommand::BackdropBlur`].
+    pub fn background_blur(self, blur: impl Into<Dp>, corner_radius: impl Into<Dp>) -> Self {
+        self.then(Element::Fill(Fill::BackdropBlur {
+            blur: blur.into().0,
+            corner_radius: corner_radius.into().0,
+        }))
+    }
+
+    /// Draws the content as one picture and blurs it with a Gaussian of `radius`
+    /// standard deviation, cut to the area. Costs a texture the size of the window
+    /// and two extra passes.
+    pub fn blur(self, radius: impl Into<Dp>) -> Self {
+        self.layer_effect(LayerEffect {
+            blur: radius.into().0,
+            ..LayerEffect::default()
+        })
+    }
+
+    /// Draws the content as one picture and changes its colors with `filter`.
+    pub fn color_filter(self, filter: ColorFilter) -> Self {
+        self.layer_effect(LayerEffect {
+            color_filter: Some(filter),
+            ..LayerEffect::default()
+        })
+    }
+
+    /// Draws the content as one picture and combines it with what is below as `mode` says.
+    pub fn blend_mode(self, mode: BlendMode) -> Self {
+        self.layer_effect(LayerEffect {
+            blend_mode: mode,
+            ..LayerEffect::default()
+        })
+    }
+
+    /// Draws the content as one picture and puts it on what is below as `effect`
+    /// says: blurred, recolored, blended and faded, all at once.
+    pub fn layer_effect(self, effect: LayerEffect) -> Self {
+        self.then(Element::Effect(LayerEffect {
+            alpha: effect.alpha.clamp(0.0, 1.0),
+            ..effect
+        }))
     }
 }

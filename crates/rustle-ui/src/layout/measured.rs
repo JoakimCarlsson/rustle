@@ -1,13 +1,14 @@
-use std::cell::Cell;
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Rect, Size};
-use rustle_graphics::{Color, DrawCommand, ImageData};
+use rustle_graphics::{Color, DrawCommand, ImageData, LayerEffect};
 use rustle_text::{StyledSpan, TextStyle};
 
 use super::ContentScale;
 use crate::cursor::CursorIcon;
+use crate::gesture::PointerInputHandler;
 use crate::input::{DropHandler, Focus, KeyHandler, PointerButton, PointerEvent, PressEvent};
+use crate::modifier::{DrawFn, Fill};
 use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
 use crate::{CharPosition, TextEditing};
@@ -25,7 +26,7 @@ pub(super) enum Paint {
         draw: Rc<dyn Fn(Size) -> Vec<DrawCommand>>,
     },
     RichText {
-        spans: Cell<Vec<StyledSpan>>,
+        spans: Vec<StyledSpan>,
         style: TextStyle,
         editing: Option<TextEditing>,
     },
@@ -40,9 +41,23 @@ pub(super) enum Paint {
         editing: Option<(TextEditing, Vec<CharPosition>)>,
     },
     Children(Vec<(Offset, Measured)>),
+    /// A measured subtree kept from an earlier frame, shared with the cache of its scope.
+    Shared(Rc<Measured>),
     Background {
         color: Color,
         corner_radius: f32,
+        inner: Box<Measured>,
+    },
+    Draw {
+        draw: DrawFn,
+        inner: Box<Measured>,
+    },
+    Fill {
+        fill: Fill,
+        inner: Box<Measured>,
+    },
+    Effect {
+        effect: LayerEffect,
         inner: Box<Measured>,
     },
     Gradient {
@@ -95,10 +110,15 @@ pub(super) enum Paint {
     },
     DragSource {
         payload: Rc<dyn std::any::Any>,
+        button: PointerButton,
         inner: Box<Measured>,
     },
     DropTarget {
         on_drop: DropHandler,
+        inner: Box<Measured>,
+    },
+    PointerInput {
+        on_event: PointerInputHandler,
         inner: Box<Measured>,
     },
     Pinch {

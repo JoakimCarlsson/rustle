@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 use rustle_graphics::Color;
 use rustle_runtime::{FrameClock, State, frame_clock, group, remember};
 
+use crate::gesture::{NestedScrollConnection, ScrollableCore, ScrollableState};
+use crate::semantics::{Role, ScrollDirection, Semantics};
+
 /// How long a scrollbar stays fully visible after the last scroll.
 const HOLD: Duration = Duration::from_millis(900);
 /// How long it then takes to fade out.
@@ -73,6 +76,8 @@ struct Bar {
     /// Changed on every frame of a fade, so the area is laid out again.
     tick: State<u32>,
     clock: FrameClock,
+    /// Fling and drag state shared with the [`ScrollableState`] this area hands out.
+    core: Rc<ScrollableCore>,
 }
 
 /// How far a scrolling area is scrolled, and how far it can go.
@@ -128,6 +133,24 @@ impl ScrollState {
         }
     }
 
+    /// A description of this area for assistive technology: a group that scrolls by most
+    /// of a viewport when asked to move along its axis (`vertical` or horizontal).
+    pub fn semantics(&self, vertical: bool) -> Semantics {
+        let this = self.clone();
+        Semantics::new(Role::Group).on_scroll(move |direction| {
+            let page = (this.viewport_length() * 0.8).max(1.0);
+            match (vertical, direction) {
+                (true, ScrollDirection::Up) | (false, ScrollDirection::Left) => {
+                    this.scroll_by(-page)
+                }
+                (true, ScrollDirection::Down) | (false, ScrollDirection::Right) => {
+                    this.scroll_by(page)
+                }
+                _ => {}
+            }
+        })
+    }
+
     /// Sets the offset without limiting it to the content measured so far and
     /// without showing the scrollbar. For content that is about to change
     /// length, such as a list that learns the height of its items; layout
@@ -137,6 +160,37 @@ impl ScrollState {
         if offset != self.offset() {
             self.offset.set(offset);
         }
+    }
+
+    /// This area as a [`ScrollableState`], for [`Modifier::scrollable`](crate::Modifier::scrollable)
+    /// to scroll it by drag, wheel and fling. Every call returns a handle to the same fling and drag.
+    pub fn scrollable(&self) -> ScrollableState {
+        let this = self.clone();
+        ScrollableState::from_parts(
+            Rc::new(move |delta| {
+                let before = this.offset();
+                this.scroll_by(delta);
+                this.offset() - before
+            }),
+            Rc::clone(&self.bar.core),
+        )
+    }
+
+    /// Keeps scrolling at `velocity` logical pixels per second (positive towards the end),
+    /// slowing down until it stops or reaches an end.
+    pub fn fling(&self, velocity: f32) {
+        self.scrollable().fling(velocity, None);
+    }
+
+    /// Stops a fling that is running.
+    pub fn stop_fling(&self) {
+        self.scrollable().stop_fling();
+    }
+
+    /// A connection that gives scroll and fling its children leave over to this area. See
+    /// [`ScrollableState::connection`].
+    pub fn connection(&self) -> NestedScrollConnection {
+        self.scrollable().connection()
     }
 
     /// Changes how the scrollbar looks and when it shows.
@@ -305,6 +359,7 @@ pub fn remember_scroll_state() -> ScrollState {
                 ticking: Cell::new(false),
                 tick,
                 clock: frame_clock(),
+                core: Rc::new(ScrollableCore::new()),
             })
         });
         ScrollState {
@@ -392,5 +447,45 @@ mod tests {
         assert_eq!(state.offset(), 750.0);
         state.jump_to(5000.0);
         assert_eq!(state.offset(), 5000.0);
+    }
+
+    /// Flings at `velocity` over frames `frame_ms` apart until it rests and returns the offset
+    /// it stopped at, each time on content long enough not to stop it.
+    fn flung_distance(velocity: f32, frame_ms: u64) -> f32 {
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let remembered = Rc::clone(&slot);
+        let mut composition = crate::composition(move || {
+            *remembered.borrow_mut() = Some(remember_scroll_state());
+        });
+        composition.compose();
+        let state = slot.borrow().clone().expect("composed");
+        state.set_extent(1_000_000.0, 100.0);
+        state.fling(velocity);
+        let mut now = Duration::ZERO;
+        for _ in 0..10_000 {
+            if !composition.has_pending_frame() {
+                break;
+            }
+            now += Duration::from_millis(frame_ms);
+            composition.run_frame(now);
+            composition.recompose();
+        }
+        assert!(!state.scrollable().is_flinging());
+        state.offset()
+    }
+
+    #[test]
+    fn a_fling_travels_the_same_distance_at_any_frame_rate() {
+        let expected = 3000.0 / 3.0;
+        for frame_ms in [4, 8, 16, 33, 50] {
+            let distance = flung_distance(3000.0, frame_ms);
+            let rest = 20.0 / 3.0;
+            assert!(
+                (distance - (expected - rest / 2.0)).abs() < rest + expected * 0.01,
+                "{frame_ms} ms frames: {distance} is not near {expected}"
+            );
+        }
+        let backwards = flung_distance(-3000.0, 16);
+        assert_eq!(backwards, 0.0);
     }
 }

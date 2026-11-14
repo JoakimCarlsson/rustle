@@ -59,6 +59,10 @@ fn paint_once(measured: &Measured) -> DisplayList {
         deferred: Vec::new(),
         alpha: 1.0,
         merging: 0,
+        clearing: 0,
+        parents: Vec::new(),
+        merged_text: Vec::new(),
+        merged_labels: Vec::new(),
         list: DisplayList::default(),
         clips: Vec::new(),
         clip_radii: Vec::new(),
@@ -69,47 +73,31 @@ fn paint_once(measured: &Measured) -> DisplayList {
     painter.list
 }
 
-/// Ensures the vector and each string allocation become display-list ownership unchanged.
+/// Ensures painting rich text copies the measured spans, so a cached measurement paints again.
 #[test]
-fn rich_text_transfers_measured_allocations() {
+fn rich_text_paints_again_from_the_same_measurement() {
     let style = TextStyle::default();
     let spans = vec![
         TextSpan::new("hello ").resolve(&style),
         TextSpan::new("世界").bold().italic().resolve(&style),
     ];
-    let allocation = spans.as_ptr();
-    let strings: Vec<_> = spans.iter().map(|span| span.text.as_ptr()).collect();
     let expected = spans.clone();
     let measured = Measured {
         size: Size::new(64.0, 16.0),
         paint: Paint::RichText {
-            spans: Cell::new(spans),
+            spans,
             style,
             editing: None,
         },
     };
-    let list = paint_once(&measured);
-    let Paint::RichText { spans, .. } = &measured.paint else {
-        panic!("expected rich text");
-    };
-    assert!(spans.take().is_empty());
-    drop(measured);
-    let [DrawCommand::RichText { spans, .. }] = list.commands.as_slice() else {
-        panic!("expected one rich text command");
-    };
-    assert_eq!(spans.as_ptr(), allocation);
-    assert_eq!(spans, &expected);
-    assert_eq!(
-        spans
-            .iter()
-            .map(|span| span.text.as_ptr())
-            .collect::<Vec<_>>(),
-        strings
-    );
-    assert_eq!(
-        list.semantics[0].semantics.label.as_deref(),
-        Some("hello 世界")
-    );
+    let first = paint_once(&measured);
+    let second = paint_once(&measured);
+    for list in [&first, &second] {
+        let [DrawCommand::RichText { spans, .. }] = list.commands.as_slice() else {
+            panic!("expected one rich text command");
+        };
+        assert_eq!(spans, &expected);
+    }
 }
 
 /// Preserves padded placement, alpha, clips and metadata for clipped and unclipped raised text.
@@ -122,7 +110,7 @@ fn deferred_rich_text_preserves_modifiers_and_offscreen_metadata() {
             .size(20.0, 20.0)
             .clip_rounded(3.0)
             .padding(4.0)
-            .offset(30.0, 0.0)
+            .absolute_offset(30.0, 0.0)
             .alpha(0.5);
         let modifier = if clipped {
             modifier.z_index(2)
@@ -149,7 +137,7 @@ fn deferred_rich_text_preserves_modifiers_and_offscreen_metadata() {
         let expected_rect = Rect::new(Offset::new(34.0, 4.0), Size::new(12.0, 12.0));
         assert_eq!(
             *placed.borrow(),
-            vec![(expected_rect, Size::new(20.0, 20.0))]
+            vec![(expected_rect, Size::new(100.0, 100.0))]
         );
         assert_eq!(list.commands.len(), if clipped { 5 } else { 3 });
         assert!(matches!(

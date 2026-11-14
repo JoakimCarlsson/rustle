@@ -1,14 +1,15 @@
-use std::cell::Cell;
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Size};
 use rustle_text::{StyledSpan, TextAlign, TextLayout, TextMeasurer, TextSpan, TextStyle};
 use rustle_unit::Constraints;
 
-use super::Children;
+use super::intrinsic::{Query, intrinsic_modified};
 use super::measured::{Measured, Paint};
+use super::{Children, IntrinsicSize, Measurable};
 use crate::modifier::Element;
 use crate::{CharPosition, Content, Node};
+use rustle_runtime::{Reads, Scope, mark_unskippable, track_reads};
 
 /// Measures `node` within `constraints`, retaining its painting data.
 pub(super) fn measure_node(
@@ -28,7 +29,7 @@ fn wrap(inner: Measured, paint: impl FnOnce(Box<Measured>) -> Paint) -> Measured
 }
 
 /// Applies the modifier `elements` from the outermost in, then measures the node itself.
-fn measure_modified(
+pub(super) fn measure_modified(
     elements: &[Element],
     node: &Node,
     constraints: Constraints,
@@ -144,6 +145,18 @@ fn measure_modified(
             corner_radius: *corner_radius,
             inner,
         }),
+        Element::Draw(draw) => wrap(next(constraints), |inner| Paint::Draw {
+            draw: Rc::clone(draw),
+            inner,
+        }),
+        Element::Fill(fill) => wrap(next(constraints), |inner| Paint::Fill {
+            fill: fill.clone(),
+            inner,
+        }),
+        Element::Effect(effect) => wrap(next(constraints), |inner| Paint::Effect {
+            effect: *effect,
+            inner,
+        }),
         Element::Gradient {
             from,
             to,
@@ -172,10 +185,17 @@ fn measure_modified(
             on_end: Rc::clone(on_end),
             inner,
         }),
-        Element::DragSource(payload) => wrap(next(constraints), |inner| Paint::DragSource {
-            payload: Rc::clone(payload),
+        Element::PointerInput(on_event) => wrap(next(constraints), |inner| Paint::PointerInput {
+            on_event: Rc::clone(on_event),
             inner,
         }),
+        Element::DragSource { payload, button } => {
+            wrap(next(constraints), |inner| Paint::DragSource {
+                payload: Rc::clone(payload),
+                button: *button,
+                inner,
+            })
+        }
         Element::DropTarget(on_drop) => wrap(next(constraints), |inner| Paint::DropTarget {
             on_drop: Rc::clone(on_drop),
             inner,
@@ -336,6 +356,59 @@ fn measure_modified(
             on_key: Rc::clone(on_key),
             inner,
         }),
+        Element::IntrinsicWidth(size) => {
+            let query = match size {
+                IntrinsicSize::Min => Query::MinWidth,
+                IntrinsicSize::Max => Query::MaxWidth,
+            };
+            let width = intrinsic_modified(rest, node, query, constraints.max_height, text);
+            let width = width.clamp(constraints.min_width, constraints.max_width);
+            measure_modified(
+                rest,
+                node,
+                Constraints {
+                    min_width: width,
+                    max_width: width,
+                    ..constraints
+                },
+                text,
+            )
+        }
+        Element::IntrinsicHeight(size) => {
+            let query = match size {
+                IntrinsicSize::Min => Query::MinHeight,
+                IntrinsicSize::Max => Query::MaxHeight,
+            };
+            let height = intrinsic_modified(rest, node, query, constraints.max_width, text);
+            let height = height.clamp(constraints.min_height, constraints.max_height);
+            measure_modified(
+                rest,
+                node,
+                Constraints {
+                    min_height: height,
+                    max_height: height,
+                    ..constraints
+                },
+                text,
+            )
+        }
+        Element::Layout(place) => {
+            let mut measurable = Measurable {
+                rest,
+                node,
+                text,
+                measured: None,
+            };
+            let placement = place(&mut measurable, constraints);
+            let inner = measurable.measured.unwrap_or(Measured {
+                size: Size::default(),
+                paint: Paint::Children(Vec::new()),
+            });
+            Measured {
+                size: constraints.constrain(placement.size),
+                paint: Paint::Children(vec![(placement.offset, inner)]),
+            }
+        }
         Element::Weight(_) | Element::Align(_) => next(constraints),
     }
 }
@@ -366,6 +439,64 @@ fn character_boundaries(
     (layout, boundaries)
 }
 
+/// What a scope keeps of its last measurement, to reuse it when nothing it depends on changed.
+struct LayoutCache {
+    constraints: Constraints,
+    measurer: usize,
+    fonts: u64,
+    reads: Reads,
+    measured: Rc<Measured>,
+}
+
+/// Measures the node a restartable block last produced. The result is cached with the
+/// state it read, the blocks inside it, the constraints and the text measurer, and reused
+/// while all of them are as they were. Work with effects that cannot be replayed (composing
+/// content while measuring, editable text) is never cached.
+fn measure_scope(scope: &Scope, constraints: Constraints, text: &mut dyn TextMeasurer) -> Measured {
+    let measurer = std::ptr::from_mut(text).cast::<()>() as usize;
+    let fonts = rustle_text::font_epoch();
+    let hit = scope
+        .user_data()
+        .borrow()
+        .as_ref()
+        .and_then(|data| data.downcast_ref::<LayoutCache>())
+        .filter(|cache| {
+            cache.constraints == constraints
+                && cache.measurer == measurer
+                && cache.fonts == fonts
+                && cache.reads.is_current()
+        })
+        .map(|cache| (Rc::clone(&cache.measured), cache.reads.clone()));
+    if let Some((measured, reads)) = hit {
+        reads.merge();
+        return Measured {
+            size: measured.size,
+            paint: Paint::Shared(measured),
+        };
+    }
+    let (measured, reads) = track_reads(|| {
+        scope.record_read();
+        let node = scope
+            .output::<Node>()
+            .expect("a restartable block has not run");
+        measure_node(&node, constraints, text)
+    });
+    let measured = Rc::new(measured);
+    *scope.user_data().borrow_mut() = reads.is_trackable().then(|| {
+        Box::new(LayoutCache {
+            constraints,
+            measurer,
+            fonts,
+            reads,
+            measured: Rc::clone(&measured),
+        }) as Box<dyn std::any::Any>
+    });
+    Measured {
+        size: measured.size,
+        paint: Paint::Shared(measured),
+    }
+}
+
 /// Measures a node's content, retaining owned text and resolved rich spans.
 fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMeasurer) -> Measured {
     match &node.content {
@@ -375,6 +506,7 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
             editing,
         } => {
             let editing = editing.as_ref().map(|editing| {
+                mark_unskippable();
                 let (layout, boundaries) =
                     character_boundaries(content, style, constraints.max_width, text);
                 *editing.boundaries.borrow_mut() = boundaries.clone();
@@ -400,6 +532,7 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
         } => {
             let spans: Vec<StyledSpan> = spans.iter().map(|span| span.resolve(style)).collect();
             let editing = editing.as_ref().map(|editing| {
+                mark_unskippable();
                 let flow = TextStyle {
                     align: TextAlign::Start,
                     ..*style
@@ -427,7 +560,7 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
                     constraints.max_width,
                 )),
                 paint: Paint::RichText {
-                    spans: Cell::new(spans),
+                    spans,
                     style: *style,
                     editing,
                 },
@@ -439,6 +572,7 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
                 draw: Rc::clone(draw),
             },
         },
+        Content::Scope(scope) => measure_scope(scope, constraints, text),
         Content::Image { image, scale } => {
             let (width, height) = (image.width() as f32, image.height() as f32);
             let shrink = (constraints.max_width / width)
@@ -453,8 +587,10 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
             }
         }
         Content::Layout { policy, children } => {
+            let static_count = children.len();
             let mut scope = Children {
                 nodes: children,
+                extra: Vec::new(),
                 measured: children.iter().map(|_| None).collect(),
                 text,
             };
@@ -462,12 +598,16 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
             let placed = scope
                 .measured
                 .into_iter()
-                .zip(result.positions)
-                .map(|(measured, position)| {
-                    (
-                        position,
-                        measured.expect("layout did not measure every child"),
-                    )
+                .enumerate()
+                .filter_map(|(index, measured)| {
+                    let position = result.positions.get(index).copied().unwrap_or_default();
+                    match measured {
+                        Some(measured) => Some((position, measured)),
+                        None if index < static_count => {
+                            panic!("layout did not measure every child")
+                        }
+                        None => None,
+                    }
                 })
                 .collect();
             Measured {

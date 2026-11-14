@@ -1,6 +1,7 @@
 //! Modifiers: an ordered chain of changes to how an element is sized, drawn and laid out.
 
 mod draw;
+mod gesture;
 mod input;
 mod sizing;
 
@@ -8,16 +9,61 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Rect, Size};
-use rustle_graphics::Color;
+use rustle_graphics::{Color, DrawCommand, LayerEffect, ShaderBrush};
+use rustle_unit::Constraints;
 
 use crate::cursor::CursorIcon;
+use crate::gesture::PointerInputHandler;
 use crate::input::{DropHandler, Focus, KeyHandler, PointerButton, PointerEvent, PressEvent};
-use crate::layout::BoxAlignment;
+use crate::layout::{BoxAlignment, IntrinsicSize, Measurable, Placement};
 use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
 
+/// Draws into a canvas of the given size: the commands, and where in them the content goes.
+pub(crate) type DrawFn = Rc<dyn Fn(Size) -> (Vec<DrawCommand>, Option<usize>)>;
+
+/// A custom layout: measures the content through a [`Measurable`] and says where it goes.
+pub(crate) type LayoutFn = dyn Fn(&mut Measurable<'_>, Constraints) -> Placement;
+
+/// A fill drawn behind the content that needs more than a color.
+#[derive(Clone)]
+pub(crate) enum Fill {
+    Radial {
+        from: Color,
+        to: Color,
+        center: (f32, f32),
+        radius: f32,
+        corner_radius: f32,
+    },
+    Sweep {
+        from: Color,
+        to: Color,
+        center: (f32, f32),
+        start: f32,
+        corner_radius: f32,
+    },
+    Shader {
+        brush: ShaderBrush,
+        corner_radius: f32,
+    },
+    BackdropBlur {
+        blur: f32,
+        corner_radius: f32,
+    },
+    DropShadow {
+        dx: f32,
+        dy: f32,
+        blur: f32,
+        color: Color,
+        corner_radius: f32,
+    },
+}
+
 #[derive(Clone)]
 pub(crate) enum Element {
+    Draw(DrawFn),
+    Fill(Fill),
+    Effect(LayerEffect),
     Padding {
         left: f32,
         top: f32,
@@ -93,7 +139,11 @@ pub(crate) enum Element {
     PointerMove(Rc<dyn Fn(Option<Offset>)>),
     FileDrop(Rc<dyn Fn(PathBuf)>),
     DragEnd(Rc<dyn Fn()>),
-    DragSource(Rc<dyn std::any::Any>),
+    DragSource {
+        payload: Rc<dyn std::any::Any>,
+        button: PointerButton,
+    },
+    PointerInput(PointerInputHandler),
     DropTarget(DropHandler),
     Pinch(Rc<dyn Fn(f32)>),
     BlocksPointer,
@@ -119,6 +169,9 @@ pub(crate) enum Element {
         focus: Focus,
         on_key: KeyHandler,
     },
+    IntrinsicWidth(IntrinsicSize),
+    IntrinsicHeight(IntrinsicSize),
+    Layout(Rc<LayoutFn>),
     /// Read by rows and columns; ignored when measuring the node itself.
     Weight(f32),
     /// Read by stacks; ignored when measuring the node itself.

@@ -4,6 +4,7 @@ use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::DrawCommand;
 
 use crate::cursor::CursorIcon;
+use crate::gesture::PointerInputHandler;
 use crate::input::{DropHandler, Focus, KeyHandler, PointerButton, PointerEvent, PressEvent};
 use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
@@ -42,6 +43,8 @@ pub struct DisplayList {
     pub drop_targets: Vec<DropTargetRegion>,
     /// Areas files can be dropped on, in paint order.
     pub file_drops: Vec<FileDropRegion>,
+    /// Areas that see the raw pointer stream, in paint order.
+    pub pointer_inputs: Vec<PointerInputRegion>,
     /// Areas that react to a pinch gesture, in paint order.
     pub pinches: Vec<PinchRegion>,
     /// Areas that count as used by the interface wherever the pointer is over them, in paint
@@ -63,6 +66,9 @@ pub struct CursorRegion {
 pub struct SemanticsNode {
     pub rect: Rect,
     pub semantics: Semantics,
+    /// The index in [`DisplayList::semantics`] of the area this one is described inside,
+    /// or `None` for a child of the window. Parents come before their children.
+    pub parent: Option<usize>,
     /// Runs when assistive technology activates the area.
     pub on_click: Option<Rc<dyn Fn()>>,
 }
@@ -106,6 +112,8 @@ pub struct KeyRegion {
 /// An area that can be picked up, cut to what is visible.
 pub struct DragSourceRegion {
     pub rect: Rect,
+    /// The button that picks the area up.
+    pub button: PointerButton,
     pub payload: Rc<dyn std::any::Any>,
     /// The drawing commands of the area, as indices into [`DisplayList::commands`],
     /// so what is being dragged can be drawn again under the pointer.
@@ -122,6 +130,14 @@ pub struct DropTargetRegion {
 pub struct FileDropRegion {
     pub rect: Rect,
     pub on_drop: Rc<dyn Fn(std::path::PathBuf)>,
+}
+
+/// An area that sees the raw pointer stream, cut to what is visible.
+pub struct PointerInputRegion {
+    pub rect: Rect,
+    /// Where the area's top-left corner is, before it was cut to what is visible.
+    pub origin: Offset,
+    pub on_event: PointerInputHandler,
 }
 
 /// An area that reacts to a pinch gesture, cut to what is visible.
@@ -221,6 +237,7 @@ impl DisplayList {
             || self.pointer_moves.iter().any(|region| over(region.rect))
             || self.drag_sources.iter().any(|region| over(region.rect))
             || self.drop_targets.iter().any(|region| over(region.rect))
+            || self.pointer_inputs.iter().any(|region| over(region.rect))
     }
 
     /// Whether an area marked [`blocks_pointer`](crate::Modifier::blocks_pointer) contains `point`.
@@ -245,11 +262,23 @@ impl DisplayList {
     }
 
     /// The topmost draggable region containing `point`.
-    pub fn drag_source_at(&self, point: Offset) -> Option<&DragSourceRegion> {
+    pub fn drag_source_at(
+        &self,
+        point: Offset,
+        button: PointerButton,
+    ) -> Option<&DragSourceRegion> {
         self.drag_sources
             .iter()
             .rev()
-            .find(|region| contains(region.rect, point))
+            .find(|region| region.button == button && contains(region.rect, point))
+    }
+
+    /// The pointer-input regions containing `point`, topmost first.
+    pub fn pointer_inputs_at(&self, point: Offset) -> impl Iterator<Item = &PointerInputRegion> {
+        self.pointer_inputs
+            .iter()
+            .rev()
+            .filter(move |region| contains(region.rect, point))
     }
 
     /// The topmost drop target containing `point`.
@@ -458,7 +487,7 @@ mod tests {
         composition.compose();
         let tree = composition.output().expect("composed");
         let display = display_list(
-            &tree,
+            tree,
             Constraints::loose(Size::new(200.0, 200.0)),
             &mut NoText,
         );
@@ -524,7 +553,7 @@ mod tests {
         composition.compose();
         let tree = composition.output().expect("composed");
         let display = display_list(
-            &tree,
+            tree,
             Constraints::loose(Size::new(200.0, 200.0)),
             &mut NoText,
         );
