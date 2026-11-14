@@ -70,17 +70,9 @@ pub(super) struct Shaped {
     pub(super) buffer: Rc<Buffer>,
 }
 impl TextMeasurer for Renderer {
+    /// Measures plain text, reusing its size and refreshing its cache frame on a hit.
     fn measure(&mut self, content: &str, style: &TextStyle, max_width: f32) -> Size {
-        // Layout asks for the same text again every frame; shaping is the most
-        // expensive part of it, so sizes are kept until unused for a while.
-        let key = measure_key(|hasher| {
-            content.hash(hasher);
-            // Every field of the style can change the size, so all of them count.
-            format!("{style:?}").hash(hasher);
-            max_width.to_bits().hash(hasher);
-            // Registering a font can change every size.
-            self.font_generation.get().hash(hasher);
-        });
+        let key = plain_measure_key(content, style, max_width, self.font_generation.get());
         if let Some((size, used)) = self.measured.get_mut(&key) {
             *used = self.frame;
             return *size;
@@ -95,15 +87,9 @@ impl TextMeasurer for Renderer {
         size
     }
 
+    /// Measures rich text, reusing its size and refreshing its cache frame on a hit.
     fn measure_spans(&mut self, spans: &[StyledSpan], style: &TextStyle, max_width: f32) -> Size {
-        let key = measure_key(|hasher| {
-            // Every field of a span can change its size, so all of them count.
-            format!("{spans:?}").hash(hasher);
-            format!("{style:?}").hash(hasher);
-            max_width.to_bits().hash(hasher);
-            self.font_generation.get().hash(hasher);
-            1_u8.hash(hasher);
-        });
+        let key = rich_measure_key(spans, style, max_width, self.font_generation.get());
         if let Some((size, used)) = self.measured.get_mut(&key) {
             *used = self.frame;
             return *size;
@@ -128,6 +114,114 @@ fn measure_key(fill: impl FnOnce(&mut std::collections::hash_map::DefaultHasher)
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     fill(&mut hasher);
     hasher.finish()
+}
+
+/// Identifies plain text, its complete style, width bits and registered-font generation.
+fn plain_measure_key(content: &str, style: &TextStyle, max_width: f32, generation: u64) -> u64 {
+    measure_key(|hasher| {
+        0_u8.hash(hasher);
+        content.hash(hasher);
+        hash_style(style, hasher);
+        max_width.to_bits().hash(hasher);
+        generation.hash(hasher);
+    })
+}
+
+/// Identifies ordered rich runs, their complete styles, width bits and font generation.
+fn rich_measure_key(
+    spans: &[StyledSpan],
+    style: &TextStyle,
+    max_width: f32,
+    generation: u64,
+) -> u64 {
+    measure_key(|hasher| {
+        1_u8.hash(hasher);
+        spans.len().hash(hasher);
+        for span in spans {
+            hash_span(span, hasher);
+        }
+        hash_style(style, hasher);
+        max_width.to_bits().hash(hasher);
+        generation.hash(hasher);
+    })
+}
+
+/// Feeds every style field into `hasher` without allocating, preserving float bits.
+fn hash_style(style: &TextStyle, hasher: &mut impl Hasher) {
+    let TextStyle {
+        color,
+        font_size,
+        line_height,
+        font_weight,
+        font_family,
+        align,
+        max_lines,
+        italic,
+        underline,
+        strikethrough,
+        letter_spacing,
+        ligatures,
+        wrap,
+    } = style;
+    let rustle_text::FontWeight(weight) = font_weight;
+    hash_color(*color, hasher);
+    font_size.to_bits().hash(hasher);
+    line_height.to_bits().hash(hasher);
+    weight.hash(hasher);
+    hash_family(*font_family, hasher);
+    std::mem::discriminant(align).hash(hasher);
+    max_lines.hash(hasher);
+    italic.hash(hasher);
+    underline.hash(hasher);
+    strikethrough.hash(hasher);
+    letter_spacing.to_bits().hash(hasher);
+    ligatures.hash(hasher);
+    std::mem::discriminant(wrap).hash(hasher);
+}
+
+/// Feeds a run's text boundary and every style field into `hasher` without allocating.
+fn hash_span(span: &StyledSpan, hasher: &mut impl Hasher) {
+    let StyledSpan {
+        text,
+        color,
+        font_weight,
+        font_family,
+        italic,
+        underline,
+        strikethrough,
+        background,
+        font_size,
+        letter_spacing,
+        ligatures,
+    } = span;
+    text.hash(hasher);
+    hash_color(*color, hasher);
+    font_weight.hash(hasher);
+    hash_family(*font_family, hasher);
+    italic.hash(hasher);
+    underline.hash(hasher);
+    strikethrough.hash(hasher);
+    std::mem::discriminant(background).hash(hasher);
+    if let Some(color) = background {
+        hash_color(*color, hasher);
+    }
+    font_size.map(f32::to_bits).hash(hasher);
+    letter_spacing.to_bits().hash(hasher);
+    ligatures.hash(hasher);
+}
+
+/// Feeds all four color channels into `hasher`, including alpha.
+fn hash_color(color: rustle_graphics::Color, hasher: &mut impl Hasher) {
+    let rustle_graphics::Color { r, g, b, a } = color;
+    (r, g, b, a).hash(hasher);
+}
+
+/// Feeds the family variant and any named-family text into `hasher`.
+fn hash_family(family: FontFamily, hasher: &mut impl Hasher) {
+    std::mem::discriminant(&family).hash(hasher);
+    if let FontFamily::Named(name) = family {
+        name.hash(hasher);
+    }
 }
 
 /// The size of `content` set in `style`, wrapped at `max_width` if it is finite.
@@ -431,4 +525,414 @@ pub(super) fn shape(
     }
     buffer.shape_until_scroll(font_system, false);
     buffer
+}
+
+/// Pure cache-key coverage; no renderer or font system is constructed.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustle_graphics::Color as TextColor;
+    use rustle_text::FontWeight;
+
+    /// Supplies a plain run whose optional styling is initially absent.
+    fn span(text: &str) -> StyledSpan {
+        StyledSpan::new(
+            text,
+            TextColor::rgb(235, 235, 240),
+            400,
+            FontFamily::SansSerif,
+        )
+    }
+
+    /// Identical inputs retain their keys, while content and cache domains differ.
+    #[test]
+    fn keys_preserve_identity_and_separate_domains() {
+        let style = TextStyle::default();
+        let spans = [span("text")];
+        let plain = plain_measure_key("text", &style, 100.0, 7);
+        let rich = rich_measure_key(&spans, &style, 100.0, 7);
+        assert_eq!(plain, plain_measure_key("text", &style, 100.0, 7));
+        assert_eq!(rich, rich_measure_key(&spans.clone(), &style, 100.0, 7));
+        assert_ne!(plain, rich);
+        assert_ne!(plain, plain_measure_key("other", &style, 100.0, 7));
+    }
+
+    /// Every base-style property contributes to both plain and rich keys.
+    #[test]
+    fn keys_include_every_style_field() {
+        let base = TextStyle::default();
+        let spans = [span("text")];
+        let variants = [
+            TextStyle {
+                color: TextColor { r: 1, ..base.color },
+                ..base
+            },
+            TextStyle {
+                color: TextColor { g: 1, ..base.color },
+                ..base
+            },
+            TextStyle {
+                color: TextColor { b: 1, ..base.color },
+                ..base
+            },
+            TextStyle {
+                color: TextColor { a: 1, ..base.color },
+                ..base
+            },
+            TextStyle {
+                font_size: 15.0,
+                ..base
+            },
+            TextStyle {
+                line_height: 21.0,
+                ..base
+            },
+            TextStyle {
+                font_weight: FontWeight(500),
+                ..base
+            },
+            TextStyle {
+                font_family: FontFamily::Serif,
+                ..base
+            },
+            TextStyle {
+                font_family: FontFamily::Monospace,
+                ..base
+            },
+            TextStyle {
+                font_family: FontFamily::Named("SansSerif"),
+                ..base
+            },
+            TextStyle {
+                align: TextAlign::Left,
+                ..base
+            },
+            TextStyle {
+                align: TextAlign::Center,
+                ..base
+            },
+            TextStyle {
+                align: TextAlign::Right,
+                ..base
+            },
+            TextStyle {
+                max_lines: Some(0),
+                ..base
+            },
+            TextStyle {
+                max_lines: Some(1),
+                ..base
+            },
+            TextStyle {
+                italic: true,
+                ..base
+            },
+            TextStyle {
+                underline: true,
+                ..base
+            },
+            TextStyle {
+                strikethrough: true,
+                ..base
+            },
+            TextStyle {
+                letter_spacing: 1.0,
+                ..base
+            },
+            TextStyle {
+                letter_spacing: -0.0,
+                ..base
+            },
+            TextStyle {
+                ligatures: false,
+                ..base
+            },
+            TextStyle {
+                wrap: TextWrap::Glyph,
+                ..base
+            },
+            TextStyle {
+                wrap: TextWrap::None,
+                ..base
+            },
+        ];
+        let plain = plain_measure_key("text", &base, 100.0, 7);
+        let rich = rich_measure_key(&spans, &base, 100.0, 7);
+        for style in variants {
+            assert_ne!(
+                plain,
+                plain_measure_key("text", &style, 100.0, 7),
+                "{style:?}"
+            );
+            assert_ne!(
+                rich,
+                rich_measure_key(&spans, &style, 100.0, 7),
+                "{style:?}"
+            );
+        }
+        for family in [
+            FontFamily::SansSerif,
+            FontFamily::Serif,
+            FontFamily::Monospace,
+            FontFamily::Named("first"),
+            FontFamily::Named("second"),
+        ] {
+            let key = measure_key(|hasher| hash_family(family, hasher));
+            for other in [
+                FontFamily::SansSerif,
+                FontFamily::Serif,
+                FontFamily::Monospace,
+                FontFamily::Named("first"),
+                FontFamily::Named("second"),
+            ] {
+                if family != other {
+                    assert_ne!(key, measure_key(|hasher| hash_family(other, hasher)));
+                }
+            }
+        }
+    }
+
+    /// Width is bitwise and a font registration invalidates both cache domains.
+    #[test]
+    fn keys_include_width_bits_and_font_generation() {
+        let style = TextStyle::default();
+        let spans = [span("text")];
+        let widths = [
+            0.0,
+            -0.0,
+            100.0,
+            f32::INFINITY,
+            f32::from_bits(0x7fc0_0001),
+            f32::from_bits(0x7fc0_0002),
+        ];
+        for (index, width) in widths.iter().enumerate() {
+            for other in &widths[index + 1..] {
+                assert_ne!(
+                    plain_measure_key("text", &style, *width, 7),
+                    plain_measure_key("text", &style, *other, 7)
+                );
+                assert_ne!(
+                    rich_measure_key(&spans, &style, *width, 7),
+                    rich_measure_key(&spans, &style, *other, 7)
+                );
+            }
+            assert_ne!(
+                plain_measure_key("text", &style, *width, 7),
+                plain_measure_key("text", &style, *width, 8)
+            );
+            assert_ne!(
+                rich_measure_key(&spans, &style, *width, 7),
+                rich_measure_key(&spans, &style, *width, 8)
+            );
+        }
+    }
+
+    /// Span text, order, count and text boundaries remain part of rich identity.
+    #[test]
+    fn rich_keys_include_sequence_structure() {
+        let style = TextStyle::default();
+        let variants = [
+            vec![],
+            vec![span("")],
+            vec![span("ab")],
+            vec![span("a"), span("b")],
+            vec![span("b"), span("a")],
+            vec![span("ab"), span("")],
+            vec![span(""), span("ab")],
+            vec![span("abc"), span("d")],
+            vec![span("a"), span("bcd")],
+        ];
+        for (index, spans) in variants.iter().enumerate() {
+            for other in &variants[index + 1..] {
+                assert_ne!(
+                    rich_measure_key(spans, &style, 100.0, 7),
+                    rich_measure_key(other, &style, 100.0, 7)
+                );
+            }
+        }
+    }
+
+    /// Every run property, including optional discriminants and payloads, is hashed.
+    #[test]
+    fn rich_keys_include_every_span_field() {
+        let style = TextStyle::default();
+        let base = span("text");
+        let variants = [
+            StyledSpan {
+                text: "other".into(),
+                ..base.clone()
+            },
+            StyledSpan {
+                color: TextColor { r: 1, ..base.color },
+                ..base.clone()
+            },
+            StyledSpan {
+                color: TextColor { g: 1, ..base.color },
+                ..base.clone()
+            },
+            StyledSpan {
+                color: TextColor { b: 1, ..base.color },
+                ..base.clone()
+            },
+            StyledSpan {
+                color: TextColor { a: 1, ..base.color },
+                ..base.clone()
+            },
+            StyledSpan {
+                font_weight: 500,
+                ..base.clone()
+            },
+            StyledSpan {
+                font_family: FontFamily::Serif,
+                ..base.clone()
+            },
+            StyledSpan {
+                italic: true,
+                ..base.clone()
+            },
+            StyledSpan {
+                underline: true,
+                ..base.clone()
+            },
+            StyledSpan {
+                strikethrough: true,
+                ..base.clone()
+            },
+            StyledSpan {
+                background: Some(TextColor::TRANSPARENT),
+                ..base.clone()
+            },
+            StyledSpan {
+                background: Some(TextColor::rgba(1, 0, 0, 0)),
+                ..base.clone()
+            },
+            StyledSpan {
+                background: Some(TextColor::rgba(0, 1, 0, 0)),
+                ..base.clone()
+            },
+            StyledSpan {
+                background: Some(TextColor::rgba(0, 0, 1, 0)),
+                ..base.clone()
+            },
+            StyledSpan {
+                background: Some(TextColor::rgba(0, 0, 0, 1)),
+                ..base.clone()
+            },
+            StyledSpan {
+                font_size: Some(0.0),
+                ..base.clone()
+            },
+            StyledSpan {
+                font_size: Some(-0.0),
+                ..base.clone()
+            },
+            StyledSpan {
+                font_size: Some(15.0),
+                ..base.clone()
+            },
+            StyledSpan {
+                letter_spacing: 1.0,
+                ..base.clone()
+            },
+            StyledSpan {
+                letter_spacing: -0.0,
+                ..base.clone()
+            },
+            StyledSpan {
+                ligatures: false,
+                ..base.clone()
+            },
+        ];
+        let key = rich_measure_key(std::slice::from_ref(&base), &style, 100.0, 7);
+        for (index, span) in variants.iter().enumerate() {
+            let changed = rich_measure_key(std::slice::from_ref(span), &style, 100.0, 7);
+            assert_ne!(key, changed, "{span:?}");
+            for other in &variants[index + 1..] {
+                assert_ne!(
+                    changed,
+                    rich_measure_key(std::slice::from_ref(other), &style, 100.0, 7)
+                );
+            }
+        }
+    }
+
+    /// Style floats retain signed zeros and distinct NaN payloads in both domains.
+    #[test]
+    fn keys_preserve_style_float_bits() {
+        let spans = [span("text")];
+        for (value, other) in [
+            (0.0, -0.0),
+            (f32::from_bits(0x7fc0_0001), f32::from_bits(0x7fc0_0002)),
+        ] {
+            for (first, second) in [
+                (
+                    TextStyle {
+                        font_size: value,
+                        ..TextStyle::default()
+                    },
+                    TextStyle {
+                        font_size: other,
+                        ..TextStyle::default()
+                    },
+                ),
+                (
+                    TextStyle {
+                        line_height: value,
+                        ..TextStyle::default()
+                    },
+                    TextStyle {
+                        line_height: other,
+                        ..TextStyle::default()
+                    },
+                ),
+                (
+                    TextStyle {
+                        letter_spacing: value,
+                        ..TextStyle::default()
+                    },
+                    TextStyle {
+                        letter_spacing: other,
+                        ..TextStyle::default()
+                    },
+                ),
+            ] {
+                assert_ne!(
+                    plain_measure_key("text", &first, 100.0, 7),
+                    plain_measure_key("text", &second, 100.0, 7)
+                );
+                assert_ne!(
+                    rich_measure_key(&spans, &first, 100.0, 7),
+                    rich_measure_key(&spans, &second, 100.0, 7)
+                );
+            }
+            for (first, second) in [
+                (
+                    StyledSpan {
+                        font_size: Some(value),
+                        ..span("text")
+                    },
+                    StyledSpan {
+                        font_size: Some(other),
+                        ..span("text")
+                    },
+                ),
+                (
+                    StyledSpan {
+                        letter_spacing: value,
+                        ..span("text")
+                    },
+                    StyledSpan {
+                        letter_spacing: other,
+                        ..span("text")
+                    },
+                ),
+            ] {
+                let style = TextStyle::default();
+                assert_ne!(
+                    rich_measure_key(&[first], &style, 100.0, 7),
+                    rich_measure_key(&[second], &style, 100.0, 7)
+                );
+            }
+        }
+    }
 }
