@@ -18,11 +18,9 @@ pub fn infinite_float_repeating(
     let animatable = remember_animatable(from);
     let driven = animatable.clone();
     launched_effect((), move |scope| async move {
-        let spec = AnimationSpec::Tween { duration, easing };
-        loop {
-            driven.snap_to(from);
-            driven.animate_to(&scope, to, spec).await;
-        }
+        let tween = AnimationSpec::Tween { duration, easing };
+        let spec = infinite_repeatable(tween, RepeatMode::Restart);
+        driven.animate_to(&scope, to, spec).await;
     });
     animatable.state().clone()
 }
@@ -34,11 +32,9 @@ pub fn infinite_float(from: f32, to: f32, duration: Duration, easing: Easing) ->
     let animatable = remember_animatable(from);
     let driven = animatable.clone();
     launched_effect((), move |scope| async move {
-        let spec = AnimationSpec::Tween { duration, easing };
-        loop {
-            driven.animate_to(&scope, to, spec).await;
-            driven.animate_to(&scope, from, spec).await;
-        }
+        let tween = AnimationSpec::Tween { duration, easing };
+        let spec = infinite_repeatable(tween, RepeatMode::Reverse);
+        driven.animate_to(&scope, to, spec).await;
     });
     animatable.state().clone()
 }

@@ -44,6 +44,46 @@ impl Stepper {
                 self.progress = easing.apply(t);
                 t >= 1.0
             }
+            AnimationSpec::Snap => {
+                self.progress = 1.0;
+                true
+            }
+            AnimationSpec::Keyframes { duration, frames } => {
+                let t = if duration.is_zero() {
+                    1.0
+                } else {
+                    ((now - started).as_secs_f32() / duration.as_secs_f32()).min(1.0)
+                };
+                self.progress = keyframe_progress(frames, t);
+                t >= 1.0
+            }
+            AnimationSpec::Repeat {
+                iterations,
+                mode,
+                duration,
+                easing,
+            } => {
+                if duration.is_zero() {
+                    let finished = iterations.is_some();
+                    self.progress = easing.apply(1.0);
+                    self.last_frame = now;
+                    return finished;
+                }
+                let cycles = (now - started).as_secs_f32() / duration.as_secs_f32();
+                let finished = iterations.is_some_and(|count| cycles >= count as f32);
+                let cycles = iterations.map_or(cycles, |count| cycles.min(count as f32));
+                let whole = if finished {
+                    cycles - 1.0
+                } else {
+                    cycles.floor()
+                };
+                let mut t = if finished { 1.0 } else { cycles - whole };
+                if mode == RepeatMode::Reverse && whole as u32 % 2 == 1 {
+                    t = 1.0 - t;
+                }
+                self.progress = easing.apply(t);
+                finished
+            }
             AnimationSpec::Spring {
                 damping_ratio,
                 stiffness,
@@ -70,12 +110,77 @@ impl Stepper {
     }
 }
 
+impl Stepper {
+    /// The value for the current frame: `to` once a finished animation ends at
+    /// its target, otherwise `from` blended by the progress. A reversing
+    /// repeat with an even count ends where it began.
+    pub(crate) fn resolve<T: Lerp + Clone>(&self, from: &T, to: &T, done: bool) -> T {
+        let at_start = matches!(
+            self.spec,
+            AnimationSpec::Repeat {
+                iterations: Some(count),
+                mode: RepeatMode::Reverse,
+                ..
+            } if count % 2 == 0
+        );
+        if done && !at_start {
+            to.clone()
+        } else {
+            from.lerp(to, self.progress)
+        }
+    }
+}
+
+/// The progress at `t` (0 to 1 of the duration) along `frames`.
+fn keyframe_progress(frames: &[Keyframe], t: f32) -> f32 {
+    let mut previous = Keyframe::new(0.0, 0.0);
+    for frame in frames {
+        if t <= frame.at {
+            let span = frame.at - previous.at;
+            let local = if span <= 0.0 {
+                1.0
+            } else {
+                ((t - previous.at) / span).clamp(0.0, 1.0)
+            };
+            return previous.progress
+                + (frame.progress - previous.progress) * frame.easing.apply(local);
+        }
+        previous = *frame;
+    }
+    let span = 1.0 - previous.at;
+    let local = if span <= 0.0 {
+        1.0
+    } else {
+        ((t - previous.at) / span).clamp(0.0, 1.0)
+    };
+    previous.progress + (1.0 - previous.progress) * local
+}
+
 pub(crate) struct Inner<T> {
     value: State<T>,
     from: T,
     target: T,
     stepper: Stepper,
     running: bool,
+    /// Counts the running animations of a transition, which this one is part of.
+    active: Option<Rc<Cell<usize>>>,
+}
+
+impl<T> Inner<T> {
+    /// Records whether this animation runs, keeping the transition's count.
+    fn set_running(&mut self, running: bool) {
+        if self.running == running {
+            return;
+        }
+        self.running = running;
+        if let Some(active) = &self.active {
+            active.set(if running {
+                active.get() + 1
+            } else {
+                active.get().saturating_sub(1)
+            });
+        }
+    }
 }
 
 /// What `animate_as_state` remembers. Dropping it, when the call leaves the
@@ -89,6 +194,9 @@ pub(crate) struct Animation<T> {
 impl<T> Drop for Animation<T> {
     fn drop(&mut self) {
         self.alive.set(false);
+        if let Ok(mut inner) = self.inner.try_borrow_mut() {
+            inner.set_running(false);
+        }
     }
 }
 
@@ -97,13 +205,14 @@ impl<T: Lerp + Clone + PartialEq + 'static> Animation<T> {
         let start = {
             let mut inner = self.inner.borrow_mut();
             if inner.target == target {
-                inner.stepper.spec = spec;
                 return;
             }
             inner.from = inner.value.get();
             inner.target = target;
             inner.stepper = Stepper::new(spec);
-            !std::mem::replace(&mut inner.running, true)
+            let was_running = inner.running;
+            inner.set_running(true);
+            !was_running
         };
         if start {
             request_tick(&self.inner, &self.clock, &self.alive);
@@ -124,13 +233,9 @@ pub(crate) fn request_tick<T: Lerp + Clone + PartialEq + 'static>(
         let (value, state, done) = {
             let mut inner = inner.borrow_mut();
             let done = inner.stepper.step(now);
-            let value = if done {
-                inner.target.clone()
-            } else {
-                inner.from.lerp(&inner.target, inner.stepper.progress)
-            };
+            let value = inner.stepper.resolve(&inner.from, &inner.target, done);
             if done {
-                inner.running = false;
+                inner.set_running(false);
             }
             (value, inner.value.clone(), done)
         };
@@ -149,14 +254,25 @@ pub fn animate_as_state<T: Lerp + Clone + PartialEq + 'static>(
     target: T,
     spec: AnimationSpec,
 ) -> State<T> {
+    animate_counted(target, spec, None)
+}
+
+/// [`animate_as_state`] that adds one to `active` while it is moving.
+#[track_caller]
+pub(crate) fn animate_counted<T: Lerp + Clone + PartialEq + 'static>(
+    target: T,
+    spec: AnimationSpec,
+    active: Option<Rc<Cell<usize>>>,
+) -> State<T> {
     let value = remember(|| target.clone());
-    let animation = remember(|| Animation {
+    let animation = rustle_runtime::remember_live(|| Animation {
         inner: Rc::new(RefCell::new(Inner {
             value: value.clone(),
             from: target.clone(),
             target: target.clone(),
             stepper: Stepper::new(spec),
             running: false,
+            active,
         })),
         clock: frame_clock(),
         alive: Rc::new(Cell::new(true)),
@@ -190,11 +306,7 @@ pub async fn animate_value(
     loop {
         let now = scope.next_frame().await;
         let done = stepper.step(now);
-        apply(if done {
-            to
-        } else {
-            from.lerp(&to, stepper.progress)
-        });
+        apply(stepper.resolve(&from, &to, done));
         if done {
             break;
         }

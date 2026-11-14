@@ -20,6 +20,7 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
         &self.value
     }
 
+    /// The current value.
     pub fn value(&self) -> T {
         self.value.get()
     }
@@ -37,11 +38,7 @@ impl<T: Lerp + Clone + 'static> Animatable<T> {
         loop {
             let now = scope.next_frame().await;
             let done = stepper.step(now);
-            self.value.set(if done {
-                target.clone()
-            } else {
-                from.lerp(&target, stepper.progress)
-            });
+            self.value.set(stepper.resolve(&from, &target, done));
             if done {
                 break;
             }
