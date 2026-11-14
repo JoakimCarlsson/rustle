@@ -9,7 +9,9 @@ use std::time::Instant;
 use rustle_foundation::{KeyEvent, Modifiers};
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::DrawCommand;
-use rustle_ui::{Composition, CursorIcon, PointerButton};
+use rustle_ui::{
+    Composition, CursorIcon, PointerButton, PointerId, PointerInputPhase, PointerKind,
+};
 use rustle_unit::Constraints;
 use rustle_wgpu::{Renderer, TextMetrics};
 
@@ -240,6 +242,37 @@ impl Embedded {
     pub fn pointer_button(&mut self, button: PointerButton, pressed: bool) -> bool {
         let over = self.ui.pointer_over_interface();
         self.ui.button_input(button, pressed);
+        self.ui.apply_focus_request();
+        over
+    }
+
+    /// A contact (a finger or a pen, or a pointer the host tracks itself) changed: `id` tells
+    /// contacts apart, `phase` is [`Down`](PointerInputPhase::Down),
+    /// [`Move`](PointerInputPhase::Move), [`Up`](PointerInputPhase::Up) or
+    /// [`Cancel`](PointerInputPhase::Cancel), `position` is in logical pixels from the area's
+    /// top-left corner and `pressure` runs from 0 to 1 (0.5 when the device does not say).
+    ///
+    /// Several contacts can be down at once, which is what multi-touch gestures (see
+    /// [`Modifier::transformable`](rustle_ui::Modifier::transformable)) follow. The first to
+    /// go down also acts as the primary button, as for [`pointer_button`](Embedded::pointer_button),
+    /// until it is lifted. Returns whether the interface used it: the contact is over an area
+    /// that reacts to the pointer or blocks it, or one that went down on such an area was moved.
+    pub fn contact(
+        &mut self,
+        id: u64,
+        kind: PointerKind,
+        phase: PointerInputPhase,
+        position: Offset,
+        pressure: f32,
+    ) -> bool {
+        let over = self.ui.display.interactive_at(position)
+            || self
+                .ui
+                .pointers
+                .iter()
+                .any(|pointer| pointer.id == PointerId(id));
+        self.ui
+            .contact(PointerId(id), kind, phase, position, pressure);
         self.ui.apply_focus_request();
         over
     }

@@ -4,7 +4,10 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use rustle_geometry::{Offset, Rect};
-use rustle_ui::{DisplayList, PointerButton, PointerEvent, PointerPhase, PressEvent};
+use rustle_ui::{
+    DisplayList, PointerButton, PointerEvent, PointerId, PointerInputPhase, PointerKind,
+    PointerPhase, PressEvent,
+};
 
 use crate::interface::{Carrying, FollowEntry, HoverEntry, Interface};
 
@@ -81,6 +84,7 @@ impl Interface {
             self.long_press = None;
         }
         self.update_hover();
+        self.pointer_input_move(PointerId::MOUSE, pointer, MOUSE_PRESSURE);
         self.drag_buttons(pointer);
         if let Some((on_drag, origin, _)) = self.dragging.clone() {
             on_drag(Offset::new(pointer.x - origin.x, pointer.y - origin.y));
@@ -94,7 +98,16 @@ impl Interface {
     /// `button` (see [`Modifier::on_pointer_button`](rustle_ui::Modifier::on_pointer_button)),
     /// and for the primary button also does clicks, focus, drags and long presses.
     pub(crate) fn button_input(&mut self, button: PointerButton, pressed: bool) {
+        self.button_input_from(button, pressed, true);
+    }
+
+    /// Like [`button_input`](Self::button_input); `mouse` says whether the button belongs to
+    /// the mouse, as opposed to a contact that stands in for the primary button.
+    pub(crate) fn button_input_from(&mut self, button: PointerButton, pressed: bool, mouse: bool) {
         let Some(pointer) = self.pointer else {
+            if !pressed {
+                self.release_without_pointer(button, mouse);
+            }
             if button == PointerButton::Primary {
                 self.primary_button(pressed);
             }
@@ -103,6 +116,16 @@ impl Interface {
         if pressed {
             if button == PointerButton::Primary {
                 self.primary_button(true);
+                if mouse {
+                    self.pointer_input_down(
+                        PointerId::MOUSE,
+                        PointerKind::Mouse,
+                        pointer,
+                        MOUSE_PRESSURE,
+                    );
+                }
+            } else if self.carrying.is_none() {
+                self.carrying = self.begin_carrying(button);
             }
             let click_count = match (button, self.last_press) {
                 (PointerButton::Primary, Some((_, _, count))) => count,
@@ -123,6 +146,12 @@ impl Interface {
                 });
             }
             return;
+        }
+        if button == PointerButton::Primary && mouse {
+            self.pointer_input_up(PointerId::MOUSE, pointer, PointerInputPhase::Up);
+        }
+        if button != PointerButton::Primary {
+            self.finish_carrying(button);
         }
         if let Some(index) = self
             .held_buttons
@@ -156,6 +185,65 @@ impl Interface {
         if button == PointerButton::Primary {
             self.primary_button(false);
         }
+    }
+
+    /// A button was released after the pointer left the area, so nothing says where: the
+    /// raw pointer stream of the mouse ends where it last was, and what `button` carried is
+    /// put down without being dropped.
+    fn release_without_pointer(&mut self, button: PointerButton, mouse: bool) {
+        if button == PointerButton::Primary && mouse {
+            let last = self
+                .pointers
+                .iter()
+                .find(|pointer| pointer.id == PointerId::MOUSE)
+                .map(|pointer| pointer.position);
+            if let Some(last) = last {
+                self.pointer_input_up(PointerId::MOUSE, last, PointerInputPhase::Up);
+            }
+        }
+        if button != PointerButton::Primary {
+            self.finish_carrying(button);
+            self.held_buttons.retain(|held| held.button != button);
+        }
+    }
+
+    /// Picks up what the drag source under the pointer that listens to `button` carries.
+    fn begin_carrying(&self, button: PointerButton) -> Option<Carrying> {
+        let pointer = self.pointer?;
+        let region = self.display.drag_source_at(pointer, button)?;
+        Some(Carrying {
+            payload: Rc::clone(&region.payload),
+            button,
+            began: pointer,
+            active: false,
+            rect: region.rect,
+            commands: region.commands.clone(),
+        })
+    }
+
+    /// Puts down what `button` was carrying, onto the drop target under the pointer if it was
+    /// dragged. Returns whether it was dropped.
+    fn finish_carrying(&mut self, button: PointerButton) -> bool {
+        if self
+            .carrying
+            .as_ref()
+            .is_none_or(|carrying| carrying.button != button)
+        {
+            return false;
+        }
+        let Some(carrying) = self.carrying.take() else {
+            return false;
+        };
+        self.redraw = true;
+        if carrying.active
+            && let Some(pointer) = self.pointer
+            && let Some(region) = self.display.drop_target_at(pointer)
+        {
+            let on_drop = Rc::clone(&region.on_drop);
+            on_drop(carrying.payload.as_ref());
+            return true;
+        }
+        false
     }
 
     /// An event for `button` at `pointer` in an area whose top-left corner is `origin`.
@@ -215,14 +303,7 @@ impl Interface {
         self.redraw = true;
         if !pressed {
             // Something carried over a drop target is dropped on it.
-            let carrying = self.carrying.take();
-            if let Some(carrying) = carrying
-                && carrying.active
-                && let Some(pointer) = self.pointer
-                && let Some(region) = self.display.drop_target_at(pointer)
-            {
-                let on_drop = Rc::clone(&region.on_drop);
-                on_drop(carrying.payload.as_ref());
+            if self.finish_carrying(PointerButton::Primary) {
                 self.pressed = None;
             }
             // A click is a press and a release on the same region.
@@ -243,16 +324,7 @@ impl Interface {
             return;
         }
         self.pressed = target;
-        self.carrying = self.pointer.and_then(|pointer| {
-            let region = self.display.drag_source_at(pointer)?;
-            Some(Carrying {
-                payload: Rc::clone(&region.payload),
-                began: pointer,
-                active: false,
-                rect: region.rect,
-                commands: region.commands.clone(),
-            })
-        });
+        self.carrying = self.begin_carrying(PointerButton::Primary);
         self.long_press = self.pointer.and_then(|pointer| {
             let region = self.display.long_press_at(pointer)?;
             Some((
@@ -304,6 +376,9 @@ impl Interface {
         count
     }
 }
+
+/// The pressure reported for a mouse button, which cannot tell.
+pub(crate) const MOUSE_PRESSURE: f32 = 0.5;
 
 /// A pointer button that is down on an area that reacts to it.
 pub(crate) struct HeldButton {

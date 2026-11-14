@@ -14,12 +14,37 @@ use rustle_ui::Node;
 use winit::dpi::LogicalSize;
 use winit::window::{Window, WindowAttributes};
 
+/// The appearance a window is given, whatever the system prefers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowTheme {
+    /// The light appearance.
+    Light,
+    /// The dark appearance.
+    Dark,
+}
+
+impl WindowTheme {
+    /// Whether this is the dark appearance.
+    pub fn is_dark(self) -> bool {
+        self == WindowTheme::Dark
+    }
+
+    /// The winit theme for this appearance.
+    pub(crate) fn winit(self) -> winit::window::Theme {
+        match self {
+            WindowTheme::Light => winit::window::Theme::Light,
+            WindowTheme::Dark => winit::window::Theme::Dark,
+        }
+    }
+}
+
 /// How a window looks and behaves when it opens.
 ///
 /// Fields can be set with struct update syntax (`WindowOptions { decorations: false,
 /// ..WindowOptions::default() }`) or with the `with_` methods. For a window opened with
 /// [`window`], a changed title, decoration setting, resizability or minimum size is
-/// applied to the open window; the other fields only matter when it opens.
+/// applied to the open window, and so are `fullscreen`, `position`, `theme` and `modal`; the
+/// other fields only matter when it opens.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowOptions {
     /// The window's title.
@@ -52,6 +77,31 @@ pub struct WindowOptions {
     /// On macOS, hides the title text but keeps the title bar and its buttons. Ignored on
     /// other platforms.
     pub macos_title_hidden: bool,
+    /// Whether the window covers the whole screen, without a title bar or border.
+    pub fullscreen: bool,
+    /// Where the window's top left corner opens, in logical pixels on the desktop. The
+    /// system chooses when it is `None`. Wayland does not let a window place itself.
+    pub position: Option<(f32, f32)>,
+    /// Whether what is behind the window shows through where the interface is not opaque.
+    /// The window needs a background that is not opaque to show anything.
+    pub transparent: bool,
+    /// The appearance of this window and its content, instead of the system's.
+    pub theme: Option<WindowTheme>,
+    /// Whether the window blocks input to its [`parent`](Self::parent), or to every other
+    /// window when it has none, until it is closed. A modal window without a parent does not
+    /// block the windows opened as modal dialogs of its own, directly or through other dialogs.
+    pub modal: bool,
+    /// The window this one belongs to, for [`modal`](Self::modal) windows and dialogs.
+    ///
+    /// Where the system has a parent that does not confine the child, the native window is
+    /// made its child: an owned window above it on Windows, an attached window that moves
+    /// with it on macOS. X11 only has parents that clip the child to the parent's area and
+    /// Wayland has none through winit, so there it only decides which window the modal blocks.
+    pub parent: Option<WindowHandle>,
+    /// Whether the window goes away when the user closes it, instead of waiting for the
+    /// composition to stop calling [`window`]. `on_close_request` still runs, so the state
+    /// that guards the call can be cleared.
+    pub closes_itself: bool,
 }
 
 impl Default for WindowOptions {
@@ -68,6 +118,13 @@ impl Default for WindowOptions {
             macos_titlebar_transparent: false,
             macos_fullsize_content: false,
             macos_title_hidden: false,
+            fullscreen: false,
+            position: None,
+            transparent: false,
+            theme: None,
+            modal: false,
+            parent: None,
+            closes_itself: false,
         }
     }
 }
@@ -132,33 +189,103 @@ impl WindowOptions {
         self
     }
 
-    /// The winit attributes for a window with these options. It is made hidden, because the
-    /// accessibility adapter has to exist before the window is shown.
-    pub(crate) fn attributes(&self) -> WindowAttributes {
+    /// Sets whether the window covers the whole screen.
+    pub fn with_fullscreen(mut self, fullscreen: bool) -> Self {
+        self.fullscreen = fullscreen;
+        self
+    }
+
+    /// Sets where the window's top left corner opens, in logical pixels.
+    pub fn with_position(mut self, x: f32, y: f32) -> Self {
+        self.position = Some((x, y));
+        self
+    }
+
+    /// Sets whether the window is see-through where the interface is not opaque.
+    pub fn with_transparent(mut self, transparent: bool) -> Self {
+        self.transparent = transparent;
+        self
+    }
+
+    /// Gives the window its own appearance instead of the system's.
+    pub fn with_theme(mut self, theme: WindowTheme) -> Self {
+        self.theme = Some(theme);
+        self
+    }
+
+    /// Makes the window modal over `parent`.
+    pub fn with_modal_for(mut self, parent: WindowHandle) -> Self {
+        self.modal = true;
+        self.parent = Some(parent);
+        self
+    }
+
+    /// Makes the window modal over every other window.
+    pub fn with_modal(mut self) -> Self {
+        self.modal = true;
+        self
+    }
+
+    /// Makes the window close when the user closes it.
+    pub fn with_closes_itself(mut self, closes_itself: bool) -> Self {
+        self.closes_itself = closes_itself;
+        self
+    }
+
+    /// The winit attributes for a window with these options, as a child of `parent` where
+    /// the system has a notion of a parent that does not confine the window to it. It is
+    /// made hidden, because the accessibility adapter has to exist before the window is shown.
+    pub(crate) fn attributes(&self, parent: Option<&Window>) -> WindowAttributes {
         let attributes = Window::default_attributes()
             .with_title(self.title.as_str())
             .with_visible(false)
             .with_decorations(self.decorations)
             .with_resizable(self.resizable)
+            .with_transparent(self.transparent)
+            .with_theme(self.theme.map(WindowTheme::winit))
+            .with_fullscreen(
+                self.fullscreen
+                    .then_some(winit::window::Fullscreen::Borderless(None)),
+            )
             .with_inner_size(LogicalSize::new(self.size.0, self.size.1))
             .with_min_inner_size(LogicalSize::new(self.min_size.0, self.min_size.1));
-        self.platform_attributes(attributes)
+        let attributes = match self.position {
+            Some((x, y)) => attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
+            None => attributes,
+        };
+        self.platform_attributes(attributes, parent)
     }
 
     #[cfg(target_os = "macos")]
-    fn platform_attributes(&self, attributes: WindowAttributes) -> WindowAttributes {
+    fn platform_attributes(
+        &self,
+        attributes: WindowAttributes,
+        parent: Option<&Window>,
+    ) -> WindowAttributes {
         use winit::platform::macos::WindowAttributesExtMacOS;
-        attributes
+        use winit::raw_window_handle::HasWindowHandle;
+        let attributes = attributes
             .with_titlebar_transparent(self.macos_titlebar_transparent)
             .with_fullsize_content_view(self.macos_fullsize_content)
-            .with_title_hidden(self.macos_title_hidden)
+            .with_title_hidden(self.macos_title_hidden);
+        match parent.and_then(|parent| parent.window_handle().ok()) {
+            // SAFETY: the handle comes from a live window of this application. On macOS the
+            // child is a window attached to its parent, which moves with it and is not
+            // confined to it.
+            Some(handle) => unsafe { attributes.with_parent_window(Some(handle.as_raw())) },
+            None => attributes,
+        }
     }
 
     #[cfg(all(
         unix,
         not(any(target_os = "macos", target_os = "android", target_os = "ios"))
     ))]
-    fn platform_attributes(&self, attributes: WindowAttributes) -> WindowAttributes {
+    fn platform_attributes(
+        &self,
+        attributes: WindowAttributes,
+        _parent: Option<&Window>,
+    ) -> WindowAttributes {
         use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
         match &self.app_id {
             Some(id) => {
@@ -169,14 +296,36 @@ impl WindowOptions {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    fn platform_attributes(
+        &self,
+        attributes: WindowAttributes,
+        parent: Option<&Window>,
+    ) -> WindowAttributes {
+        use winit::platform::windows::WindowAttributesExtWindows;
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match parent
+            .and_then(|parent| parent.window_handle().ok())
+            .map(|handle| handle.as_raw())
+        {
+            Some(RawWindowHandle::Win32(handle)) => attributes.with_owner_window(handle.hwnd.get()),
+            _ => attributes,
+        }
+    }
+
     #[cfg(not(any(
         target_os = "macos",
+        target_os = "windows",
         all(
             unix,
             not(any(target_os = "macos", target_os = "android", target_os = "ios"))
         )
     )))]
-    fn platform_attributes(&self, attributes: WindowAttributes) -> WindowAttributes {
+    fn platform_attributes(
+        &self,
+        attributes: WindowAttributes,
+        _parent: Option<&Window>,
+    ) -> WindowAttributes {
         attributes
     }
 }
@@ -290,6 +439,41 @@ impl WindowHandle {
         self.with_window(|w| w.is_maximized()).unwrap_or(false)
     }
 
+    /// Makes the window cover the whole screen, or restores it.
+    pub fn set_fullscreen(self, fullscreen: bool) {
+        self.with_window(|w| {
+            w.set_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
+        });
+    }
+
+    /// Whether the window covers the whole screen.
+    pub fn is_fullscreen(self) -> bool {
+        self.with_window(|w| w.fullscreen().is_some())
+            .unwrap_or(false)
+    }
+
+    /// Moves the window's top left corner to `x`, `y`, in logical pixels on the desktop.
+    /// Wayland does not let a window move itself.
+    pub fn set_position(self, x: f32, y: f32) {
+        self.with_window(|w| w.set_outer_position(winit::dpi::LogicalPosition::new(x, y)));
+    }
+
+    /// Where the window's top left corner is, in logical pixels on the desktop, if the
+    /// window is open and the platform says.
+    pub fn position(self) -> Option<(f32, f32)> {
+        self.with_window(|w| {
+            let position = w.outer_position().ok()?;
+            let logical = position.to_logical::<f32>(w.scale_factor());
+            Some((logical.x, logical.y))
+        })
+        .flatten()
+    }
+
+    /// Brings the window in front and gives it keyboard focus.
+    pub fn focus(self) {
+        self.with_window(|w| w.focus_window());
+    }
+
     /// Shows or hides the window.
     pub fn set_visible(self, visible: bool) {
         self.with_window(|w| w.set_visible(visible));
@@ -335,9 +519,15 @@ pub(crate) fn in_main_window<R>(root: impl FnOnce() -> R) -> R {
 /// told apart like any group: wrap each in `key(id, ..)`.
 ///
 /// `on_close_request` runs when the user closes the window or [`WindowHandle::close`] is
-/// called. Windows do not close themselves: it should make the call stop happening,
-/// typically by clearing a `State<bool>` that guards it. Changing `options` while the
-/// window is open updates its title, decorations, resizability and minimum size.
+/// called. Unless the options set `closes_itself`, the window stays until the call stops
+/// happening, typically because `on_close_request` cleared a `State<bool>` that guards it.
+/// A window that closes itself is gone as soon as the request is made and stays closed until
+/// the call leaves the composition, so it does not reopen on the next pass. Changing
+/// `options` while the window is open updates its title, decorations, resizability, minimum
+/// size, fullscreen state, position, theme and modality.
+///
+/// A window with a `theme` composes its content with that appearance instead of the
+/// system's.
 ///
 /// ```ignore
 /// let open = remember(|| true);
@@ -362,7 +552,15 @@ pub fn window(
         rustle_runtime::disposable_effect((), move || {
             move || REGISTRY.with(|r| r.borrow_mut().remove(key))
         });
-        let tree = LOCAL_WINDOW.provide(handle, || rustle_ui::compose(content));
+        let theme = options.theme;
+        let tree = LOCAL_WINDOW.provide(handle, || {
+            rustle_ui::compose(|| match theme {
+                Some(theme) => {
+                    rustle_foundation::LOCAL_SYSTEM_DARK.provide(theme.is_dark(), content)
+                }
+                None => content(),
+            })
+        });
         REGISTRY.with(|r| {
             r.borrow_mut()
                 .update(key, options, tree, Rc::new(on_close_request));
@@ -393,6 +591,8 @@ pub(crate) struct Entry {
     pub(crate) on_close: Option<Rc<dyn Fn()>>,
     /// The native window, once the event loop has opened it.
     pub(crate) window: Option<Arc<Window>>,
+    /// Whether the user closed a window that closes itself, so it is not opened again.
+    pub(crate) closed: bool,
 }
 
 /// The windows composition has asked for, and the requests waiting for the event loop.
@@ -428,6 +628,7 @@ impl Registry {
                         tree: Some(tree),
                         on_close: Some(on_close),
                         window: None,
+                        closed: false,
                     },
                 );
             }

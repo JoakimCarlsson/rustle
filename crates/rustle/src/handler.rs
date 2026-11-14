@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use rustle_geometry::Offset;
-use rustle_ui::PointerButton;
+use rustle_ui::{PointerId, PointerInputPhase, PointerKind};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
@@ -124,24 +124,18 @@ impl App {
                     (touch.location.x / scale_factor) as f32,
                     (touch.location.y / scale_factor) as f32,
                 );
-                // A finger is a pointer that is only there while it touches.
-                match touch.phase {
-                    TouchPhase::Started => {
-                        self.ui.pointer_moved(at);
-                        self.show_cursor();
-                        self.ui.button_input(PointerButton::Primary, true);
-                    }
-                    TouchPhase::Moved => {
-                        self.ui.pointer_moved(at);
-                        self.show_cursor();
-                    }
-                    TouchPhase::Ended | TouchPhase::Cancelled => {
-                        self.ui.pointer_moved(at);
-                        self.show_cursor();
-                        self.ui.button_input(PointerButton::Primary, false);
-                        self.ui.pointer = None;
-                    }
-                }
+                let phase = match touch.phase {
+                    TouchPhase::Started => PointerInputPhase::Down,
+                    TouchPhase::Moved => PointerInputPhase::Move,
+                    TouchPhase::Ended => PointerInputPhase::Up,
+                    TouchPhase::Cancelled => PointerInputPhase::Cancel,
+                };
+                let pressure = touch
+                    .force
+                    .map_or(0.5, |force| force.normalized().clamp(0.0, 1.0) as f32);
+                self.ui
+                    .contact(PointerId(touch.id), PointerKind::Touch, phase, at, pressure);
+                self.show_cursor();
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let scale_factor = state.window.scale_factor() as f32;

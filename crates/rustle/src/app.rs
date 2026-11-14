@@ -75,7 +75,7 @@ pub fn run_with(options: WindowOptions, root: impl FnMut() + 'static) {
             })
             .unwrap_or((1280, 800));
         let dark = std::env::var_os("RUSTLE_SNAPSHOT_LIGHT").is_none();
-        if let Err(error) = snapshot(root, dark, size, path.as_ref()) {
+        if let Err(error) = snapshot(root, dark, Some(size), None, path.as_ref()) {
             eprintln!("rustle: {error}");
             process::exit(1);
         }

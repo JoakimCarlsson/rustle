@@ -14,8 +14,9 @@ use std::time::{Duration, Instant};
 use rustle_foundation::{Focus, KeyEvent, Modifiers};
 use rustle_geometry::{Offset, Rect};
 use rustle_graphics::DrawCommand;
-use rustle_ui::{CursorIcon, DisplayList};
+use rustle_ui::{CursorIcon, DisplayList, PointerButton, PointerId};
 
+use crate::contact::ActivePointer;
 use crate::overlay::{carrying_overlay, feedback};
 use crate::pointer::HeldButton;
 
@@ -32,6 +33,8 @@ pub(crate) type LongPress = (Instant, Rc<dyn Fn()>, Offset);
 /// whether the pointer has moved far enough for it to count as a drag.
 pub(crate) struct Carrying {
     pub(crate) payload: Rc<dyn std::any::Any>,
+    /// The button that holds it.
+    pub(crate) button: PointerButton,
     pub(crate) began: Offset,
     pub(crate) active: bool,
     /// Where the picked-up area is, and which of the display list's commands draw it.
@@ -69,6 +72,10 @@ pub(crate) struct Interface {
     pub(crate) last_press: Option<(Instant, Offset, u32)>,
     /// Pointer buttons that are down, for the areas that react to them.
     pub(crate) held_buttons: Vec<HeldButton>,
+    /// Pointers that are down on areas that watch the raw pointer stream.
+    pub(crate) pointers: Vec<ActivePointer>,
+    /// The contact that stands in for the primary button while it is down.
+    pub(crate) primary_contact: Option<PointerId>,
     /// The caret area last reported to the input method, so it is only sent when it moves.
     pub(crate) ime_area: Option<Rect>,
     /// Where the primary button went down on something clickable. Areas are told apart by
@@ -103,6 +110,8 @@ impl Interface {
         mem::swap(&mut self.dragging, &mut other.dragging);
         mem::swap(&mut self.carrying, &mut other.carrying);
         mem::swap(&mut self.last_press, &mut other.last_press);
+        mem::swap(&mut self.pointers, &mut other.pointers);
+        mem::swap(&mut self.primary_contact, &mut other.primary_contact);
         mem::swap(&mut self.pressed, &mut other.pressed);
         mem::swap(&mut self.redraw, &mut other.redraw);
         mem::swap(&mut self.focus_changed, &mut other.focus_changed);
@@ -188,6 +197,9 @@ impl Interface {
     /// The wheel or a trackpad scrolled by `delta` logical pixels where the pointer is.
     /// Returns whether a scrolling area took it.
     pub(crate) fn wheel(&mut self, delta: Offset) -> bool {
+        if self.pointer_input_scroll(delta) {
+            return true;
+        }
         let Some(pointer) = self.pointer else {
             return false;
         };

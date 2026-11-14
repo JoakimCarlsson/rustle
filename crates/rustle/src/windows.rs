@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use rustle_wgpu::Renderer;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Theme as WindowTheme, Window, WindowId};
+use winit::window::{Theme as WinitTheme, Window, WindowId};
 
 use crate::app::{App, WindowState};
 use crate::interface::Interface;
-use crate::window::{Entry, MAIN, REGISTRY, WindowOptions};
+use crate::window::{Entry, MAIN, REGISTRY, WindowOptions, WindowTheme};
 
 /// The state of one window while another is being served.
 #[derive(Default)]
@@ -98,9 +98,12 @@ impl App {
         event_loop: &ActiveEventLoop,
         options: &WindowOptions,
     ) -> Result<WindowState, String> {
+        let parent = options.parent.and_then(|parent| {
+            REGISTRY.with(|r| r.borrow().entries.get(&parent.key)?.window.clone())
+        });
         let window = Arc::new(
             event_loop
-                .create_window(options.attributes())
+                .create_window(options.attributes(parent.as_deref()))
                 .map_err(|error| error.to_string())?,
         );
         let instance = shared_instance(event_loop);
@@ -111,10 +114,18 @@ impl App {
         let adapter = make_adapter(event_loop, &window);
         if options.visible {
             window.set_visible(true);
+            if options.modal {
+                window.focus_window();
+            }
         }
         let size = window.inner_size();
-        let renderer = Renderer::new(instance, window.clone(), (size.width, size.height))
-            .map_err(|error| error.to_string())?;
+        let renderer = Renderer::with_transparency(
+            instance,
+            window.clone(),
+            (size.width, size.height),
+            options.transparent,
+        )
+        .map_err(|error| error.to_string())?;
         Ok(WindowState {
             adapter,
             renderer,
@@ -133,6 +144,7 @@ impl App {
                     tree: None,
                     on_close: None,
                     window,
+                    closed: false,
                 },
             );
         });
@@ -163,22 +175,12 @@ impl App {
                 event_loop.exit();
                 continue;
             }
-            let on_close = REGISTRY.with(|r| r.borrow().entries.get(&key)?.on_close.clone());
-            if let Some(on_close) = on_close {
-                on_close();
-            }
+            close_requested(key);
         }
         if !REGISTRY.with(|r| mem::take(&mut r.borrow_mut().dirty)) {
             return;
         }
-        let wanted: Vec<(u64, WindowOptions)> = REGISTRY.with(|r| {
-            r.borrow()
-                .entries
-                .iter()
-                .filter(|(key, _)| **key != MAIN)
-                .map(|(key, entry)| (*key, entry.options.clone()))
-                .collect()
-        });
+        let wanted = wanted_windows();
         // Windows that left the composition. Slot 0, the main window, never does.
         self.activate(0);
         let mut index = 1;
@@ -211,7 +213,7 @@ impl App {
                     self.activate(self.slots.len() - 1);
                     self.set_dark(
                         self.window.as_ref().and_then(|state| state.window.theme())
-                            != Some(WindowTheme::Light),
+                            != Some(WinitTheme::Light),
                     );
                     self.relayout();
                     self.activate(0);
@@ -244,6 +246,24 @@ impl App {
                     options.min_size.1,
                 )));
             }
+            if ctx.options.fullscreen != options.fullscreen {
+                window.set_fullscreen(
+                    options
+                        .fullscreen
+                        .then_some(winit::window::Fullscreen::Borderless(None)),
+                );
+            }
+            if ctx.options.position != options.position
+                && let Some((x, y)) = options.position
+            {
+                window.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+            }
+            if ctx.options.theme != options.theme {
+                window.set_theme(options.theme.map(WindowTheme::winit));
+            }
+            if !ctx.options.modal && options.modal {
+                window.focus_window();
+            }
             if !options.ime_allowed {
                 window.set_ime_allowed(false);
             }
@@ -261,6 +281,14 @@ impl App {
         let Some(index) = self.slot_of(id) else {
             return;
         };
+        if let Some(modal) = self.blocking_modal(index)
+            && is_input(&event)
+        {
+            if let Some(window) = self.slot_window(modal) {
+                window.window.focus_window();
+            }
+            return;
+        }
         self.activate(index);
         if self.key != MAIN && matches!(event, winit::event::WindowEvent::CloseRequested) {
             // The composition decides whether the window goes.
@@ -269,6 +297,23 @@ impl App {
             self.window_event(event_loop, event);
         }
         self.sync_windows(event_loop);
+    }
+
+    /// The slot of an open modal window that blocks input to the window in slot `index`;
+    /// see [`modal_over`].
+    fn blocking_modal(&self, index: usize) -> Option<usize> {
+        let open: Vec<Option<(u64, &WindowOptions)>> = (0..self.slots.len())
+            .map(|slot| {
+                self.slot_window(slot)?;
+                let options = if slot == self.active {
+                    &self.options
+                } else {
+                    &self.slots[slot].options
+                };
+                Some((self.slot_key(slot), options))
+            })
+            .collect();
+        modal_over(&open, index)
     }
 
     /// Answers a request of the platform's accessibility API for the window `id`.
@@ -342,6 +387,91 @@ impl App {
             );
         }
     }
+}
+
+/// Runs the close request of the secondary window `key`: its `on_close_request` runs, and a
+/// window that closes itself is marked closed, so it goes and is not opened again until its
+/// call leaves the composition.
+pub(crate) fn close_requested(key: u64) {
+    let on_close = REGISTRY.with(|r| r.borrow().entries.get(&key)?.on_close.clone());
+    if let Some(on_close) = on_close {
+        on_close();
+    }
+    REGISTRY.with(|r| {
+        let mut registry = r.borrow_mut();
+        if let Some(entry) = registry.entries.get_mut(&key)
+            && entry.options.closes_itself
+        {
+            entry.closed = true;
+            registry.dirty = true;
+        }
+    });
+}
+
+/// The secondary windows that should be open, by key with their options: every one the
+/// composition asks for except those that closed themselves.
+pub(crate) fn wanted_windows() -> Vec<(u64, WindowOptions)> {
+    REGISTRY.with(|r| {
+        r.borrow()
+            .entries
+            .iter()
+            .filter(|(key, entry)| **key != MAIN && !entry.closed)
+            .map(|(key, entry)| (*key, entry.options.clone()))
+            .collect()
+    })
+}
+
+/// The index in `windows` of a modal window that blocks input to the window at `index`.
+///
+/// `windows` lists every slot as its registry key and options, or `None` where the window is
+/// not open. A modal window with a parent blocks that parent; one without blocks every window
+/// except itself and the windows that descend from it, which are its own dialogs.
+pub(crate) fn modal_over(windows: &[Option<(u64, &WindowOptions)>], index: usize) -> Option<usize> {
+    let (key, _) = windows.get(index).copied().flatten()?;
+    let parent_of = |key: u64| {
+        windows
+            .iter()
+            .flatten()
+            .find(|(candidate, _)| *candidate == key)
+            .and_then(|(_, options)| options.parent)
+            .map(|parent| parent.key)
+    };
+    let descends_from = |mut key: u64, ancestor: u64| {
+        for _ in 0..windows.len() {
+            match parent_of(key) {
+                Some(parent) if parent == ancestor => return true,
+                Some(parent) => key = parent,
+                None => return false,
+            }
+        }
+        false
+    };
+    (1..windows.len()).find(|&other| {
+        let Some((modal_key, options)) = windows[other] else {
+            return false;
+        };
+        other != index
+            && options.modal
+            && match options.parent {
+                Some(parent) => parent.key == key,
+                None => !descends_from(key, modal_key),
+            }
+    })
+}
+
+/// Whether `event` is the user working with a window's content, which a modal window
+/// elsewhere blocks.
+fn is_input(event: &winit::event::WindowEvent) -> bool {
+    use winit::event::WindowEvent as E;
+    matches!(
+        event,
+        E::MouseInput { .. }
+            | E::MouseWheel { .. }
+            | E::KeyboardInput { .. }
+            | E::Touch(_)
+            | E::Ime(_)
+            | E::DroppedFile(_)
+    )
 }
 
 /// Turns Rustle's cursor icon into winit's.
