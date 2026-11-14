@@ -2392,6 +2392,7 @@ dependencies = [
 name = "rustle-foundation"
 version = "0.1.0"
 dependencies = [
+ "rustle-animation",
  "rustle-geometry",
  "rustle-graphics",
  "rustle-runtime",
@@ -2502,6 +2503,8 @@ dependencies = [
  "rustle-icons",
  "rustle-runtime",
  "rustle-text",
+ "rustle-ui",
+ "rustle-unit",
 ]
 
 [[package]]
