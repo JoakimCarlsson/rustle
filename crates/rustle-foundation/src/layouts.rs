@@ -1,5 +1,7 @@
 use rustle_geometry::{Offset, Size};
-use rustle_ui::{Canvas, Children, Layout, LayoutResult, Modifier, is_rtl, layout};
+use rustle_ui::{
+    Canvas, Children, Layout, LayoutResult, Modifier, SubcomposeResult, layout, subcompose_layout,
+};
 use rustle_unit::Constraints;
 
 /// Emits `content` stacked over a canvas that is drawn behind it and is exactly
@@ -44,69 +46,6 @@ impl Layout for Backdrop {
         LayoutResult {
             size,
             positions: vec![Offset::default(); children.len()],
-        }
-    }
-}
-
-/// Emits a row that fills with the children of `content` left to right and
-/// starts a new line when the next one does not fit, with the given gaps.
-#[track_caller]
-pub fn flow_row(
-    modifier: Modifier,
-    horizontal_spacing: f32,
-    vertical_spacing: f32,
-    content: impl FnOnce(),
-) {
-    layout(
-        modifier,
-        Flow {
-            horizontal: horizontal_spacing,
-            vertical: vertical_spacing,
-            rtl: is_rtl(),
-        },
-        content,
-    );
-}
-
-/// Places children in lines, wrapping when the next does not fit the width.
-struct Flow {
-    horizontal: f32,
-    vertical: f32,
-    rtl: bool,
-}
-
-impl Layout for Flow {
-    fn measure(&self, children: &mut Children, constraints: Constraints) -> LayoutResult {
-        let child_constraints = Constraints {
-            min_width: 0.0,
-            min_height: 0.0,
-            max_width: constraints.max_width,
-            max_height: f32::INFINITY,
-        };
-        let (mut x, mut y, mut line_height, mut width) = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
-        let mut positions = Vec::with_capacity(children.len());
-        let mut sizes = Vec::with_capacity(children.len());
-        for index in 0..children.len() {
-            let size = children.measure(index, child_constraints);
-            sizes.push(size);
-            if x > 0.0 && x + size.width > constraints.max_width {
-                x = 0.0;
-                y += line_height + self.vertical;
-                line_height = 0.0;
-            }
-            positions.push(Offset::new(x, y));
-            x += size.width + self.horizontal;
-            line_height = line_height.max(size.height);
-            width = width.max(x - self.horizontal);
-        }
-        if self.rtl {
-            for (position, size) in positions.iter_mut().zip(&sizes) {
-                position.x = width - position.x - size.width;
-            }
-        }
-        LayoutResult {
-            size: Size::new(width, y + line_height),
-            positions,
         }
     }
 }
@@ -177,4 +116,38 @@ impl Layout for Floating {
             positions: vec![Offset::default(); children.len()],
         }
     }
+}
+
+/// Emits a stack whose content is composed while it measures, so it can
+/// depend on the constraints: `content` gets the constraints the stack was
+/// given, for choosing a layout that fits the room (Compose's
+/// `BoxWithConstraints`).
+///
+/// The stack takes the size of the largest child, within its constraints.
+/// What `content` remembers is kept between passes.
+#[track_caller]
+pub fn with_constraints(modifier: Modifier, content: impl Fn(Constraints) + 'static) {
+    let content = std::rc::Rc::new(content);
+    subcompose_layout(modifier, move |scope, constraints| {
+        let content = std::rc::Rc::clone(&content);
+        let indices = scope.subcompose(0_u8, move || content(constraints));
+        let loose = Constraints {
+            min_width: 0.0,
+            min_height: 0.0,
+            ..constraints
+        };
+        let mut size = Size::default();
+        for index in &indices {
+            let child = scope.measure(*index, loose);
+            size.width = size.width.max(child.width);
+            size.height = size.height.max(child.height);
+        }
+        SubcomposeResult {
+            size: constraints.constrain(size),
+            placements: indices
+                .into_iter()
+                .map(|index| (index, Offset::default()))
+                .collect(),
+        }
+    });
 }

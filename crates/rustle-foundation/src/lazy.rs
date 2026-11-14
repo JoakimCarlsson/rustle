@@ -2,8 +2,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
+use std::time::Duration;
 
-use rustle_runtime::{State, group, key, remember};
+use rustle_animation::{AnimationSpec, remember_animatable};
+use rustle_geometry::Size;
+use rustle_runtime::{State, frame_clock, group, key, launched_effect, remember};
 use rustle_ui::{Modifier, ScrollState, remember_scroll_state};
 
 use crate::linear::{column_with, row_with, spacer, stack_with};
@@ -145,6 +148,15 @@ struct ListInner {
     placed: RefCell<Placed>,
     stick_to_end: Cell<bool>,
     request: Cell<Option<Request>>,
+    /// How many lanes the staggered grid had and the lane of each item, by key.
+    lanes: RefCell<(usize, HashMap<u64, usize>)>,
+    /// Until when items slide to their new places after a reorder.
+    slide_until: Cell<Option<Duration>>,
+    /// Where each item of a staggered grid was placed when it last composed, by key, and
+    /// the keys it had, so the view can be held and reorders noticed.
+    stagger: RefCell<(Vec<u64>, HashMap<u64, f32>)>,
+    /// For a spanned grid, the items of each row, so items can be asked for by index.
+    grid_rows: RefCell<Vec<Vec<usize>>>,
 }
 
 /// What a variable-height lazy list remembers: its scroll position and the
@@ -183,7 +195,17 @@ impl LazyListState {
     /// Items not measured yet count as the average height, so the list keeps
     /// the item where it was put as the ones around it are measured. Done
     /// the next time the list composes.
+    ///
+    /// In a [`lazy_vertical_grid_spanned`] the index is that of the item, not of its row.
     pub fn scroll_to_item(&self, index: usize, align: ItemAlign) {
+        let rows = self.inner.grid_rows.borrow();
+        let index = if rows.is_empty() {
+            index
+        } else {
+            rows.partition_point(|row| row[0] <= index)
+                .saturating_sub(1)
+        };
+        drop(rows);
         self.inner.request.set(Some(Request::Item(index, align)));
         self.scroll.show_scrollbar();
         self.bump();
@@ -196,11 +218,15 @@ impl LazyListState {
         self.bump();
     }
 
-    /// The index of the first item in view as of the latest composition, if any.
+    /// The index of the first item in view as of the latest composition, if any. In a
+    /// [`lazy_vertical_grid_spanned`] it is the first item of the first row in view.
     pub fn first_visible_item(&self) -> Option<usize> {
         let placed = self.inner.placed.borrow();
         let count = placed.keys.len();
-        (count > 0).then(|| item_at(&placed.tops, self.scroll.offset()).min(count - 1))
+        let row =
+            (count > 0).then(|| item_at(&placed.tops, self.scroll.offset()).min(count - 1))?;
+        let rows = self.inner.grid_rows.borrow();
+        Some(rows.get(row).map_or(row, |items| items[0]))
     }
 
     fn bump(&self) {
@@ -234,6 +260,10 @@ pub fn remember_lazy_list_state() -> LazyListState {
                 placed: RefCell::default(),
                 stick_to_end: Cell::new(false),
                 request: Cell::new(None),
+                lanes: RefCell::default(),
+                slide_until: Cell::new(None),
+                stagger: RefCell::default(),
+                grid_rows: RefCell::default(),
             })
         })
         .get(),
@@ -275,13 +305,16 @@ struct Reposition<'a> {
     old_tops: &'a [f32],
     new_keys: &'a [u64],
     new_tops: &'a [f32],
+    /// The space after each item but the last, which is part of its measured length.
+    spacing: f32,
 }
 
 impl Reposition<'_> {
     /// The offset that keeps the list where the user left it.
     ///
     /// A request is done first. Otherwise, if the list follows its end and was
-    /// scrolled to the end, it stays there. Otherwise the item that was at the
+    /// scrolled to the end, it stays there. A list at its start stays there, so
+    /// items inserted at the top show. Otherwise the item that was at the
     /// top of the viewport stays exactly where it was, by key, however the
     /// items above it were measured, inserted or removed.
     fn offset(&self) -> f32 {
@@ -294,8 +327,11 @@ impl Reposition<'_> {
                     return 0.0;
                 };
                 let index = index.min(last);
-                let (top, bottom) = (self.new_tops[index], self.new_tops[index + 1]);
+                let top = self.new_tops[index];
+                let trailing = if index < last { self.spacing } else { 0.0 };
+                let bottom = self.new_tops[index + 1] - trailing;
                 let target = match align {
+                    ItemAlign::Start if index == 0 => 0.0,
                     ItemAlign::Start => top,
                     ItemAlign::Center => top - (self.viewport - (bottom - top)) / 2.0,
                     ItemAlign::End => bottom - self.viewport,
@@ -312,7 +348,7 @@ impl Reposition<'_> {
         if self.stick_to_end && self.offset >= old_end - END_TOLERANCE {
             return max;
         }
-        if self.old_keys.is_empty() {
+        if self.old_keys.is_empty() || self.offset <= 0.0 {
             return self.offset;
         }
         let anchor = item_at(self.old_tops, self.offset).min(self.old_keys.len() - 1);
@@ -334,6 +370,164 @@ fn hash_key(key: impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Which way a list scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Axis {
+    Vertical,
+    Horizontal,
+}
+
+impl Axis {
+    /// The length of `size` along this axis.
+    fn length(self, size: Size) -> f32 {
+        match self {
+            Axis::Vertical => size.height,
+            Axis::Horizontal => size.width,
+        }
+    }
+
+    /// What a list along this axis assumes an unmeasured item to be.
+    fn default_estimate(self) -> f32 {
+        match self {
+            Axis::Vertical => 48.0,
+            Axis::Horizontal => 120.0,
+        }
+    }
+}
+
+/// How long items keep sliding after a list reorders, so that moves caused by
+/// measuring items are not animated once the slide is over.
+const SLIDE_WINDOW: Duration = Duration::from_millis(900);
+
+/// How far an item is from where it is laid out, at `top` along the axis of the list.
+///
+/// While `sliding`, an item whose `top` changed glides from where it was drawn to its new
+/// place as `spec` says; otherwise it is there at once. `held` is how far the list scrolled
+/// to keep the view still as items changed, which the item moved with, so it does not glide
+/// over that distance.
+#[track_caller]
+fn slide_shift(top: f32, spec: AnimationSpec, sliding: bool, held: f32) -> f32 {
+    group(|| {
+        let shown = remember_animatable(top);
+        let laid_at = remember(|| Rc::new(Cell::new(top))).get();
+        if laid_at.replace(top) != top {
+            shown.snap_to(if sliding { shown.value() + held } else { top });
+        }
+        let glide = shown.clone();
+        launched_effect(top.to_bits(), move |scope| async move {
+            if sliding && glide.value() != top {
+                glide.animate_to(&scope, top, spec).await;
+            }
+        });
+        shown.value() - top
+    })
+}
+
+/// The space around and between the items of a variable-size lazy list or
+/// grid, and whether items slide when the list changes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LazyContent {
+    /// Space before the first item, along the scroll axis.
+    pub padding_start: f32,
+    /// Space after the last item, along the scroll axis.
+    pub padding_end: f32,
+    /// Space between one item and the next.
+    pub spacing: f32,
+    /// How items move to their new place when the keys of a list are
+    /// reordered, inserted or removed; `None` moves them at once.
+    pub animate_item: Option<AnimationSpec>,
+}
+
+impl LazyContent {
+    /// No padding, no spacing, no animation.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the space before the first item and after the last to `padding`.
+    pub fn padding(mut self, padding: f32) -> Self {
+        self.padding_start = padding;
+        self.padding_end = padding;
+        self
+    }
+
+    /// Sets the space before the first item and the space after the last.
+    pub fn padding_each(mut self, start: f32, end: f32) -> Self {
+        self.padding_start = start;
+        self.padding_end = end;
+        self
+    }
+
+    /// Sets the space between items.
+    pub fn spacing(mut self, spacing: f32) -> Self {
+        self.spacing = spacing;
+        self
+    }
+
+    /// Makes items of a keyed list slide to their new place, as `spec` says,
+    /// when items are reordered, inserted or removed (the placement animation
+    /// of Compose's `Modifier.animateItem`). Items that appear are not faded in
+    /// and removed items are gone at once; the others slide.
+    pub fn animate_item(mut self, spec: AnimationSpec) -> Self {
+        self.animate_item = Some(spec);
+        self
+    }
+}
+
+/// Emits `content` in a column for a vertical axis and a row for a horizontal one.
+#[track_caller]
+fn along(axis: Axis, modifier: Modifier, content: impl FnOnce()) {
+    match axis {
+        Axis::Vertical => column_with(modifier, content),
+        Axis::Horizontal => row_with(modifier, content),
+    }
+}
+
+/// Emits `len` of empty space along `axis`.
+#[track_caller]
+fn gap(axis: Axis, len: f32) {
+    spacer(match axis {
+        Axis::Vertical => Modifier::new().height(len),
+        Axis::Horizontal => Modifier::new().width(len),
+    });
+}
+
+/// Emits the cell of one item: it fills the list across, reports its length
+/// along the axis to `state`, is moved `shift` from where it is laid out and is
+/// followed by `spacing`.
+#[track_caller]
+fn item_cell(
+    axis: Axis,
+    state: &LazyListState,
+    item_key: u64,
+    spacing: f32,
+    shift: f32,
+    body: impl FnOnce(),
+) {
+    let learn = state.clone();
+    let mut modifier = match axis {
+        Axis::Vertical => Modifier::new().fill_max_width(),
+        Axis::Horizontal => Modifier::new().fill_max_height(),
+    };
+    if shift != 0.0 {
+        modifier = match axis {
+            Axis::Vertical => modifier.offset(0.0, shift),
+            Axis::Horizontal => modifier.offset(shift, 0.0),
+        };
+    }
+    let modifier = modifier.on_size_changed(move |size| learn.record(item_key, axis.length(size)));
+    along(axis, modifier, || {
+        let across = match axis {
+            Axis::Vertical => Modifier::new().fill_max_width(),
+            Axis::Horizontal => Modifier::new().fill_max_height(),
+        };
+        stack_with(across, body);
+        if spacing > 0.0 {
+            gap(axis, spacing);
+        }
+    });
 }
 
 /// Emits a vertically scrolling list of `count` items of any heights,
@@ -364,18 +558,107 @@ pub fn lazy_list_keyed<K: Hash>(
     key_of: impl Fn(usize) -> K,
     item: impl Fn(usize),
 ) {
+    lazy_list_with(modifier, state, LazyContent::new(), count, key_of, item);
+}
+
+/// Like [`lazy_list_keyed`], with the padding, spacing and item animation of
+/// `content`.
+#[track_caller]
+pub fn lazy_list_with<K: Hash>(
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    item: impl Fn(usize),
+) {
+    list_impl(
+        Axis::Vertical,
+        modifier,
+        state,
+        content,
+        count,
+        key_of,
+        item,
+    );
+}
+
+/// A horizontally scrolling [`lazy_list`]: items of any widths, as tall as the list.
+#[track_caller]
+pub fn lazy_horizontal_list(
+    modifier: Modifier,
+    state: &LazyListState,
+    count: usize,
+    item: impl Fn(usize),
+) {
+    lazy_horizontal_list_keyed(modifier, state, count, |index| index, item);
+}
+
+/// A horizontally scrolling [`lazy_list_keyed`]. Widths are learned as items
+/// are laid out, and scrolling to an item, following the end and keeping the
+/// view while items are measured or inserted before it work as they do
+/// vertically.
+#[track_caller]
+pub fn lazy_horizontal_list_keyed<K: Hash>(
+    modifier: Modifier,
+    state: &LazyListState,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    item: impl Fn(usize),
+) {
+    lazy_horizontal_list_with(modifier, state, LazyContent::new(), count, key_of, item);
+}
+
+/// Like [`lazy_horizontal_list_keyed`], with the padding, spacing and item
+/// animation of `content`.
+#[track_caller]
+pub fn lazy_horizontal_list_with<K: Hash>(
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    item: impl Fn(usize),
+) {
+    list_impl(
+        Axis::Horizontal,
+        modifier,
+        state,
+        content,
+        count,
+        key_of,
+        item,
+    );
+}
+
+/// The shared body of the variable-size lists, along either axis.
+#[track_caller]
+fn list_impl<K: Hash>(
+    axis: Axis,
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    item: impl Fn(usize),
+) {
     group(|| {
-        // Reading the version makes this recompose when a height is learned.
         let _ = state.version.get();
         let keys: Vec<u64> = (0..count).map(|index| hash_key(key_of(index))).collect();
         let (new_tops, offset, viewport) = {
             let heights = state.inner.heights.borrow();
             let estimate = if heights.is_empty() {
-                48.0
+                axis.default_estimate()
             } else {
                 state.inner.sum.get() / heights.len() as f32
             };
-            let new_tops = place(&keys, &heights, estimate);
+            let mut new_tops = place(&keys, &heights, estimate);
+            for top in &mut new_tops {
+                *top += content.padding_start;
+            }
+            if let Some(end) = new_tops.last_mut() {
+                *end += content.padding_end;
+            }
             let viewport = match state.scroll.viewport_length() {
                 length if length > 0.0 => length,
                 _ => 1200.0,
@@ -386,7 +669,6 @@ pub fn lazy_list_keyed<K: Hash>(
                 viewport,
                 old_viewport: placed.viewport,
                 stick_to_end: state.inner.stick_to_end.get(),
-                // Aligning to the viewport needs its real size, known after the first layout.
                 request: if state.scroll.viewport_length() > 0.0 {
                     state.inner.request.get()
                 } else {
@@ -396,26 +678,24 @@ pub fn lazy_list_keyed<K: Hash>(
                 old_tops: &placed.tops,
                 new_keys: &keys,
                 new_tops: &new_tops,
+                spacing: content.spacing,
             }
             .offset();
+            if !placed.keys.is_empty() && placed.keys != keys {
+                state
+                    .inner
+                    .slide_until
+                    .set(Some(frame_clock().now() + SLIDE_WINDOW));
+            }
             placed.keys.clone_from(&keys);
             placed.tops.clone_from(&new_tops);
             placed.viewport = viewport;
-            // A request is kept until the item it aims at has been measured, so
-            // that it lands right even though the items around it were guesses.
-            if let Some(request) = state.inner.request.get() {
-                let target = match request {
-                    Request::Item(index, _) => index,
-                    Request::End => usize::MAX,
-                };
-                let done = keys
-                    .get(target.min(keys.len().saturating_sub(1)))
-                    .is_none_or(|key| heights.contains_key(key));
-                if done && state.scroll.viewport_length() > 0.0 {
-                    state.inner.request.set(None);
-                }
-            }
             (new_tops, wanted, viewport)
+        };
+        let held = if state.inner.request.get().is_some() {
+            0.0
+        } else {
+            offset - state.scroll.offset()
         };
         if (offset - state.scroll.offset()).abs() > 0.05 {
             state.scroll.jump_to(offset);
@@ -427,23 +707,495 @@ pub fn lazy_list_keyed<K: Hash>(
             .min(count);
         let first = first.saturating_sub(1);
         let last = (last + 1).min(count);
+        if let Some(request) = state.inner.request.get() {
+            let target = match request {
+                Request::Item(index, _) => index,
+                Request::End => usize::MAX,
+            };
+            let heights = state.inner.heights.borrow();
+            let settled = keys
+                .get(target.min(keys.len().saturating_sub(1)))
+                .is_none_or(|key| heights.contains_key(key))
+                && keys[first..last]
+                    .iter()
+                    .all(|key| heights.contains_key(key));
+            if settled && state.scroll.viewport_length() > 0.0 {
+                state.inner.request.set(None);
+            }
+        }
+        let sliding = state
+            .inner
+            .slide_until
+            .get()
+            .is_some_and(|until| frame_clock().now() < until);
+        let scroll_modifier = match axis {
+            Axis::Vertical => modifier.vertical_scroll(&state.scroll),
+            Axis::Horizontal => modifier.horizontal_scroll(&state.scroll),
+        };
 
-        column_with(modifier.vertical_scroll(&state.scroll), || {
-            spacer(Modifier::new().height(new_tops[first]));
+        along(axis, scroll_modifier, || {
+            gap(axis, new_tops[first]);
             for (index, &item_key) in keys.iter().enumerate().take(last).skip(first) {
-                let learn = state.clone();
                 key(item_key, || {
-                    stack_with(
-                        Modifier::new()
-                            .fill_max_width()
-                            .on_size_changed(move |size| learn.record(item_key, size.height)),
-                        || item(index),
-                    );
+                    let shift = match content.animate_item {
+                        Some(spec) => slide_shift(new_tops[index], spec, sliding, held),
+                        None => 0.0,
+                    };
+                    let spacing = if index + 1 < count {
+                        content.spacing
+                    } else {
+                        0.0
+                    };
+                    item_cell(axis, state, item_key, spacing, shift, || item(index));
                 });
             }
-            spacer(Modifier::new().height(new_tops[count] - new_tops[last]));
+            let composed_end = if last == count {
+                new_tops[count] - content.padding_end
+            } else {
+                new_tops[last]
+            };
+            gap(axis, new_tops[count] - composed_end);
         });
     });
+}
+
+/// Which header a list shows pinned at its top, and how far the next header
+/// pushes it up: the last header at or before the first item in view, moved up
+/// by what the next header has overlapped of it.
+fn sticky_header(
+    tops: &[f32],
+    offset: f32,
+    count: usize,
+    is_header: impl Fn(usize) -> bool,
+    header_length: impl Fn(usize) -> f32,
+) -> Option<(usize, f32)> {
+    if count == 0 {
+        return None;
+    }
+    let first = item_at(tops, offset).min(count - 1);
+    let current = (0..=first).rev().find(|&index| is_header(index))?;
+    let shift = (current + 1..count)
+        .find(|&index| is_header(index))
+        .map_or(0.0, |next| {
+            (tops[next] - offset - header_length(current)).min(0.0)
+        });
+    Some((current, shift))
+}
+
+/// Like [`lazy_list_with`], with headers that stay at the top of the list
+/// while the items of their section scroll under them, until the next header
+/// pushes them away. `is_header` says which items are headers; the pinned one
+/// is drawn again over the list at its top, so it should have an opaque
+/// background.
+#[track_caller]
+pub fn lazy_sticky_list<K: Hash>(
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    is_header: impl Fn(usize) -> bool,
+    item: impl Fn(usize),
+) {
+    sticky_impl(
+        Axis::Vertical,
+        modifier,
+        state,
+        content,
+        count,
+        key_of,
+        is_header,
+        item,
+    );
+}
+
+/// [`lazy_sticky_list`] turned sideways: a horizontally scrolling list whose
+/// headers stay at its start edge (its left; it is not mirrored in a
+/// right-to-left layout) while the items of their section scroll under
+/// them, until the next header pushes them away. The pinned header is drawn
+/// again over the list, so it should have an opaque background.
+#[track_caller]
+pub fn lazy_horizontal_sticky_list<K: Hash>(
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    is_header: impl Fn(usize) -> bool,
+    item: impl Fn(usize),
+) {
+    sticky_impl(
+        Axis::Horizontal,
+        modifier,
+        state,
+        content,
+        count,
+        key_of,
+        is_header,
+        item,
+    );
+}
+
+/// The shared body of the sticky lists, along either axis.
+#[allow(clippy::too_many_arguments)]
+#[track_caller]
+fn sticky_impl<K: Hash>(
+    axis: Axis,
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    is_header: impl Fn(usize) -> bool,
+    item: impl Fn(usize),
+) {
+    group(|| {
+        stack_with(modifier, || {
+            list_impl(
+                axis,
+                Modifier::new().fill_max_size(),
+                state,
+                content,
+                count,
+                &key_of,
+                &item,
+            );
+            let pinned = {
+                let placed = state.inner.placed.borrow();
+                let heights = state.inner.heights.borrow();
+                sticky_header(
+                    &placed.tops,
+                    state.scroll.offset(),
+                    count,
+                    &is_header,
+                    |index| {
+                        let spacing = if index + 1 < count {
+                            content.spacing
+                        } else {
+                            0.0
+                        };
+                        placed
+                            .keys
+                            .get(index)
+                            .and_then(|key| heights.get(key))
+                            .map_or(0.0, |length| (length - spacing).max(0.0))
+                    },
+                )
+            };
+            if let Some((index, shift)) = pinned {
+                key(("sticky", hash_key(key_of(index))), || {
+                    let pinned = match axis {
+                        Axis::Vertical => Modifier::new().fill_max_width().offset(0.0, shift),
+                        Axis::Horizontal => Modifier::new().fill_max_height().offset(shift, 0.0),
+                    };
+                    stack_with(pinned, || item(index));
+                });
+            }
+        });
+    });
+}
+
+/// The result of dealing items into the lanes of a staggered grid.
+#[derive(Debug, Default, PartialEq)]
+struct Lanes {
+    /// The indices of the items of each lane, in order.
+    items: Vec<Vec<usize>>,
+    /// The top of each item of each lane and, last, where the lane's items end.
+    tops: Vec<Vec<f32>>,
+    /// The end of each lane, with its end padding.
+    ends: Vec<f32>,
+}
+
+/// Deals items into `lanes` lanes: an item not dealt before goes to the
+/// shortest lane at that point and stays in its lane after, so items do not
+/// jump as others are measured. Items not measured count as `estimate`, each
+/// followed by `spacing`.
+fn assign_lanes(
+    keys: &[u64],
+    assigned: &mut HashMap<u64, usize>,
+    heights: &HashMap<u64, f32>,
+    estimate: f32,
+    lanes: usize,
+    content: &LazyContent,
+) -> Lanes {
+    let mut out = Lanes {
+        items: vec![Vec::new(); lanes],
+        tops: vec![Vec::new(); lanes],
+        ends: vec![0.0; lanes],
+    };
+    let mut lengths = vec![content.padding_start; lanes];
+    for (index, key) in keys.iter().enumerate() {
+        let lane = assigned
+            .get(key)
+            .copied()
+            .filter(|lane| *lane < lanes)
+            .unwrap_or_else(|| {
+                let lane = lengths
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| a.1.total_cmp(b.1))
+                    .map_or(0, |(lane, _)| lane);
+                assigned.insert(*key, lane);
+                lane
+            });
+        out.items[lane].push(index);
+        out.tops[lane].push(lengths[lane]);
+        lengths[lane] += heights.get(key).copied().unwrap_or(estimate);
+    }
+    for (lane, length) in lengths.iter().enumerate() {
+        out.tops[lane].push(*length);
+        out.ends[lane] = length + content.padding_end;
+    }
+    out
+}
+
+/// The offset that keeps a staggered grid where the user left it: the item that was
+/// at the start of the viewport (the first one, lane by lane, that contained `offset`)
+/// stays exactly where it was, however the items above it in its lane were measured.
+/// `previous` is where each item was, by key, `dealt` and `keys` say where they are now.
+fn held_offset(offset: f32, previous: &HashMap<u64, f32>, dealt: &Lanes, keys: &[u64]) -> f32 {
+    if previous.is_empty() || offset <= 0.0 {
+        return offset;
+    }
+    for lane in 0..dealt.items.len() {
+        for (slot, &index) in dealt.items[lane].iter().enumerate() {
+            let Some(&before) = previous.get(&keys[index]) else {
+                continue;
+            };
+            let after = dealt.tops[lane][slot];
+            let length = dealt.tops[lane][slot + 1] - after;
+            let next_before = dealt.items[lane]
+                .get(slot + 1)
+                .and_then(|&next| previous.get(&keys[next]).copied())
+                .unwrap_or(before + length);
+            if before <= offset && offset < next_before {
+                return offset + (after - before);
+            }
+        }
+    }
+    offset
+}
+
+/// The shared body of the staggered grids, along either axis.
+#[allow(clippy::too_many_arguments)]
+#[track_caller]
+fn staggered_impl<K: Hash>(
+    axis: Axis,
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    lanes: usize,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    item: impl Fn(usize),
+) {
+    group(|| {
+        let _ = state.version.get();
+        let lanes = lanes.max(1);
+        let keys: Vec<u64> = (0..count).map(|index| hash_key(key_of(index))).collect();
+        let dealt = {
+            let heights = state.inner.heights.borrow();
+            let estimate = if heights.is_empty() {
+                axis.default_estimate()
+            } else {
+                state.inner.sum.get() / heights.len() as f32
+            };
+            let mut assigned = state.inner.lanes.borrow_mut();
+            if assigned.0 != lanes {
+                *assigned = (lanes, HashMap::new());
+            }
+            assign_lanes(&keys, &mut assigned.1, &heights, estimate, lanes, &content)
+        };
+        let viewport = match state.scroll.viewport_length() {
+            length if length > 0.0 => length,
+            _ => 1200.0,
+        };
+        let offset = {
+            let mut previous = state.inner.stagger.borrow_mut();
+            let wanted = held_offset(state.scroll.offset(), &previous.1, &dealt, &keys);
+            if !previous.0.is_empty() && previous.0 != keys {
+                state
+                    .inner
+                    .slide_until
+                    .set(Some(frame_clock().now() + SLIDE_WINDOW));
+            }
+            previous.0.clone_from(&keys);
+            previous.1.clear();
+            for lane in 0..lanes {
+                for (slot, &index) in dealt.items[lane].iter().enumerate() {
+                    previous.1.insert(keys[index], dealt.tops[lane][slot]);
+                }
+            }
+            wanted
+        };
+        let held = offset - state.scroll.offset();
+        if held.abs() > 0.05 {
+            state.scroll.jump_to(offset);
+        }
+        let sliding = state
+            .inner
+            .slide_until
+            .get()
+            .is_some_and(|until| frame_clock().now() < until);
+        let scroll_modifier = match axis {
+            Axis::Vertical => modifier.vertical_scroll(&state.scroll),
+            Axis::Horizontal => modifier.horizontal_scroll(&state.scroll),
+        };
+        let across = match axis {
+            Axis::Vertical => Axis::Horizontal,
+            Axis::Horizontal => Axis::Vertical,
+        };
+        along(across, scroll_modifier, || {
+            for lane in 0..lanes {
+                let tops = &dealt.tops[lane];
+                let indices = &dealt.items[lane];
+                let n = indices.len();
+                let first = item_at(tops, offset).min(n).saturating_sub(1);
+                let last = (tops.partition_point(|top| *top < offset + viewport).min(n) + 1).min(n);
+                key(lane, || {
+                    along(axis, Modifier::new().weight(1.0), || {
+                        gap(axis, tops[first]);
+                        for (slot, &index) in indices.iter().enumerate().take(last).skip(first) {
+                            let item_key = keys[index];
+                            key(item_key, || {
+                                let shift = match content.animate_item {
+                                    Some(spec) => slide_shift(tops[slot], spec, sliding, held),
+                                    None => 0.0,
+                                };
+                                item_cell(axis, state, item_key, content.spacing, shift, || {
+                                    item(index)
+                                });
+                            });
+                        }
+                        gap(axis, dealt.ends[lane] - tops[last]);
+                    });
+                });
+            }
+        });
+    });
+}
+
+/// Emits a vertically scrolling grid of `lanes` columns of equal width whose
+/// items have any heights, each placed under the shortest column when it is
+/// first composed (a masonry layout), composing only the items near the viewport.
+///
+/// Heights are learned as items are laid out, as in [`lazy_list`], and an
+/// item keeps its column once placed. The view is held the way [`lazy_list`] does: the
+/// item at the top of the first column in view stays where it is while items
+/// above it are measured. `content` gives the padding
+/// and the spacing after each item; its `animate_item` slides the items that
+/// stay when the keys are reordered, inserted or removed.
+#[track_caller]
+pub fn lazy_vertical_staggered_grid<K: Hash>(
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    lanes: usize,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    item: impl Fn(usize),
+) {
+    staggered_impl(
+        Axis::Vertical,
+        modifier,
+        state,
+        content,
+        lanes,
+        count,
+        key_of,
+        item,
+    );
+}
+
+/// [`lazy_vertical_staggered_grid`] turned sideways: `lanes` rows of equal
+/// height whose items have any widths, scrolling horizontally.
+#[track_caller]
+pub fn lazy_horizontal_staggered_grid<K: Hash>(
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    lanes: usize,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    item: impl Fn(usize),
+) {
+    staggered_impl(
+        Axis::Horizontal,
+        modifier,
+        state,
+        content,
+        lanes,
+        count,
+        key_of,
+        item,
+    );
+}
+
+/// Packs items into rows of `columns` columns, each item taking `span_of(index)`
+/// of them (at least one, at most `columns`), starting a row when the next one
+/// does not fit.
+fn pack_rows(count: usize, columns: usize, span_of: impl Fn(usize) -> usize) -> Vec<Vec<usize>> {
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut used = 0;
+    for index in 0..count {
+        let span = span_of(index).clamp(1, columns);
+        if rows.is_empty() || used + span > columns {
+            rows.push(Vec::new());
+            used = 0;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push(index);
+        }
+        used += span;
+    }
+    rows
+}
+
+/// Emits a vertically scrolling grid of `columns` columns whose items span
+/// `span_of(index)` columns and have any heights: items fill a row in order,
+/// the next row starts when one does not fit, and a row is as tall as its
+/// tallest item. Only the rows near the viewport are composed.
+///
+/// Rows are the items of a [`lazy_list_with`], so their heights are learned
+/// and the view is kept as they are measured; `content` applies between rows.
+/// [`LazyListState::scroll_to_item`] takes the index of an item.
+#[allow(clippy::too_many_arguments)]
+#[track_caller]
+pub fn lazy_vertical_grid_spanned<K: Hash>(
+    modifier: Modifier,
+    state: &LazyListState,
+    content: LazyContent,
+    columns: usize,
+    count: usize,
+    key_of: impl Fn(usize) -> K,
+    span_of: impl Fn(usize) -> usize,
+    item: impl Fn(usize),
+) {
+    let columns = columns.max(1);
+    let rows = pack_rows(count, columns, &span_of);
+    state.inner.grid_rows.borrow_mut().clone_from(&rows);
+    lazy_list_with(
+        modifier,
+        state,
+        content,
+        rows.len(),
+        |row| key_of(rows[row][0]),
+        |row| {
+            row_with(Modifier::new().fill_max_width(), || {
+                let mut used = 0;
+                for &index in &rows[row] {
+                    let span = span_of(index).clamp(1, columns);
+                    used += span;
+                    key(index, || {
+                        stack_with(Modifier::new().weight(span as f32), || item(index));
+                    });
+                }
+                if used < columns {
+                    spacer(Modifier::new().weight((columns - used) as f32));
+                }
+            });
+        },
+    );
 }
 
 #[cfg(test)]
@@ -463,6 +1215,19 @@ mod tests {
         assert_eq!(item_at(&tops, 30.0), 2);
     }
 
+    #[test]
+    fn a_staggered_grid_holds_the_item_in_view_when_items_above_are_measured() {
+        let keys = [1, 2, 3];
+        let previous: HashMap<u64, f32> = [(1, 0.0), (2, 50.0), (3, 0.0)].into_iter().collect();
+        let dealt = Lanes {
+            items: vec![vec![0, 1], vec![2]],
+            tops: vec![vec![0.0, 80.0, 130.0], vec![0.0, 40.0]],
+            ends: vec![130.0, 40.0],
+        };
+        assert_eq!(held_offset(60.0, &previous, &dealt, &keys), 90.0);
+        assert_eq!(held_offset(0.0, &previous, &dealt, &keys), 0.0);
+    }
+
     fn reposition<'a>(
         offset: f32,
         old: (&'a [u64], &'a [f32]),
@@ -478,6 +1243,7 @@ mod tests {
             old_tops: old.1,
             new_keys: new.0,
             new_tops: new.1,
+            spacing: 0.0,
         }
     }
 
@@ -550,5 +1316,51 @@ mod tests {
         assert_eq!(list.offset(), 140.0);
         list.request = Some(Request::End);
         assert_eq!(list.offset(), 140.0);
+    }
+
+    #[test]
+    fn staggered_items_go_to_the_shortest_lane_and_stay() {
+        let keys = [1, 2, 3, 4];
+        let mut assigned = HashMap::new();
+        let known = heights(&[(1, 100.0), (2, 30.0), (3, 30.0)]);
+        let content = LazyContent::new().padding_each(10.0, 5.0);
+        let lanes = assign_lanes(&keys, &mut assigned, &known, 20.0, 2, &content);
+        assert_eq!(lanes.items, vec![vec![0], vec![1, 2, 3]]);
+        assert_eq!(lanes.tops[1], vec![10.0, 40.0, 70.0, 90.0]);
+        assert_eq!(lanes.ends, vec![115.0, 95.0]);
+        let again = assign_lanes(
+            &keys,
+            &mut assigned,
+            &heights(&[(1, 10.0)]),
+            20.0,
+            2,
+            &content,
+        );
+        assert_eq!(again.items, lanes.items);
+    }
+
+    #[test]
+    fn items_are_packed_into_rows_by_span() {
+        let rows = pack_rows(5, 3, |index| if index == 1 { 2 } else { 1 });
+        assert_eq!(rows, vec![vec![0, 1], vec![2, 3, 4]]);
+    }
+
+    #[test]
+    fn the_sticky_header_is_pushed_up_by_the_next() {
+        let tops = [0.0, 40.0, 80.0, 120.0, 160.0];
+        let is_header = |index: usize| index.is_multiple_of(3);
+        assert_eq!(
+            sticky_header(&tops, 50.0, 4, is_header, |_| 30.0),
+            Some((0, 0.0))
+        );
+        assert_eq!(
+            sticky_header(&tops, 105.0, 4, is_header, |_| 30.0),
+            Some((0, -15.0))
+        );
+        assert_eq!(
+            sticky_header(&tops, 125.0, 4, is_header, |_| 30.0),
+            Some((3, 0.0))
+        );
+        assert_eq!(sticky_header(&tops, 0.0, 0, is_header, |_| 30.0), None);
     }
 }

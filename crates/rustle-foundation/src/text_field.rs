@@ -584,12 +584,28 @@ pub fn basic_text_field_in(
         };
         let (presses, drags) = (state.clone(), state.clone());
         let (press_at, drag_to) = (nearest.clone(), nearest);
+        let described = {
+            let semantics = Semantics::new(Role::TextInput)
+                .value(value.text.clone())
+                .text_selection(value.anchor, value.cursor)
+                .focus(focus);
+            let selecting = state.clone();
+            let semantics = semantics.on_set_text_selection(move |anchor, focus| {
+                selecting.edit(|value| {
+                    let length = value.length();
+                    value.anchor = anchor.min(length);
+                    value.cursor = focus.min(length);
+                });
+            });
+            if read_only {
+                semantics
+            } else {
+                let setting = state.clone();
+                semantics.on_set_value(move |text| setting.set_text(text))
+            }
+        };
         let modifier = outer
-            .semantics(
-                Semantics::new(Role::TextInput)
-                    .value(value.text.clone())
-                    .focus(focus),
-            )
+            .semantics(described)
             .focusable(focus, move |event| {
                 keys.handle_key(event, options, &key_layout)
             })

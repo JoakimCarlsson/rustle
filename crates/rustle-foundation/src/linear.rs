@@ -58,7 +58,7 @@ pub fn stack_aligned(modifier: Modifier, alignment: BoxAlignment, content: impl 
 /// Emits a stack with `modifier`.
 #[track_caller]
 pub fn stack_with(modifier: Modifier, content: impl FnOnce()) {
-    layout(modifier, Overlay::default(), content);
+    stack_aligned(modifier, BoxAlignment::default(), content);
 }
 
 /// Emits empty space sized by `modifier`, such as `Modifier::new().height(8.0)`.
@@ -117,6 +117,28 @@ pub fn row_arranged(
     );
 }
 
+/// Where the first of `count` children starts and the extra gap between
+/// neighbours when `free` space is left over along the main axis.
+pub(crate) fn arrange(arrangement: Arrangement, free: f32, count: usize) -> (f32, f32) {
+    match arrangement {
+        Arrangement::Start => (0.0, 0.0),
+        Arrangement::Center => (free / 2.0, 0.0),
+        Arrangement::End => (free, 0.0),
+        Arrangement::SpaceBetween if count > 1 => (0.0, free / (count - 1) as f32),
+        Arrangement::SpaceBetween => (0.0, 0.0),
+        Arrangement::SpaceAround if count > 0 => {
+            let gap = free / count as f32;
+            (gap / 2.0, gap)
+        }
+        Arrangement::SpaceAround => (0.0, 0.0),
+        Arrangement::SpaceEvenly => {
+            let gap = free / (count + 1) as f32;
+            (gap, gap)
+        }
+        Arrangement::SpacedBy(spacing) => (0.0, spacing),
+    }
+}
+
 /// A column or a row.
 struct Linear {
     vertical: bool,
@@ -168,7 +190,54 @@ impl Linear {
     }
 }
 
+impl Linear {
+    /// The intrinsic length along the main axis (the children's sum, plus any
+    /// fixed spacing) or across it (the largest child), for one of the four
+    /// intrinsic queries. `extent` is the length on the other axis.
+    fn intrinsic(
+        &self,
+        children: &mut Children,
+        width_query: bool,
+        minimum: bool,
+        extent: f32,
+    ) -> f32 {
+        let spacing = match self.arrangement {
+            Arrangement::SpacedBy(spacing) => spacing,
+            _ => 0.0,
+        };
+        let along = width_query != self.vertical;
+        let count = children.len();
+        let lengths = (0..count).map(|index| match (width_query, minimum) {
+            (true, true) => children.min_intrinsic_width(index, extent),
+            (true, false) => children.max_intrinsic_width(index, extent),
+            (false, true) => children.min_intrinsic_height(index, extent),
+            (false, false) => children.max_intrinsic_height(index, extent),
+        });
+        if along {
+            lengths.sum::<f32>() + spacing * count.saturating_sub(1) as f32
+        } else {
+            lengths.fold(0.0, f32::max)
+        }
+    }
+}
+
 impl Layout for Linear {
+    fn min_intrinsic_width(&self, children: &mut Children, height: f32) -> f32 {
+        self.intrinsic(children, true, true, height)
+    }
+
+    fn max_intrinsic_width(&self, children: &mut Children, height: f32) -> f32 {
+        self.intrinsic(children, true, false, height)
+    }
+
+    fn min_intrinsic_height(&self, children: &mut Children, width: f32) -> f32 {
+        self.intrinsic(children, false, true, width)
+    }
+
+    fn max_intrinsic_height(&self, children: &mut Children, width: f32) -> f32 {
+        self.intrinsic(children, false, false, width)
+    }
+
     fn measure(&self, children: &mut Children, constraints: Constraints) -> LayoutResult {
         let (main_min, cross_min) =
             self.split(Size::new(constraints.min_width, constraints.min_height));
@@ -221,23 +290,7 @@ impl Layout for Linear {
             .min(cross_max.max(cross_min));
 
         let free = (main_size - used).max(0.0);
-        let (start, gap) = match self.arrangement {
-            Arrangement::Start => (0.0, 0.0),
-            Arrangement::Center => (free / 2.0, 0.0),
-            Arrangement::End => (free, 0.0),
-            Arrangement::SpaceBetween if count > 1 => (0.0, free / (count - 1) as f32),
-            Arrangement::SpaceBetween => (0.0, 0.0),
-            Arrangement::SpaceAround if count > 0 => {
-                let gap = free / count as f32;
-                (gap / 2.0, gap)
-            }
-            Arrangement::SpaceAround => (0.0, 0.0),
-            Arrangement::SpaceEvenly => {
-                let gap = free / (count + 1) as f32;
-                (gap, gap)
-            }
-            Arrangement::SpacedBy(spacing) => (0.0, spacing),
-        };
+        let (start, gap) = arrange(self.arrangement, free, count);
 
         let mut position = start;
         let mut positions = Vec::with_capacity(count);
