@@ -17,6 +17,12 @@ mod motion;
 mod navigation;
 mod progress;
 mod theme;
+mod transitions;
+
+#[cfg(test)]
+mod scaffold_tests;
+#[cfg(test)]
+mod transition_tests;
 
 pub use buttons::{
     ButtonStyle, button, button_with, floating_action_button, icon_button, outlined_button,
@@ -30,8 +36,8 @@ pub use feedback::{snackbar, tooltip};
 pub use icons::icon;
 pub use inputs::{select_field, text_area, text_field, text_field_focused};
 pub use layout::{
-    card, card_header, divider, list_item, muted, muted_sized, scaffold, separator, surface,
-    surface_with, title, top_app_bar,
+    ScaffoldPadding, ScaffoldSlots, card, card_header, divider, list_item, muted, muted_sized,
+    scaffold, scaffold_with, separator, surface, surface_with, title, top_app_bar,
 };
 pub use menus::{MenuItem, dropdown_menu, dropdown_menu_at, dropdown_menu_item, menu, select};
 pub use motion::{
@@ -45,3 +51,7 @@ pub use progress::{
 };
 pub use rustle_icons::{Icon, phosphor};
 pub use theme::{Theme, provide_theme, system_theme, theme};
+pub use transitions::{
+    ContentTransform, EnterTransition, ExitTransition, SharedElements, animate_content_size,
+    animated_content, remember_shared_elements, shared_element,
+};

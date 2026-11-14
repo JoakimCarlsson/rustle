@@ -1,10 +1,14 @@
 //! Surfaces, app bars, dividers and text helpers that structure a screen.
 
+use std::rc::Rc;
+
 use rustle_foundation::{
-    Alignment, Arrangement, LOCAL_TEXT_STYLE, Modifier, column, column_with, row_arranged, spacer,
-    stack_with, text, text_styled,
+    Alignment, Arrangement, LOCAL_TEXT_STYLE, Modifier, Role, Semantics, SubcomposeResult, column,
+    column_with, row_arranged, spacer, stack_with, subcompose_layout, text, text_styled,
 };
+use rustle_geometry::{Offset, Size};
 use rustle_text::FontWeight;
+use rustle_unit::Constraints;
 
 use crate::theme::{theme, with_text_color};
 
@@ -86,7 +90,11 @@ pub fn top_app_bar(title: &str) {
                 .color(theme.on_primary)
                 .font_size(21.0)
                 .bold();
-            text_styled(Modifier::new(), title.to_string(), style);
+            text_styled(
+                Modifier::new().semantics(Semantics::new(Role::Label).heading(1)),
+                title.to_string(),
+                style,
+            );
         },
     );
 }
@@ -97,6 +105,149 @@ pub fn scaffold(top_bar: impl FnOnce(), content: impl FnOnce()) {
     column_with(Modifier::new().fill_max_size(), || {
         top_bar();
         stack_with(Modifier::new().fill_max_width().weight(1.0), content);
+    });
+}
+
+/// The space a [`scaffold_with`]'s bars take, for content to keep clear of them.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ScaffoldPadding {
+    /// The height of the top bar.
+    pub top: f32,
+    /// The height of the bottom bar.
+    pub bottom: f32,
+}
+
+/// The slots of a [`scaffold_with`] other than its content. Each is composed
+/// while the scaffold measures, so it is a closure that can run again.
+#[derive(Clone, Default)]
+pub struct ScaffoldSlots {
+    top_bar: Option<Rc<dyn Fn()>>,
+    bottom_bar: Option<Rc<dyn Fn()>>,
+    floating_action_button: Option<Rc<dyn Fn()>>,
+    snackbar_host: Option<Rc<dyn Fn()>>,
+}
+
+impl ScaffoldSlots {
+    /// Slots that are all empty.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A bar across the top, over the content.
+    pub fn top_bar(mut self, top_bar: impl Fn() + 'static) -> Self {
+        self.top_bar = Some(Rc::new(top_bar));
+        self
+    }
+
+    /// A bar across the bottom, over the content.
+    pub fn bottom_bar(mut self, bottom_bar: impl Fn() + 'static) -> Self {
+        self.bottom_bar = Some(Rc::new(bottom_bar));
+        self
+    }
+
+    /// A button floating at the bottom end (the left in a right-to-left layout), above the bottom bar.
+    pub fn floating_action_button(mut self, button: impl Fn() + 'static) -> Self {
+        self.floating_action_button = Some(Rc::new(button));
+        self
+    }
+
+    /// Where snackbars show: centered at the bottom, above the bottom bar.
+    pub fn snackbar_host(mut self, host: impl Fn() + 'static) -> Self {
+        self.snackbar_host = Some(Rc::new(host));
+        self
+    }
+}
+
+/// Emits a screen with `slots` around `content`: a top bar, a bottom bar, a
+/// floating action button and a snackbar host, laid out like Compose's
+/// `Scaffold`.
+///
+/// `content` fills the whole area, under the bars, and is told how much they
+/// cover so it can pad its own contents; it is composed after the bars have
+/// been measured. The scaffold fills the space it is given, with `modifier`
+/// applied outside.
+#[track_caller]
+pub fn scaffold_with(
+    modifier: Modifier,
+    slots: ScaffoldSlots,
+    content: impl Fn(ScaffoldPadding) + 'static,
+) {
+    const MARGIN: f32 = 16.0;
+    let content = Rc::new(content);
+    let rtl = rustle_foundation::is_rtl();
+    subcompose_layout(modifier.fill_max_size(), move |scope, constraints| {
+        let width = if constraints.max_width.is_finite() {
+            constraints.max_width
+        } else {
+            constraints.min_width
+        };
+        let height = if constraints.max_height.is_finite() {
+            constraints.max_height
+        } else {
+            constraints.min_height
+        };
+        let bar = Constraints {
+            min_width: width,
+            max_width: width,
+            min_height: 0.0,
+            max_height: height,
+        };
+        let loose = Constraints {
+            min_width: 0.0,
+            max_width: width,
+            min_height: 0.0,
+            max_height: height,
+        };
+        let mut placements = Vec::new();
+        let measure_slot = |scope: &mut rustle_foundation::SubcomposeScope,
+                            id: u8,
+                            slot: &Option<Rc<dyn Fn()>>,
+                            constraints: Constraints| {
+            let slot = slot.as_ref()?;
+            let slot = Rc::clone(slot);
+            let index = scope.subcompose(id, move || slot()).into_iter().next()?;
+            let size = scope.measure(index, constraints);
+            Some((index, size))
+        };
+        let top = measure_slot(scope, 1, &slots.top_bar, bar);
+        let bottom = measure_slot(scope, 2, &slots.bottom_bar, bar);
+        let padding = ScaffoldPadding {
+            top: top.map_or(0.0, |(_, size)| size.height),
+            bottom: bottom.map_or(0.0, |(_, size)| size.height),
+        };
+        let body = {
+            let content = Rc::clone(&content);
+            scope.subcompose(0_u8, move || content(padding))
+        };
+        for index in body {
+            scope.measure(index, Constraints::tight(Size::new(width, height)));
+            placements.push((index, Offset::default()));
+        }
+        if let Some((index, _)) = top {
+            placements.push((index, Offset::default()));
+        }
+        if let Some((index, size)) = bottom {
+            placements.push((index, Offset::new(0.0, height - size.height)));
+        }
+        let above = height - padding.bottom;
+        if let Some((index, size)) = measure_slot(scope, 3, &slots.snackbar_host, loose) {
+            placements.push((
+                index,
+                Offset::new((width - size.width) / 2.0, above - size.height - MARGIN),
+            ));
+        }
+        if let Some((index, size)) = measure_slot(scope, 4, &slots.floating_action_button, loose) {
+            let x = if rtl {
+                MARGIN
+            } else {
+                width - size.width - MARGIN
+            };
+            placements.push((index, Offset::new(x, above - size.height - MARGIN)));
+        }
+        SubcomposeResult {
+            size: constraints.constrain(Size::new(width, height)),
+            placements,
+        }
     });
 }
 
@@ -124,7 +275,11 @@ pub fn title(content: &str, size: f32) {
         .current()
         .font_size(size)
         .font_weight(FontWeight::SEMI_BOLD);
-    text_styled(Modifier::new(), content.to_string(), text_style);
+    text_styled(
+        Modifier::new().semantics(Semantics::new(Role::Label).heading(2)),
+        content.to_string(),
+        text_style,
+    );
 }
 
 /// Emits a row with a `headline`, an optional line of `supporting` text under

@@ -1,8 +1,8 @@
 //! Transient hints: tooltips and snackbars.
 
 use rustle_foundation::{
-    Alignment, Arrangement, BoxAlignment, LOCAL_TEXT_STYLE, Modifier, floating, row_arranged,
-    stack_with, text,
+    Alignment, Arrangement, BoxAlignment, LOCAL_TEXT_STYLE, LiveRegion, Modifier, Role, Semantics,
+    floating, row_arranged, stack_with, text,
 };
 use rustle_graphics::Color;
 use rustle_runtime::remember;
@@ -54,6 +54,11 @@ pub fn tooltip(label: &str, content: impl FnOnce()) {
 pub fn snackbar(message: &str, action_label: Option<&str>, on_action: impl Fn() + 'static) {
     row_arranged(
         Modifier::new()
+            .semantics(
+                Semantics::new(Role::Group)
+                    .live_region(LiveRegion::Polite)
+                    .label(message.to_string()),
+            )
             .shadow(6.0, 8.0)
             .background_rounded(Color::rgb(50, 52, 66), 8.0)
             .padding_each(16.0, 10.0, 8.0, 10.0),

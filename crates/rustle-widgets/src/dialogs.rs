@@ -21,10 +21,16 @@ use crate::theme::{theme, with_text_color};
 /// window, where it covers what was emitted before it.
 #[track_caller]
 pub fn dialog(on_dismiss: impl Fn() + 'static, content: impl FnOnce()) {
+    dialog_semantics(Semantics::new(Role::Dialog), on_dismiss, content);
+}
+
+/// Emits a dialog described to assistive technology by `semantics`.
+#[track_caller]
+fn dialog_semantics(semantics: Semantics, on_dismiss: impl Fn() + 'static, content: impl FnOnce()) {
     stack_aligned(
         Modifier::new()
             .fill_max_size()
-            .semantics(Semantics::new(Role::Dialog))
+            .semantics(semantics)
             .clickable_plain(on_dismiss)
             .background(Color::rgba(0, 0, 0, 140)),
         BoxAlignment::Center,
@@ -50,7 +56,8 @@ pub fn alert_dialog(
 ) {
     let on_dismiss = Rc::new(on_dismiss);
     let cancel = Rc::clone(&on_dismiss);
-    dialog(
+    dialog_semantics(
+        Semantics::new(Role::Dialog).label(title.to_string()),
         move || on_dismiss(),
         || {
             column_with(Modifier::new().width_in(260.0, 380.0), || {

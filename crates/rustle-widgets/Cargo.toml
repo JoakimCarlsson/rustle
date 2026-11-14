@@ -13,3 +13,7 @@ rustle-graphics.workspace = true
 rustle-icons = { workspace = true, features = ["bold"] }
 rustle-runtime.workspace = true
 rustle-text.workspace = true
+rustle-unit.workspace = true
+
+[dev-dependencies]
+rustle-ui.workspace = true
