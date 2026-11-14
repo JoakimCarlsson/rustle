@@ -8,7 +8,9 @@ use std::rc::Rc;
 use std::str::FromStr;
 
 use crate::composition::{clock_and_executor, group_at, remember, with_runtime};
-use crate::state::State;
+use crate::state::{
+    Read, RecordingGuard, State, begin_recording, end_recording, merge_recording, recording_depth,
+};
 use crate::task::{TaskHandle, TaskScope};
 
 type Cleanup = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
@@ -146,17 +148,69 @@ pub fn remember_updated_state<T: Clone + 'static>(value: T) -> State<T> {
     state
 }
 
-/// Returns state holding what `calculation` returns, recalculated on every pass.
+/// What a derived state keeps between passes: its state and what the calculation read.
+struct Derived<T> {
+    state: State<T>,
+    reads: Vec<Read>,
+    unskippable: bool,
+}
+
+/// Returns state holding what `calculation` computes from other state.
 ///
-/// A composition here always runs the whole root again when state changes, so
-/// this does not skip any work; it gives the result the same type as other
-/// state, for code written against `State`.
+/// The calculation runs again only when state it read has changed (or a
+/// composition local it read has); otherwise the previous result is returned
+/// without running it. The state it read also counts as read by the caller, so
+/// a skippable block using a derived state is recomposed exactly when the
+/// inputs of the derivation change. The result's version moves only when it
+/// is recalculated.
 #[track_caller]
 pub fn derived_state_of<T: Clone + 'static>(calculation: impl FnOnce() -> T) -> State<T> {
-    let value = calculation();
-    let state = remember(|| value.clone());
-    state.replace_quietly(value);
-    state
+    group_at(Location::caller(), || {
+        let cached = with_runtime(|runtime| {
+            runtime
+                .slot()
+                .as_ref()
+                .and_then(|slot| slot.downcast_ref::<Derived<T>>())
+                .filter(|derived| !derived.unskippable)
+                .filter(|derived| derived.reads.iter().all(Read::is_current))
+                .map(|derived| (derived.state.clone(), derived.reads.clone()))
+        });
+        if let Some((state, reads)) = cached {
+            merge_recording(reads, false);
+            return state;
+        }
+        begin_recording();
+        let _guard = RecordingGuard {
+            depth: recording_depth() - 1,
+        };
+        let value = calculation();
+        let recording = end_recording();
+        let previous = with_runtime(|runtime| {
+            runtime
+                .slot()
+                .as_ref()
+                .and_then(|slot| slot.downcast_ref::<Derived<T>>())
+                .map(|derived| derived.state.clone())
+        });
+        let state = match previous {
+            Some(state) => {
+                state.replace_quietly(value);
+                state
+            }
+            None => {
+                let invalidation = with_runtime(|runtime| Rc::clone(&runtime.invalidation));
+                State::new(value, invalidation)
+            }
+        };
+        let derived = Derived {
+            state: state.clone(),
+            reads: recording.reads.clone(),
+            unskippable: recording.unskippable,
+        };
+        with_runtime(|runtime| *runtime.slot() = Some(Box::new(derived)));
+        merge_recording(recording.reads, recording.unskippable);
+        state
+    })
 }
 
 /// Returns state that starts as `initial` and is set by a task `producer`

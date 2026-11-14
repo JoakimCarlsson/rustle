@@ -39,6 +39,26 @@ impl Constraints {
         }
     }
 
+    /// Exactly `size`.
+    pub const fn tight(size: Size) -> Self {
+        Self {
+            min_width: size.width,
+            max_width: size.width,
+            min_height: size.height,
+            max_height: size.height,
+        }
+    }
+
+    /// Whether the width has an upper bound.
+    pub fn has_bounded_width(&self) -> bool {
+        self.max_width.is_finite()
+    }
+
+    /// Whether the height has an upper bound.
+    pub fn has_bounded_height(&self) -> bool {
+        self.max_height.is_finite()
+    }
+
     /// Clamps `size` into the constraints.
     pub fn constrain(&self, size: Size) -> Size {
         Size::new(

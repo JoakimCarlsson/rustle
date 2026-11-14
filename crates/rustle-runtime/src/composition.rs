@@ -17,9 +17,10 @@ use std::panic::Location;
 use std::rc::Rc;
 
 use crate::frame::{FrameClock, FrameQueue};
+use crate::scope::{ReaderGuard, Scope, ScopeInner, ScopeSlot};
 use crate::state::{
-    Invalidation, Read, RecordingGuard, State, begin_recording, end_recording, merge_recording,
-    recording_depth,
+    Invalidation, Read, RecordingGuard, State, begin_recording, end_recording, mark_untracked,
+    merge_recording, recording_depth,
 };
 use crate::task::Executor;
 
@@ -252,7 +253,10 @@ impl<T> Composition<T> {
             removed: &mut removed,
         };
 
-        let output = (self.root)();
+        let output = {
+            let _reader = ReaderGuard::enter(None);
+            (self.root)()
+        };
 
         drop(guard);
         self.output = Some(output);
@@ -261,16 +265,101 @@ impl<T> Composition<T> {
             effect();
         }
         self.executor.poll_woken();
+        self.run_scopes();
     }
 
     /// Composes again if dirty. Returns whether a pass ran.
+    ///
+    /// When only state read inside [`restartable`] blocks changed, just those blocks run
+    /// again, in place; the root and everything around them is kept. State the root read
+    /// itself, or that nothing composing is known to have read, runs the root.
     pub fn recompose(&mut self) -> bool {
-        let dirty = self.is_dirty();
-        if dirty {
-            self.compose();
+        if !self.is_dirty() {
+            return false;
         }
-        dirty
+        if self.invalidation.root_dirty() {
+            self.compose();
+        } else {
+            self.invalidation.clear();
+            self.run_scopes();
+        }
+        true
     }
+
+    /// Runs the scopes whose state changed and that nothing has composed since.
+    fn run_scopes(&mut self) {
+        for weak in self.invalidation.take_queue() {
+            let Some(scope) = weak.upgrade() else {
+                continue;
+            };
+            scope.queued.set(false);
+            if scope.is_dirty() {
+                self.rerun(&scope);
+            }
+        }
+    }
+
+    /// Runs `scope` again inside its own group, leaving the rest of the tree alone. A scope
+    /// that is no longer in the tree is skipped.
+    fn rerun(&mut self, scope: &Rc<ScopeInner>) {
+        let mut path = Vec::new();
+        if !find_scope(&self.tree, scope, &mut path) {
+            return;
+        }
+        let mut parent = &mut self.tree;
+        for index in &path {
+            parent = &mut parent.children[*index];
+        }
+        let group = mem::take(parent);
+        let runtime = Runtime {
+            frames: vec![Frame::new(group)],
+            effects: Vec::new(),
+            removed: Vec::new(),
+            locals: scope.locals.borrow().clone(),
+            invalidation: Rc::clone(&self.invalidation),
+            clock: Rc::clone(&self.frames),
+            executor: Rc::clone(&self.executor),
+        };
+        let previous = RUNTIME.with(|current| current.replace(Some(runtime)));
+        let mut effects = Vec::new();
+        let mut removed = Vec::new();
+        let mut detached = Group::default();
+        let guard = PassGuard {
+            previous,
+            tree: &mut detached,
+            effects: &mut effects,
+            removed: &mut removed,
+        };
+        scope.execute();
+        drop(guard);
+        let mut parent = &mut self.tree;
+        for index in &path {
+            parent = &mut parent.children[*index];
+        }
+        *parent = detached;
+        drop(removed);
+        for effect in effects {
+            effect();
+        }
+        self.executor.poll_woken();
+    }
+}
+
+/// Finds the group of `scope` below `group`, as the child indices leading to it.
+fn find_scope(group: &Group, scope: &Rc<ScopeInner>, path: &mut Vec<usize>) -> bool {
+    for (index, child) in group.children.iter().enumerate() {
+        path.push(index);
+        let is_scope = child
+            .slot
+            .as_ref()
+            .and_then(|slot| slot.downcast_ref::<ScopeSlot>())
+            .is_some_and(|slot| Rc::ptr_eq(&slot.0, scope));
+        if is_scope || find_scope(child, scope, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
 }
 
 fn site_key(site: &Location<'_>) -> u64 {
@@ -393,8 +482,76 @@ pub fn memo<D: PartialEq + 'static, T: Clone + 'static>(deps: D, content: impl F
     })
 }
 
+/// Runs `content` as a restartable block and returns a handle to what it produced.
+///
+/// The block remembers what it read. When state it read changes, the composition runs
+/// only this block again, keeping the root and everything around it, and the handle
+/// shows the new output ([`Scope::version`] changes). When the surrounding code runs it
+/// again with equal `deps`, and nothing it read has changed, it is not run: what it
+/// remembered is kept and the output is the same. Pass everything `content` takes from
+/// outside in `deps`.
+///
+/// Inside a restartable block, state is read by the block alone; state read directly
+/// by the root still recomposes the root. Effects inside a block that is not run again
+/// do not run again.
+///
+/// # Panics
+///
+/// Panics when called outside a composition pass.
+#[track_caller]
+pub fn restartable<D: PartialEq + 'static, T: Clone + 'static>(
+    deps: D,
+    content: impl Fn() -> T + 'static,
+) -> Scope {
+    run_group(site_key(Location::caller()), || {
+        let existing = with_runtime(|runtime| {
+            runtime
+                .slot()
+                .as_ref()
+                .and_then(|slot| slot.downcast_ref::<ScopeSlot>())
+                .map(|slot| Rc::clone(&slot.0))
+        });
+        let scope = existing.unwrap_or_else(|| {
+            let scope = ScopeInner::new();
+            let stored = Rc::clone(&scope);
+            with_runtime(|runtime| *runtime.slot() = Some(Box::new(ScopeSlot(stored))));
+            scope
+        });
+        let unchanged = scope
+            .deps
+            .borrow()
+            .downcast_ref::<D>()
+            .is_some_and(|previous| *previous == deps);
+        if unchanged && scope.is_current() {
+            with_runtime(|runtime| {
+                runtime.frames.last_mut().expect("no open group").unclaimed = 0;
+            });
+            let checks = scope
+                .reads
+                .borrow()
+                .iter()
+                .filter(|read| matches!(read, Read::Same(_)))
+                .cloned()
+                .collect();
+            merge_recording(checks, false);
+            return Scope(scope);
+        }
+        *scope.deps.borrow_mut() = Box::new(deps);
+        *scope.content.borrow_mut() = Some(Rc::new(move || Rc::new(content()) as Rc<dyn Any>));
+        with_runtime(|runtime| *scope.locals.borrow_mut() = runtime.locals.clone());
+        let (checks, unskippable) = scope.execute();
+        merge_recording(checks, unskippable);
+        Scope(scope)
+    })
+}
+
 /// Returns the state remembered at this call site, creating it with `init` on
 /// the first composition.
+///
+/// The state takes part in snapshots, like [`mutable_state_of`]: inside a
+/// [`Snapshot`](crate::Snapshot) it reads as the snapshot saw it, and inside a
+/// mutable snapshot its writes are kept until the snapshot is applied. Values that
+/// cannot be cloned use [`remember_live`].
 ///
 /// The value lives as long as the call site stays in the composition. If the
 /// call is skipped in a pass, for example in an untaken `if`, its state is
@@ -404,8 +561,45 @@ pub fn memo<D: PartialEq + 'static, T: Clone + 'static>(deps: D, content: impl F
 ///
 /// Panics when called outside a composition pass.
 #[track_caller]
-pub fn remember<T: 'static>(init: impl FnOnce() -> T) -> State<T> {
-    run_group(site_key(Location::caller()), || {
+pub fn remember<T: Clone + 'static>(init: impl FnOnce() -> T) -> State<T> {
+    remember_with(Location::caller(), |invalidation| {
+        State::new_snapshotted(init(), invalidation)
+    })
+}
+
+/// Like [`remember`], for a value that cannot be cloned. The state is always read and
+/// written live: it does not take part in snapshots.
+///
+/// # Panics
+///
+/// Panics when called outside a composition pass.
+#[track_caller]
+pub fn remember_live<T: 'static>(init: impl FnOnce() -> T) -> State<T> {
+    remember_with(Location::caller(), |invalidation| {
+        State::new(init(), invalidation)
+    })
+}
+
+/// Like [`remember`], but the state takes part in snapshots: inside a
+/// [`Snapshot`](crate::Snapshot) it reads as the snapshot saw it, and inside a
+/// mutable snapshot its writes are kept until the snapshot is applied.
+///
+/// # Panics
+///
+/// Panics when called outside a composition pass.
+#[track_caller]
+pub fn mutable_state_of<T: Clone + 'static>(initial: T) -> State<T> {
+    remember_with(Location::caller(), |invalidation| {
+        State::new_snapshotted(initial, invalidation)
+    })
+}
+
+/// Returns the state remembered at `site`, making it with `make` the first time.
+fn remember_with<T: 'static>(
+    site: &Location<'_>,
+    make: impl FnOnce(Rc<Invalidation>) -> State<T>,
+) -> State<T> {
+    run_group(site_key(site), || {
         let existing = with_runtime(|runtime| {
             runtime
                 .slot()
@@ -416,9 +610,8 @@ pub fn remember<T: 'static>(init: impl FnOnce() -> T) -> State<T> {
         if let Some(state) = existing {
             return state;
         }
-        // `init` runs outside the runtime borrow, so it may call composables.
         let invalidation = with_runtime(|runtime| Rc::clone(&runtime.invalidation));
-        let state = State::new(init(), invalidation);
+        let state = make(invalidation);
         let stored = state.clone();
         with_runtime(|runtime| *runtime.slot() = Some(Box::new(stored)));
         state
@@ -449,9 +642,115 @@ pub(crate) fn clock_and_executor() -> (FrameClock, Rc<Executor>) {
     })
 }
 
+/// A composition of its own that a composable owns and runs on demand, outside
+/// a pass, such as while a layout measures.
+///
+/// It keeps what its content remembers between runs, like the root does, and
+/// shares the state invalidation, frame clock and executor of the composition
+/// it was made in, so state changed inside it recomposes the whole interface.
+/// Composition locals are copied from the pass that last called
+/// [`Subcomposition::capture`].
+pub struct Subcomposition {
+    tree: RefCell<Group>,
+    locals: RefCell<Vec<(usize, Rc<dyn Any>)>>,
+    invalidation: Rc<Invalidation>,
+    clock: Rc<FrameQueue>,
+    executor: Rc<Executor>,
+}
+
+impl Subcomposition {
+    /// Creates an empty subcomposition tied to the composition being composed.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a composition pass.
+    pub fn new() -> Self {
+        with_runtime(|runtime| Self {
+            tree: RefCell::new(Group::default()),
+            locals: RefCell::new(runtime.locals.clone()),
+            invalidation: Rc::clone(&runtime.invalidation),
+            clock: Rc::clone(&runtime.clock),
+            executor: Rc::clone(&runtime.executor),
+        })
+    }
+
+    /// Creates an empty subcomposition that shares this one's composition
+    /// and locals. Unlike [`Subcomposition::new`] it can be called outside a
+    /// pass, so a layout can start one while it measures.
+    pub fn fork(&self) -> Self {
+        Self {
+            tree: RefCell::new(Group::default()),
+            locals: RefCell::new(self.locals.borrow().clone()),
+            invalidation: Rc::clone(&self.invalidation),
+            clock: Rc::clone(&self.clock),
+            executor: Rc::clone(&self.executor),
+        }
+    }
+
+    /// Copies the composition locals in effect now, so content run later sees
+    /// the values of the place that owns the subcomposition.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a composition pass.
+    pub fn capture(&self) {
+        *self.locals.borrow_mut() = with_runtime(|runtime| runtime.locals.clone());
+    }
+
+    /// Runs `content` as a pass of this subcomposition and returns what it
+    /// returned. What it remembered in earlier runs is still there, groups it
+    /// does not reach are dropped, and its effects run when it has finished.
+    ///
+    /// # Panics
+    ///
+    /// Propagates a panic from `content`. Running this subcomposition from
+    /// inside its own content panics.
+    pub fn compose<R>(&self, content: impl FnOnce() -> R) -> R {
+        let mut tree = self.tree.borrow_mut();
+        let runtime = Runtime {
+            frames: vec![Frame::new(mem::take(&mut *tree))],
+            effects: Vec::new(),
+            removed: Vec::new(),
+            locals: self.locals.borrow().clone(),
+            invalidation: Rc::clone(&self.invalidation),
+            clock: Rc::clone(&self.clock),
+            executor: Rc::clone(&self.executor),
+        };
+        let previous = RUNTIME.with(|current| current.replace(Some(runtime)));
+        let mut effects = Vec::new();
+        let mut removed = Vec::new();
+        let guard = PassGuard {
+            previous,
+            tree: &mut tree,
+            effects: &mut effects,
+            removed: &mut removed,
+        };
+        mark_untracked();
+        let output = {
+            let _reader = ReaderGuard::enter(None);
+            content()
+        };
+        drop(guard);
+        drop(tree);
+        drop(removed);
+        for effect in effects {
+            effect();
+        }
+        self.executor.poll_woken();
+        output
+    }
+}
+
+impl Default for Subcomposition {
+    /// Creates an empty subcomposition; see [`Subcomposition::new`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
@@ -819,5 +1118,119 @@ mod tests {
         keys.borrow_mut().clear();
         composition.compose();
         assert_eq!(*cleanups.borrow(), vec![0, 1, 2, 3]);
+    }
+
+    /// Checks that a change to state read inside a scope runs only that scope.
+    #[test]
+    fn scope_state_changes_recompose_only_the_scope() {
+        let root_runs = Rc::new(Cell::new(0));
+        let inner_runs = Rc::new(Cell::new(0));
+        let sibling_runs = Rc::new(Cell::new(0));
+        let shared = Rc::new(RefCell::new(None::<State<i32>>));
+        let (roots, inners, siblings, slot) = (
+            Rc::clone(&root_runs),
+            Rc::clone(&inner_runs),
+            Rc::clone(&sibling_runs),
+            Rc::clone(&shared),
+        );
+        let mut composition = Composition::new(move || {
+            roots.set(roots.get() + 1);
+            let value = remember(|| 0);
+            *slot.borrow_mut() = Some(value.clone());
+            let (inners, siblings) = (Rc::clone(&inners), Rc::clone(&siblings));
+            let shown = restartable((), move || {
+                inners.set(inners.get() + 1);
+                value.get()
+            });
+            let other = restartable((), move || {
+                siblings.set(siblings.get() + 1);
+                7
+            });
+            (shown, other)
+        });
+        composition.compose();
+        let value = shared.borrow().clone().unwrap();
+        value.set(5);
+        assert!(composition.recompose());
+        assert_eq!(
+            (root_runs.get(), inner_runs.get(), sibling_runs.get()),
+            (1, 2, 1)
+        );
+        let (shown, other) = composition.output().unwrap();
+        assert_eq!(shown.output::<i32>(), Some(5));
+        assert_eq!(other.output::<i32>(), Some(7));
+        assert!(!composition.recompose());
+    }
+
+    /// Checks that state the root reads recomposes the root, and that equal deps skip a scope.
+    #[test]
+    fn root_reads_recompose_the_root_and_scopes_skip_on_equal_deps() {
+        let root_runs = Rc::new(Cell::new(0));
+        let scope_runs = Rc::new(Cell::new(0));
+        let shared = Rc::new(RefCell::new(None::<State<i32>>));
+        let (roots, scopes, slot) = (
+            Rc::clone(&root_runs),
+            Rc::clone(&scope_runs),
+            Rc::clone(&shared),
+        );
+        let mut composition = Composition::new(move || {
+            roots.set(roots.get() + 1);
+            let value = remember(|| 0);
+            *slot.borrow_mut() = Some(value.clone());
+            let seen = value.get();
+            let scopes = Rc::clone(&scopes);
+            restartable(seen % 2, move || {
+                scopes.set(scopes.get() + 1);
+                seen
+            })
+        });
+        composition.compose();
+        let value = shared.borrow().clone().unwrap();
+        value.set(2);
+        composition.recompose();
+        assert_eq!((root_runs.get(), scope_runs.get()), (2, 1));
+        value.set(3);
+        composition.recompose();
+        assert_eq!((root_runs.get(), scope_runs.get()), (3, 2));
+        assert_eq!(composition.output().unwrap().output::<i32>(), Some(3));
+    }
+
+    /// Checks that a nested scope reruns alone and that removed scopes are ignored.
+    #[test]
+    fn nested_scopes_rerun_alone_and_cleanup_survives() {
+        let outer_runs = Rc::new(Cell::new(0));
+        let inner_runs = Rc::new(Cell::new(0));
+        let cleaned = Rc::new(Cell::new(0));
+        let shared = Rc::new(RefCell::new(None::<State<i32>>));
+        let (outers, inners, cleans, slot) = (
+            Rc::clone(&outer_runs),
+            Rc::clone(&inner_runs),
+            Rc::clone(&cleaned),
+            Rc::clone(&shared),
+        );
+        let mut composition = Composition::new(move || {
+            let value = remember(|| 0);
+            *slot.borrow_mut() = Some(value.clone());
+            let (outers, inners, cleans) =
+                (Rc::clone(&outers), Rc::clone(&inners), Rc::clone(&cleans));
+            restartable((), move || {
+                outers.set(outers.get() + 1);
+                let (inners, cleans, value) =
+                    (Rc::clone(&inners), Rc::clone(&cleans), value.clone());
+                restartable((), move || {
+                    inners.set(inners.get() + 1);
+                    let cleans = Rc::clone(&cleans);
+                    disposable_effect((), move || move || cleans.set(cleans.get() + 1));
+                    value.get()
+                })
+            })
+        });
+        composition.compose();
+        shared.borrow().clone().unwrap().set(1);
+        composition.recompose();
+        assert_eq!(
+            (outer_runs.get(), inner_runs.get(), cleaned.get()),
+            (1, 2, 0)
+        );
     }
 }

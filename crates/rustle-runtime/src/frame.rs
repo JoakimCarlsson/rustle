@@ -1,6 +1,6 @@
 //! The frame clock: callbacks that run once at the start of the next frame.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
@@ -11,11 +11,17 @@ type Callback = Box<dyn FnOnce(Duration)>;
 pub(crate) struct FrameQueue {
     callbacks: RefCell<Vec<Callback>>,
     waker: RefCell<Option<Box<dyn Fn()>>>,
+    /// The time of the latest frame that ran.
+    latest: Cell<Duration>,
 }
 
 impl FrameQueue {
     pub(crate) fn set_waker(&self, waker: impl Fn() + 'static) {
         *self.waker.borrow_mut() = Some(Box::new(waker));
+    }
+
+    pub(crate) fn latest(&self) -> Duration {
+        self.latest.get()
     }
 
     pub(crate) fn has_pending(&self) -> bool {
@@ -36,6 +42,7 @@ impl FrameQueue {
     /// Runs the callbacks requested so far. Callbacks that request again are
     /// kept for the following frame.
     pub(crate) fn run(&self, now: Duration) {
+        self.latest.set(now);
         let callbacks = mem::take(&mut *self.callbacks.borrow_mut());
         for callback in callbacks {
             callback(now);
@@ -55,6 +62,13 @@ pub struct FrameClock {
 impl FrameClock {
     pub(crate) fn new(queue: Rc<FrameQueue>) -> Self {
         Self { queue }
+    }
+
+    /// The time of the latest frame that ran, since the host started its clock:
+    /// zero before the first. It only moves when frames run, so while nothing
+    /// asks for one it is how long ago the last was.
+    pub fn now(&self) -> Duration {
+        self.queue.latest()
     }
 
     /// Runs `callback` at the start of the next frame, with the time since the
