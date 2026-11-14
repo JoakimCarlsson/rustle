@@ -75,7 +75,10 @@ pub fn constellation_panel() {
                         .map(|i| {
                             let kx = 1.0 + (noise(i * 5) * 3.0).floor();
                             let ky = 1.0 + (noise(i * 11) * 3.0).floor();
-                            let (px, py) = (noise(i * 17) * 6.28, noise(i * 23) * 6.28);
+                            let (px, py) = (
+                                noise(i * 17) * std::f32::consts::TAU,
+                                noise(i * 23) * std::f32::consts::TAU,
+                            );
                             (
                                 width * (0.5 + 0.46 * (turns(u, kx) + px).sin()),
                                 height * (0.5 + 0.44 * (turns(u, ky) + py).cos()),
