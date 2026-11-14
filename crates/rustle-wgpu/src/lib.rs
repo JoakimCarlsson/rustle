@@ -11,8 +11,9 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
 
-use glyphon::{Buffer, FontSystem, SwashCache, TextAtlas, TextRenderer, Viewport};
+use glyphon::{Buffer, Cache, FontSystem, SwashCache, TextAtlas, TextRenderer, Viewport};
 
+mod blur;
 mod composite;
 mod device;
 mod engine;
@@ -21,12 +22,18 @@ mod image;
 mod layers;
 mod path;
 mod quad;
+mod shaders;
+#[cfg(test)]
+mod tests;
 mod text;
+mod uniforms;
 
+use blur::Blur;
 use composite::Composite;
 use image::Images;
 use path::Paths;
 use quad::Quads;
+use shaders::Shaders;
 
 pub use text::TextMetrics;
 
@@ -66,7 +73,9 @@ pub struct Renderer {
     measured: HashMap<u64, (rustle_geometry::Size, u64)>,
     frame: u64,
     swash_cache: SwashCache,
-    viewport: Viewport,
+    text_cache: Cache,
+    /// What glyphon positions text against, one per size of texture drawn into.
+    text_viewports: HashMap<(u32, u32), Viewport>,
     atlas: TextAtlas,
     /// One per layer that has text, grown as needed and reused across frames.
     text_renderers: Vec<TextRenderer>,
@@ -74,6 +83,9 @@ pub struct Renderer {
     images: Images,
     paths: Paths,
     composite: Composite,
+    blur: Blur,
+    /// Programs' fragment shaders, compiled once per source.
+    shaders: Shaders,
     layer_pool: std::cell::RefCell<frame::LayerPool>,
     /// The background as the surface takes it: linear on an sRGB surface.
     clear: wgpu::Color,

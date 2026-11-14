@@ -5,6 +5,7 @@
 //! found from the mesh itself: an edge that only one triangle has is on the
 //! boundary, and the side that triangle is not on is outside.
 
+use crate::quad::Viewport;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -284,14 +285,9 @@ impl Paths {
         })
     }
 
-    pub(crate) fn draw(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        viewport: &wgpu::BindGroup,
-        batch: &Batch,
-    ) {
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, viewport: &Viewport, batch: &Batch) {
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, viewport, &[]);
+        viewport.set(pass);
         pass.set_vertex_buffer(0, batch.vertices.slice(..));
         pass.set_index_buffer(batch.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..batch.count, 0, 0..1);

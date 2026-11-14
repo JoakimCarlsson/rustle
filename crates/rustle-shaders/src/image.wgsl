@@ -4,6 +4,7 @@ struct Viewport {
     size: vec2<f32>,
     scale: f32,
     padding: f32,
+    origin: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -41,7 +42,7 @@ fn unit_corner(index: u32) -> vec2<f32> {
 @vertex
 fn vertex(@builtin(vertex_index) index: u32, instance: Instance) -> Fragment {
     let corner = unit_corner(index);
-    let point = instance.origin + corner * instance.size;
+    let point = instance.origin + corner * instance.size - viewport.origin;
 
     var out: Fragment;
     out.position = vec4<f32>(

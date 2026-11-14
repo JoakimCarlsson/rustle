@@ -1,6 +1,7 @@
 use rustle_geometry::Rect;
 
 use crate::color::*;
+use crate::effect::*;
 use crate::image::*;
 use crate::path::*;
 
@@ -134,6 +135,52 @@ pub enum DrawCommand {
         angle: f32,
         corner_radius: f32,
     },
+    /// A rounded rectangle blending from `from` at `center` to `to` at `radius`
+    /// away from it, in circles around `center`.
+    RadialGradient {
+        rect: Rect,
+        /// The middle of the circles as fractions of `rect` (0.5, 0.5 is its center).
+        center: (f32, f32),
+        /// In logical pixels.
+        radius: f32,
+        from: Color,
+        to: Color,
+        corner_radius: f32,
+    },
+    /// A rounded rectangle blending from `from` to `to` once around `center`,
+    /// clockwise from `start` (radians, 0 pointing right).
+    SweepGradient {
+        rect: Rect,
+        /// The point turned about as fractions of `rect` (0.5, 0.5 is its center).
+        center: (f32, f32),
+        start: f32,
+        from: Color,
+        to: Color,
+        corner_radius: f32,
+    },
+    /// A rounded rectangle filled by a shader the program supplies.
+    Shader {
+        rect: Rect,
+        corner_radius: f32,
+        brush: ShaderBrush,
+    },
+    /// Draws everything until the matching `PopEffect` as one picture, then puts it on
+    /// what is below as `effect` says: blurred, recolored, blended and faded. A blurred
+    /// effect shows only inside `rect`.
+    PushEffect {
+        rect: Rect,
+        effect: LayerEffect,
+    },
+    PopEffect,
+    /// Replaces what has been drawn so far inside the rounded rectangle with a Gaussian
+    /// blur of it, `blur` logical pixels of standard deviation: frosted glass. Draw a
+    /// translucent fill over it for a tint. It sees what the layer it is in has drawn
+    /// (the whole frame unless inside a layer, effect or rounded clip).
+    BackdropBlur {
+        rect: Rect,
+        corner_radius: f32,
+        blur: f32,
+    },
     /// A ring segment inside the square `rect`, `thickness` wide, covering
     /// `sweep` (0 to 1) of the circle clockwise from `start` (radians, 0 at the top),
     /// with round ends.
@@ -144,7 +191,8 @@ pub enum DrawCommand {
         start: f32,
         sweep: f32,
     },
-    /// A soft shadow of a rounded rectangle, blurred over `blur` pixels.
+    /// A soft shadow of a rounded rectangle: a Gaussian blur with `blur / 2` pixels of
+    /// standard deviation, so it fades out over about `blur` pixels.
     Shadow {
         rect: Rect,
         corner_radius: f32,
@@ -243,6 +291,11 @@ impl DrawCommand {
         match &mut self {
             Self::Rect { rect, .. }
             | Self::Gradient { rect, .. }
+            | Self::RadialGradient { rect, .. }
+            | Self::SweepGradient { rect, .. }
+            | Self::Shader { rect, .. }
+            | Self::PushEffect { rect, .. }
+            | Self::BackdropBlur { rect, .. }
             | Self::Arc { rect, .. }
             | Self::Shadow { rect, .. }
             | Self::Image { rect, .. }
@@ -260,7 +313,7 @@ impl DrawCommand {
                 to.0 += dx;
                 to.1 += dy;
             }
-            Self::PopClip | Self::PopLayer => {}
+            Self::PopClip | Self::PopLayer | Self::PopEffect => {}
         }
         self
     }

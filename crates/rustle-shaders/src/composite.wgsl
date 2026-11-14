@@ -2,7 +2,12 @@
 // The layer's pixels are premultiplied, so fading scales all four channels.
 
 struct Params {
-    size: vec2<f32>,
+    // The texture drawn into: its top-left corner in target pixels, then its size.
+    dest: vec4<f32>,
+    // The texture drawn from, the same way.
+    source: vec4<f32>,
+    // The rectangle of the target covered, as left, top, width and height.
+    area: vec4<f32>,
     pivot: vec2<f32>,
     rotation: vec2<f32>,
     scale: f32,
@@ -10,6 +15,8 @@ struct Params {
     mask_rect: vec4<f32>,
     mask_radii: vec4<f32>,
     masked: vec4<f32>,
+    filter_rows: array<vec4<f32>, 4>,
+    filter_offset: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -39,21 +46,22 @@ fn unit_corner(index: u32) -> vec2<f32> {
 @vertex
 fn vertex(@builtin(vertex_index) index: u32) -> Fragment {
     let corner = unit_corner(index);
-    let relative = (corner * params.size - params.pivot) * params.scale;
+    let world = params.area.xy + corner * params.area.zw;
+    let relative = (world - params.pivot) * params.scale;
     let turned = vec2<f32>(
             relative.x * params.rotation.x - relative.y * params.rotation.y,
             relative.x * params.rotation.y + relative.y * params.rotation.x,
         );
-    let point = params.pivot + turned;
+    let point = params.pivot + turned - params.dest.xy;
 
     var out: Fragment;
     out.position = vec4<f32>(
-            point.x / params.size.x * 2.0 - 1.0,
-            1.0 - point.y / params.size.y * 2.0,
+            point.x / params.dest.z * 2.0 - 1.0,
+            1.0 - point.y / params.dest.w * 2.0,
             0.0,
             1.0,
         );
-    out.uv = corner;
+    out.uv = (world - params.source.xy) / params.source.zw;
     return out;
 }
 
@@ -77,8 +85,23 @@ fn fragment(in: Fragment) -> @location(0) vec4<f32> {
         let limit = min(half_size.x, half_size.y);
         let radii = min(params.mask_radii, vec4<f32>(limit));
         let center = params.mask_rect.xy + half_size;
-        let distance = rounded_distance(in.position.xy - center, half_size, radii);
+        let distance = rounded_distance(in.position.xy + params.dest.xy - center, half_size, radii);
         coverage = clamp(0.5 - distance, 0.0, 1.0);
     }
-    return textureSample(layer, layer_sampler, in.uv) * (params.opacity * coverage);
+    var color = textureSample(layer, layer_sampler, in.uv);
+    if params.masked.y > 0.5 {
+        let straight = vec4<f32>(color.rgb / max(color.a, 0.0001), color.a);
+        let filtered = clamp(
+            vec4<f32>(
+                dot(params.filter_rows[0], straight),
+                dot(params.filter_rows[1], straight),
+                dot(params.filter_rows[2], straight),
+                dot(params.filter_rows[3], straight),
+            ) + params.filter_offset,
+            vec4<f32>(0.0),
+            vec4<f32>(1.0),
+        );
+        color = vec4<f32>(filtered.rgb * filtered.a, filtered.a);
+    }
+    return color * (params.opacity * coverage);
 }

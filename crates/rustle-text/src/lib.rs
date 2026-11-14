@@ -13,8 +13,8 @@ use rustle_graphics::Color;
 pub use rustle_graphics::{FontFamily, StyledSpan, TextAlign, TextWrap};
 
 pub use engine::{
-    TextEngine, font_families, install_text_engine, layout_spans, layout_styled, layout_text,
-    register_font, take_pending_fonts,
+    TextEngine, font_epoch, font_families, install_text_engine, layout_spans, layout_styled,
+    layout_text, register_font, take_pending_fonts,
 };
 pub use layout::{Affinity, Caret, Cluster, LineLayout, TextLayout};
 

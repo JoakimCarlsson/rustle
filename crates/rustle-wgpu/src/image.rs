@@ -1,5 +1,6 @@
 //! Pictures drawn as instanced quads by the image shader in `rustle-shaders`.
 
+use crate::quad::Viewport;
 use std::collections::HashMap;
 
 use rustle_graphics::{DrawCommand, ImageData};
@@ -248,14 +249,9 @@ impl Images {
         })
     }
 
-    pub(crate) fn draw(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        viewport_group: &wgpu::BindGroup,
-        batch: &Batch,
-    ) {
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, viewport: &Viewport, batch: &Batch) {
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, viewport_group, &[]);
+        viewport.set(pass);
         pass.set_vertex_buffer(0, batch.buffer.slice(..));
         for (index, id) in batch.ids.iter().enumerate() {
             if let Some(cached) = self.textures.get(id) {

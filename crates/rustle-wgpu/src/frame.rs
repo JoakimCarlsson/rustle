@@ -1,11 +1,13 @@
 //! Drawing a frame: uploading what the layers need, then recording the passes.
 
-use glyphon::Resolution;
-use rustle_graphics::DrawCommand;
+use std::rc::Rc;
 
-use crate::composite::Placement;
-use crate::layers::Item;
-use crate::{Renderer, Result, image, path, quad};
+use rustle_graphics::{BlendMode, DrawCommand};
+
+use crate::composite::{Canvas, Mask, Placement};
+use crate::layers::{Item, grow, intersection};
+use crate::quad::Viewport;
+use crate::{Renderer, Result, image, path, quad, shaders};
 
 impl Renderer {
     /// Draws one frame. `scale_factor` converts the commands' logical
@@ -184,29 +186,78 @@ impl Renderer {
         clear: Option<wgpu::Color>,
     ) -> Result<()> {
         let target = (self.surface_config.width, self.surface_config.height);
-        self.viewport.update(
-            &self.queue,
-            Resolution {
-                width: target.0,
-                height: target.1,
-            },
-        );
-        self.quads.set_viewport(&self.queue, target, scale_factor);
         self.images.begin_frame();
-        self.layer_pool.borrow_mut().begin_frame(target);
+        self.quads.begin_frame();
+        self.composite.begin_frame();
+        self.blur.begin_frame();
+        self.layer_pool.borrow_mut().begin_frame(self.frame);
+        if self.text_viewports.len() > 64 {
+            self.text_viewports.clear();
+        }
+        let root = Canvas {
+            origin: (0, 0),
+            size: target,
+        };
+        let context = Context {
+            scale: scale_factor,
+            target,
+        };
 
         let items = self.layers(commands, scale_factor, target);
         let mut next_text = 0;
-        let prepared = self.prepare_items(items, scale_factor, target, &mut next_text)?;
-        self.draw_items(encoder, view, &prepared, clear, target)
+        let prepared = self.prepare_items(items, scale_factor, root, &mut next_text)?;
+        if !has_backdrop(&prepared) {
+            return self.draw_items(
+                encoder,
+                (view, root),
+                &mut Vec::new(),
+                &prepared,
+                clear,
+                context,
+            );
+        }
+        let texture = self.layer_texture(target);
+        let scene = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut chain = vec![Ancestor {
+            texture: Rc::clone(&texture),
+            canvas: root,
+        }];
+        self.draw_items(
+            encoder,
+            (&scene, root),
+            &mut chain,
+            &prepared,
+            Some(clear.unwrap_or(wgpu::Color::TRANSPARENT)),
+            context,
+        )?;
+        let blend = if clear.is_some() {
+            BlendMode::Src
+        } else {
+            BlendMode::SrcOver
+        };
+        let mut pass = begin_pass(encoder, view, None);
+        self.composite.draw(
+            &self.device,
+            &mut pass,
+            &scene,
+            root,
+            (0, 0, target.0, target.1),
+            root,
+            Placement {
+                blend,
+                ..Placement::plain(1.0, None)
+            },
+        );
+        Ok(())
     }
 
-    /// Uploads what each layer of `items` needs, in drawing order.
+    /// Uploads what each layer of `items` needs, in drawing order. `canvas` is the texture
+    /// the items are drawn into.
     fn prepare_items(
         &mut self,
         items: Vec<Item>,
         scale_factor: f32,
-        target: (u32, u32),
+        canvas: Canvas,
         next_text: &mut usize,
     ) -> Result<Vec<PreparedItem>> {
         let mut prepared = Vec::with_capacity(items.len());
@@ -221,7 +272,7 @@ impl Renderer {
                     } else {
                         let index = *next_text;
                         *next_text += 1;
-                        self.prepare_text(index, &layer.texts, scale_factor, target)?;
+                        self.prepare_text(index, &layer.texts, scale_factor, canvas)?;
                         Some(index)
                     };
                     PreparedItem::Layer(Prepared {
@@ -232,153 +283,494 @@ impl Renderer {
                         text,
                     })
                 }
+                Item::Shader { scissor, call } => match self.shaders.prepare(&self.device, &call) {
+                    Some(batch) => PreparedItem::Shader { scissor, batch },
+                    None => continue,
+                },
+                Item::Backdrop {
+                    rect,
+                    corner_radius,
+                    sigma,
+                    scissor,
+                } => PreparedItem::Backdrop {
+                    rect,
+                    corner_radius,
+                    sigma,
+                    scissor,
+                },
                 Item::Group {
                     placement,
                     scissor,
+                    region,
                     items,
-                } => PreparedItem::Group {
-                    placement,
-                    scissor,
-                    items: self.prepare_items(items, scale_factor, target, next_text)?,
-                },
+                } => {
+                    if region.2 == 0 || region.3 == 0 {
+                        continue;
+                    }
+                    let inner = self.canvas_for(region);
+                    PreparedItem::Group {
+                        placement,
+                        scissor,
+                        region,
+                        canvas: inner,
+                        items: self.prepare_items(items, scale_factor, inner, next_text)?,
+                    }
+                }
             });
         }
         Ok(prepared)
     }
 
-    /// Draws `items` into `view`, clearing it to `clear` first if given. A group
-    /// is drawn into a texture of its own, then composited onto `view`.
+    /// The canvas of a texture that holds `region` (left, top, width and height in target
+    /// pixels). Its size is rounded up so that textures of similar sizes can be reused.
+    fn canvas_for(&self, region: (u32, u32, u32, u32)) -> Canvas {
+        let limit = self.device.limits().max_texture_dimension_2d;
+        let round = |value: u32| (value.div_ceil(BUCKET) * BUCKET).min(limit.max(value));
+        Canvas {
+            origin: (region.0, region.1),
+            size: (round(region.2), round(region.3)),
+        }
+    }
+
+    /// Draws `items` into `view`, a view of the texture at `canvas` (given together), clearing it to `clear`
+    /// first if given. A group is drawn into a texture of its own, just big enough for what it
+    /// holds, then composited onto `view`.
+    ///
+    /// `chain` holds the textures the renderer made that are being drawn into, outermost
+    /// first and `view`'s last, which a backdrop blur reads to see what has been drawn.
     fn draw_items(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        view: &wgpu::TextureView,
+        (view, canvas): (&wgpu::TextureView, Canvas),
+        chain: &mut Vec<Ancestor>,
         items: &[PreparedItem],
         mut clear: Option<wgpu::Color>,
-        target: (u32, u32),
+        context: Context,
     ) -> Result<()> {
         if items.is_empty() {
-            // Nothing to draw still has to clear.
             drop(begin_pass(encoder, view, clear.take()));
             return Ok(());
         }
+        let viewport = self.quads.viewport(
+            &self.device,
+            &self.queue,
+            canvas.origin,
+            canvas.size,
+            context.scale,
+        );
+        let clear_was_given = clear.is_some();
         let mut index = 0;
         while index < items.len() {
             match &items[index] {
-                PreparedItem::Layer(_) => {
+                PreparedItem::Layer(_) | PreparedItem::Shader { .. } => {
                     let start = index;
-                    while index < items.len() && matches!(items[index], PreparedItem::Layer(_)) {
+                    while index < items.len()
+                        && matches!(
+                            items[index],
+                            PreparedItem::Layer(_) | PreparedItem::Shader { .. }
+                        )
+                    {
                         index += 1;
                     }
                     let mut pass = begin_pass(encoder, view, clear.take());
                     for item in &items[start..index] {
-                        if let PreparedItem::Layer(layer) = item {
-                            self.draw_layer(&mut pass, layer, target)?;
+                        match item {
+                            PreparedItem::Layer(layer) => {
+                                self.draw_layer(&mut pass, layer, canvas, &viewport)?
+                            }
+                            PreparedItem::Shader { scissor, batch } => {
+                                if let Some((x, y, width, height)) = local_scissor(*scissor, canvas)
+                                {
+                                    pass.set_scissor_rect(x, y, width, height);
+                                    self.shaders.draw(&mut pass, &viewport, batch);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
-                PreparedItem::Group {
-                    placement,
+                PreparedItem::Backdrop {
+                    rect,
+                    corner_radius,
+                    sigma,
                     scissor,
-                    items: inner,
                 } => {
-                    let texture = self.layer_texture(target);
-                    let group_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    self.draw_items(
-                        encoder,
-                        &group_view,
-                        inner,
-                        Some(wgpu::Color::TRANSPARENT),
-                        target,
-                    )?;
-                    let mut pass = begin_pass(encoder, view, clear.take());
-                    let (x, y, width, height) = scissor.unwrap_or((0, 0, target.0, target.1));
-                    if width > 0 && height > 0 {
-                        pass.set_scissor_rect(x, y, width, height);
-                        self.composite.draw(
-                            &self.device,
-                            &mut pass,
-                            &group_view,
-                            target,
-                            *placement,
-                        );
-                    }
                     index += 1;
+                    if clear.is_some() {
+                        drop(begin_pass(encoder, view, clear.take()));
+                    }
+                    let below = if index == 1 && clear_was_given {
+                        &chain[..chain.len().saturating_sub(1)]
+                    } else {
+                        &chain[..]
+                    };
+                    if *sigma <= 0.0 || below.is_empty() {
+                        continue;
+                    }
+                    let Some((x, y, width, height)) = local_scissor(*scissor, canvas) else {
+                        continue;
+                    };
+                    let area = (x + canvas.origin.0, y + canvas.origin.1, width, height);
+                    let reach = (*sigma * 3.0).ceil() as u32 + 2;
+                    let region = grow(area, reach, context.target);
+                    let blurred = self.blurred_backdrop(encoder, below, region, *sigma);
+                    let mut pass = begin_pass(encoder, view, None);
+                    pass.set_scissor_rect(x, y, width, height);
+                    self.composite.draw(
+                        &self.device,
+                        &mut pass,
+                        &blurred.view,
+                        blurred.canvas,
+                        area,
+                        canvas,
+                        Placement::plain(
+                            1.0,
+                            Some(Mask {
+                                rect: *rect,
+                                radii: [*corner_radius; 4],
+                            }),
+                        ),
+                    );
+                }
+                PreparedItem::Group { .. } => {
+                    let mut run = Vec::new();
+                    let mut pixels = 0_u64;
+                    while let Some(PreparedItem::Group {
+                        canvas: inner,
+                        items: content,
+                        ..
+                    }) = items.get(index)
+                    {
+                        let backdrop = has_backdrop(content);
+                        let size = u64::from(inner.size.0) * u64::from(inner.size.1);
+                        if !run.is_empty() && (backdrop || pixels + size > BATCH_PIXELS) {
+                            break;
+                        }
+                        run.push(index);
+                        pixels += size;
+                        index += 1;
+                        if backdrop {
+                            break;
+                        }
+                    }
+                    let mut drawn = Vec::with_capacity(run.len());
+                    for position in run {
+                        let PreparedItem::Group {
+                            placement,
+                            scissor,
+                            region,
+                            canvas: inner,
+                            items: content,
+                        } = &items[position]
+                        else {
+                            continue;
+                        };
+                        let texture = self.layer_texture(inner.size);
+                        let group_view =
+                            texture.create_view(&wgpu::TextureViewDescriptor::default());
+                        chain.push(Ancestor {
+                            texture: Rc::clone(&texture),
+                            canvas: *inner,
+                        });
+                        let result = self.draw_items(
+                            encoder,
+                            (&group_view, *inner),
+                            chain,
+                            content,
+                            Some(wgpu::Color::TRANSPARENT),
+                            context,
+                        );
+                        chain.pop();
+                        result?;
+                        let shown = if placement.blur > 0.0 {
+                            self.blurred(encoder, (&group_view, *inner), *region, placement.blur)
+                        } else {
+                            Blurred {
+                                view: group_view,
+                                canvas: *inner,
+                            }
+                        };
+                        drawn.push((shown, *placement, *scissor, *region));
+                    }
+                    let mut pass = begin_pass(encoder, view, clear.take());
+                    for (shown, placement, scissor, region) in &drawn {
+                        let area = intersection(scissor.unwrap_or(*region), *region);
+                        let Some((x, y, width, height)) = local_scissor(*scissor, canvas) else {
+                            continue;
+                        };
+                        if area.2 > 0 && area.3 > 0 {
+                            pass.set_scissor_rect(x, y, width, height);
+                            self.composite.draw(
+                                &self.device,
+                                &mut pass,
+                                &shown.view,
+                                shown.canvas,
+                                area,
+                                canvas,
+                                *placement,
+                            );
+                        }
+                    }
                 }
             }
         }
         Ok(())
     }
 
-    /// A texture to draw a group into, reused from an earlier frame if possible.
-    fn layer_texture(&self, target: (u32, u32)) -> std::rc::Rc<wgpu::Texture> {
+    /// `region` (left, top, width and height in target pixels) of the texture `source` shows,
+    /// which lies at the canvas given, blurred by `sigma` physical pixels: a pass along x into
+    /// one pooled texture, then along y into another. Pixels beyond the region read its edge.
+    fn blurred(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        (source, from): (&wgpu::TextureView, Canvas),
+        region: (u32, u32, u32, u32),
+        sigma: f32,
+    ) -> Blurred {
+        let canvas = self.canvas_for((region.0, region.1, region.2, region.3));
+        let horizontal = self.layer_texture(canvas.size);
+        let horizontal_view = horizontal.create_view(&wgpu::TextureViewDescriptor::default());
+        self.blur.pass(
+            &self.device,
+            encoder,
+            (
+                source,
+                (
+                    region.0.saturating_sub(from.origin.0),
+                    region.1.saturating_sub(from.origin.1),
+                    region.2,
+                    region.3,
+                ),
+            ),
+            &horizontal_view,
+            [1.0, 0.0],
+            sigma,
+        );
+        let vertical = self.layer_texture(canvas.size);
+        let vertical_view = vertical.create_view(&wgpu::TextureViewDescriptor::default());
+        self.blur.pass(
+            &self.device,
+            encoder,
+            (&horizontal_view, (0, 0, region.2, region.3)),
+            &vertical_view,
+            [0.0, 1.0],
+            sigma,
+        );
+        Blurred {
+            view: vertical_view,
+            canvas,
+        }
+    }
+
+    /// What has been drawn so far in `region`, blurred by `sigma`. With one texture being
+    /// drawn into it is read directly; inside groups the textures are first put together,
+    /// outermost first, so the blur sees what lies below the group as well.
+    fn blurred_backdrop(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        chain: &[Ancestor],
+        region: (u32, u32, u32, u32),
+        sigma: f32,
+    ) -> Blurred {
+        if let [only] = chain {
+            let view = only
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            return self.blurred(encoder, (&view, only.canvas), region, sigma);
+        }
+        let canvas = self.canvas_for(region);
+        let flat = self.layer_texture(canvas.size);
+        let flat_view = flat.create_view(&wgpu::TextureViewDescriptor::default());
+        for (position, ancestor) in chain.iter().enumerate() {
+            let clear = (position == 0).then_some(wgpu::Color::TRANSPARENT);
+            let mut pass = begin_pass(encoder, &flat_view, clear);
+            let covered = intersection(
+                region,
+                (
+                    ancestor.canvas.origin.0,
+                    ancestor.canvas.origin.1,
+                    ancestor.canvas.size.0,
+                    ancestor.canvas.size.1,
+                ),
+            );
+            if covered.2 > 0 && covered.3 > 0 {
+                let source = ancestor
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                self.composite.draw(
+                    &self.device,
+                    &mut pass,
+                    &source,
+                    ancestor.canvas,
+                    covered,
+                    canvas,
+                    Placement::plain(1.0, None),
+                );
+            }
+        }
+        self.blurred(encoder, (&flat_view, canvas), region, sigma)
+    }
+
+    /// A texture of `size` to draw a group into, reused from an earlier frame if possible.
+    fn layer_texture(&self, size: (u32, u32)) -> Rc<wgpu::Texture> {
         let mut pool = self.layer_pool.borrow_mut();
-        let texture = pool.free.pop().unwrap_or_else(|| {
-            std::rc::Rc::new(self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("layer"),
-                size: wgpu::Extent3d {
-                    width: target.0,
-                    height: target.1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            }))
-        });
-        pool.busy.push(std::rc::Rc::clone(&texture));
+        if let Some(texture) = pool.take(size) {
+            return texture;
+        }
+        let texture = Rc::new(self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("layer"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        }));
+        pool.created += 1;
+        pool.hand_out(size, Rc::clone(&texture));
         texture
     }
 
+    /// How many layer textures have been created so far.
+    #[cfg(test)]
+    pub(crate) fn layer_textures_made(&self) -> usize {
+        self.layer_pool.borrow().created
+    }
+
+    /// Draws one layer of rectangles, outlines, pictures and text into the pass, which draws
+    /// into the texture at `canvas`.
     fn draw_layer(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         layer: &Prepared,
-        target: (u32, u32),
+        canvas: Canvas,
+        viewport: &Viewport,
     ) -> Result<()> {
-        let (x, y, width, height) = layer.scissor.unwrap_or((0, 0, target.0, target.1));
-        if width == 0 || height == 0 {
+        let Some((x, y, width, height)) = local_scissor(layer.scissor, canvas) else {
             return Ok(());
-        }
+        };
         pass.set_scissor_rect(x, y, width, height);
         if let Some(quads) = &layer.quads {
-            self.quads.draw(pass, quads);
+            self.quads.draw(pass, viewport, quads);
         }
         if let Some(paths) = &layer.paths {
-            self.paths.draw(pass, self.quads.viewport_group(), paths);
+            self.paths.draw(pass, viewport, paths);
         }
         if let Some(images) = &layer.images {
-            self.images.draw(pass, self.quads.viewport_group(), images);
+            self.images.draw(pass, viewport, images);
         }
         if let Some(index) = layer.text {
-            self.text_renderers[index].render(&self.atlas, &self.viewport, pass)?;
+            self.text_renderers[index].render(
+                &self.atlas,
+                &self.text_viewports[&canvas.size],
+                pass,
+            )?;
         }
         Ok(())
     }
+}
+
+/// The most pixels of group textures drawn before they are composited together in one pass.
+const BATCH_PIXELS: u64 = 16 * 1024 * 1024;
+
+/// How many pixels the sizes of the textures groups are drawn into are rounded up to.
+const BUCKET: u32 = 64;
+
+/// What a frame is drawn with.
+#[derive(Clone, Copy)]
+struct Context {
+    /// Physical pixels per logical pixel.
+    scale: f32,
+    /// The size of the frame's target in physical pixels.
+    target: (u32, u32),
+}
+
+/// A texture being drawn into, with where it lies in the target.
+struct Ancestor {
+    texture: Rc<wgpu::Texture>,
+    canvas: Canvas,
+}
+
+/// A blurred picture of a region, in a pooled texture.
+struct Blurred {
+    view: wgpu::TextureView,
+    canvas: Canvas,
+}
+
+/// Whether any of `items`, or the groups in them, blurs what is behind it.
+fn has_backdrop(items: &[PreparedItem]) -> bool {
+    items.iter().any(|item| match item {
+        PreparedItem::Backdrop { .. } => true,
+        PreparedItem::Group { items, .. } => has_backdrop(items),
+        _ => false,
+    })
+}
+
+/// `scissor` (target pixels; `None` is everything) cut to the texture at `canvas` and made
+/// relative to it, or `None` if nothing of it is left.
+fn local_scissor(
+    scissor: Option<(u32, u32, u32, u32)>,
+    canvas: Canvas,
+) -> Option<(u32, u32, u32, u32)> {
+    let whole = (
+        canvas.origin.0,
+        canvas.origin.1,
+        canvas.size.0,
+        canvas.size.1,
+    );
+    let (x, y, width, height) = scissor.map_or(whole, |scissor| intersection(scissor, whole));
+    (width > 0 && height > 0).then_some((x - canvas.origin.0, y - canvas.origin.1, width, height))
 }
 
 /// Textures groups are drawn into: kept between frames, because clips and
 /// layers need one each every frame and creating them is slow.
 #[derive(Default)]
 pub(crate) struct LayerPool {
-    size: (u32, u32),
-    free: Vec<std::rc::Rc<wgpu::Texture>>,
+    frame: u64,
+    free: Vec<Pooled>,
     /// Textures handed out this frame; free again when the next frame begins.
-    busy: Vec<std::rc::Rc<wgpu::Texture>>,
+    busy: Vec<Pooled>,
+    /// How many textures the pool has made, which tests use to see that they are reused.
+    pub(crate) created: usize,
+}
+
+/// A pooled texture and the frame it was last handed out in.
+struct Pooled {
+    size: (u32, u32),
+    texture: Rc<wgpu::Texture>,
+    used: u64,
 }
 
 impl LayerPool {
-    /// Makes last frame's textures available, dropping them if the target changed size.
-    fn begin_frame(&mut self, target: (u32, u32)) {
-        if self.size != target {
-            self.size = target;
-            self.free.clear();
-            self.busy.clear();
-        }
+    /// Makes last frame's textures available, dropping those not used for a while.
+    fn begin_frame(&mut self, frame: u64) {
+        self.frame = frame;
         self.free.append(&mut self.busy);
+        self.free.retain(|pooled| frame - pooled.used < 120);
+    }
+
+    /// A free texture of exactly `size`, handed out for the rest of the frame.
+    fn take(&mut self, size: (u32, u32)) -> Option<Rc<wgpu::Texture>> {
+        let position = self.free.iter().position(|pooled| pooled.size == size)?;
+        let mut pooled = self.free.swap_remove(position);
+        pooled.used = self.frame;
+        let texture = Rc::clone(&pooled.texture);
+        self.busy.push(pooled);
+        Some(texture)
+    }
+
+    /// Records a texture just made as handed out for the rest of the frame.
+    fn hand_out(&mut self, size: (u32, u32), texture: Rc<wgpu::Texture>) {
+        self.busy.push(Pooled {
+            size,
+            texture,
+            used: self.frame,
+        });
     }
 }
 
@@ -394,15 +786,28 @@ struct Prepared {
 
 enum PreparedItem {
     Layer(Prepared),
+    Shader {
+        scissor: Option<(u32, u32, u32, u32)>,
+        batch: shaders::Batch,
+    },
+    Backdrop {
+        rect: [f32; 4],
+        corner_radius: f32,
+        sigma: f32,
+        scissor: Option<(u32, u32, u32, u32)>,
+    },
     Group {
         placement: Placement,
         scissor: Option<(u32, u32, u32, u32)>,
+        region: (u32, u32, u32, u32),
+        /// The texture the group is drawn into.
+        canvas: Canvas,
         items: Vec<PreparedItem>,
     },
 }
 
 /// Begins a pass drawing into `view`, clearing it first if `clear` is given.
-fn begin_pass<'a>(
+pub(crate) fn begin_pass<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
     clear: Option<wgpu::Color>,

@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{StyledSpan, TextLayout, TextSpan, TextStyle};
 
@@ -28,10 +29,21 @@ thread_local! {
 /// Font data registered before any renderer exists, which the renderer adds when it starts.
 static PENDING: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
+/// Counts the changes that alter how text is measured: an engine installed or a font registered.
+static FONT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// A number that changes whenever text may measure differently than before, because an
+/// engine was installed or a font registered. Work that depends on text sizes can be
+/// kept while it is unchanged.
+pub fn font_epoch() -> u64 {
+    FONT_EPOCH.load(Ordering::Relaxed)
+}
+
 /// Makes `engine` the one the text functions use on this thread, replacing any before it.
 /// A renderer calls this once per thread, when the first is created, and renderers made
 /// after it on the same thread use that engine too.
 pub fn install_text_engine(engine: Rc<dyn TextEngine>) {
+    FONT_EPOCH.fetch_add(1, Ordering::Relaxed);
     ENGINE.with(|slot| *slot.borrow_mut() = Some(engine));
 }
 
@@ -94,6 +106,7 @@ pub fn font_families() -> Vec<String> {
 /// provides. Before a renderer exists the data is kept and added when it starts, and
 /// the result is empty. Text shaped earlier is shaped again with the new font.
 pub fn register_font(data: Vec<u8>) -> Vec<String> {
+    FONT_EPOCH.fetch_add(1, Ordering::Relaxed);
     match engine() {
         Some(engine) => engine.register_font(data),
         None => {

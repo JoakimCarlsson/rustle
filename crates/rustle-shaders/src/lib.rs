@@ -17,3 +17,19 @@ pub const COMPOSITE: &str = include_str!("composite.wgsl");
 
 /// Filled vector outlines, drawn as triangles.
 pub const PATH: &str = include_str!("path.wgsl");
+
+/// A Gaussian blur of a texture along one direction.
+pub const BLUR: &str = include_str!("blur.wgsl");
+
+/// The frame a program's fragment shader is drawn in: bindings, a vertex shader and a
+/// fragment entry point that calls `shade`. [`custom`] appends the program's source.
+const SHADER: &str = include_str!("shader.wgsl");
+
+/// The complete WGSL module for a program's fragment shader `source`, which must define
+/// `fn shade(uv: vec2<f32>, position: vec2<f32>) -> vec4<f32>`.
+pub fn custom(source: &str) -> String {
+    let mut module = String::with_capacity(SHADER.len() + source.len());
+    module.push_str(SHADER);
+    module.push_str(source);
+    module
+}

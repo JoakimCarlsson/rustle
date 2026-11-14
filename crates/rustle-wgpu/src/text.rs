@@ -7,13 +7,14 @@ use glyphon::cosmic_text::{
     Align, Ellipsize, EllipsizeHeightLimit, FeatureTag, FontFeatures, Hinting, Style,
 };
 use glyphon::{
-    Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, TextArea, TextBounds, TextRenderer,
-    Weight, Wrap,
+    Attrs, Buffer, Color, Family, FontSystem, Metrics, Resolution, Shaping, TextArea, TextBounds,
+    TextRenderer, Viewport, Weight, Wrap,
 };
 use rustle_geometry::Size;
 use rustle_graphics::{FontFamily, StyledSpan, TextAlign, TextWrap};
 use rustle_text::{TextLayout, TextMeasurer, TextStyle};
 
+use crate::composite::Canvas;
 use crate::engine::layout_spans;
 
 use std::hash::{Hash, Hasher};
@@ -26,8 +27,9 @@ impl Renderer {
         index: usize,
         texts: &[Shaped],
         scale_factor: f32,
-        target: (u32, u32),
+        canvas: Canvas,
     ) -> Result<()> {
+        self.text_viewport(canvas.size);
         while self.text_renderers.len() <= index {
             self.text_renderers.push(TextRenderer::new(
                 &mut self.atlas,
@@ -39,13 +41,14 @@ impl Renderer {
         let bounds = TextBounds {
             left: 0,
             top: 0,
-            right: target.0 as i32,
-            bottom: target.1 as i32,
+            right: canvas.size.0 as i32,
+            bottom: canvas.size.1 as i32,
         };
+        let (shift_x, shift_y) = (canvas.origin.0 as f32, canvas.origin.1 as f32);
         let areas = texts.iter().map(|text| TextArea {
             buffer: &text.buffer,
-            left: (text.position.0 * scale_factor).round(),
-            top: (text.position.1 * scale_factor).round(),
+            left: (text.position.0 * scale_factor).round() - shift_x,
+            top: (text.position.1 * scale_factor).round() - shift_y,
             scale: scale_factor,
             bounds,
             default_color: text.color,
@@ -56,11 +59,27 @@ impl Renderer {
             &self.queue,
             &mut self.font_system.borrow_mut(),
             &mut self.atlas,
-            &self.viewport,
+            &self.text_viewports[&canvas.size],
             areas,
             &mut self.swash_cache,
         )?;
         Ok(())
+    }
+
+    /// Makes sure glyphon has a viewport for textures of `size`, which text drawn into
+    /// them is positioned against.
+    pub(super) fn text_viewport(&mut self, size: (u32, u32)) {
+        let viewport = self
+            .text_viewports
+            .entry(size)
+            .or_insert_with(|| Viewport::new(&self.device, &self.text_cache));
+        viewport.update(
+            &self.queue,
+            Resolution {
+                width: size.0,
+                height: size.1,
+            },
+        );
     }
 }
 

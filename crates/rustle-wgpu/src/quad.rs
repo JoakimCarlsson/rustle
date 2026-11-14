@@ -3,18 +3,23 @@
 use rustle_graphics::{Color, DrawCommand};
 
 use crate::srgb_to_linear;
+use crate::uniforms::Arena;
 use wgpu::util::DeviceExt;
 
 /// The viewport the shader turns logical pixels into clip space with.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Viewport {
+struct ViewportData {
     /// Target size in physical pixels.
     size: [f32; 2],
     /// Physical pixels per logical pixel.
     scale: f32,
     /// Padding to the 16-byte alignment a uniform block needs.
     padding: f32,
+    /// Where the texture's top-left corner lies in the target's physical pixels.
+    origin: [f32; 2],
+    /// Pads to 32 bytes, which the binding of a viewport covers.
+    reserved: [f32; 2],
 }
 
 /// One quad as the shader reads it.
@@ -33,10 +38,13 @@ pub(crate) struct Instance {
     params: [f32; 4],
     /// Arc sweep and ring width; a width of zero draws a rectangle.
     arc: [f32; 4],
+    /// For gradients: the center as fractions of the rectangle, the radius of a radial
+    /// gradient, and the kind (0 linear, 1 radial, 2 sweep).
+    extra: [f32; 4],
 }
 
 impl Instance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 8] = wgpu::vertex_attr_array![
         0 => Float32x4,
         1 => Float32x4,
         2 => Float32x4,
@@ -44,6 +52,7 @@ impl Instance {
         4 => Float32x4,
         5 => Float32x4,
         6 => Float32x4,
+        7 => Float32x4,
     ];
 }
 
@@ -53,22 +62,31 @@ pub(crate) struct Batch {
     count: u32,
 }
 
+/// Where a pipeline finds the viewport: a bind group for group 0, and the offset into it.
+pub(crate) struct Viewport {
+    group: wgpu::BindGroup,
+    offset: u32,
+}
+
+impl Viewport {
+    /// Sets the viewport as group 0 of the pass.
+    pub(crate) fn set(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_bind_group(0, &self.group, &[self.offset]);
+    }
+}
+
 pub(crate) struct Quads {
     pipeline: wgpu::RenderPipeline,
-    viewport_buffer: wgpu::Buffer,
     viewport_layout: wgpu::BindGroupLayout,
-    viewport_group: wgpu::BindGroup,
+    /// Where the viewports of the frame are written.
+    arena: Arena,
+    /// A bind group for each of the arena's buffers, made when first needed.
+    viewport_groups: std::cell::RefCell<Vec<wgpu::BindGroup>>,
     /// Whether the target encodes linear values to sRGB on write.
     srgb_target: bool,
 }
 impl Quads {
     pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let viewport_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("viewport"),
-            size: size_of::<Viewport>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let viewport_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("viewport"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -76,18 +94,10 @@ impl Quads {
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
+                    has_dynamic_offset: true,
                     min_binding_size: None,
                 },
                 count: None,
-            }],
-        });
-        let viewport_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("viewport"),
-            layout: &viewport_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: viewport_buffer.as_entire_binding(),
             }],
         });
 
@@ -141,9 +151,9 @@ impl Quads {
 
         Self {
             pipeline,
-            viewport_buffer,
             viewport_layout,
-            viewport_group,
+            arena: Arena::new(device),
+            viewport_groups: std::cell::RefCell::new(Vec::new()),
             srgb_target: format.is_srgb(),
         }
     }
@@ -153,22 +163,51 @@ impl Quads {
         &self.viewport_layout
     }
 
-    /// The viewport bind group, set as group 0 by every pipeline.
-    pub(crate) fn viewport_group(&self) -> &wgpu::BindGroup {
-        &self.viewport_group
-    }
-
-    /// Sets the viewport every batch of the frame is drawn with.
-    pub(crate) fn set_viewport(&self, queue: &wgpu::Queue, target_size: (u32, u32), scale: f32) {
-        queue.write_buffer(
-            &self.viewport_buffer,
-            0,
-            bytemuck::bytes_of(&Viewport {
-                size: [target_size.0 as f32, target_size.1 as f32],
+    /// A viewport for drawing into a texture of `size` physical pixels whose top-left corner
+    /// is at `origin` in the target's, at `scale` physical pixels per logical pixel.
+    pub(crate) fn viewport(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        origin: (u32, u32),
+        size: (u32, u32),
+        scale: f32,
+    ) -> Viewport {
+        let slot = self.arena.push(
+            device,
+            queue,
+            bytemuck::bytes_of(&ViewportData {
+                size: [size.0 as f32, size.1 as f32],
                 scale,
                 padding: 0.0,
+                origin: [origin.0 as f32, origin.1 as f32],
+                reserved: [0.0; 2],
             }),
         );
+        let mut groups = self.viewport_groups.borrow_mut();
+        while groups.len() <= slot.chunk {
+            groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("viewport"),
+                layout: &self.viewport_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &slot.buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(size_of::<ViewportData>() as u64),
+                    }),
+                }],
+            }));
+        }
+        Viewport {
+            group: groups[slot.chunk].clone(),
+            offset: slot.offset as u32,
+        }
+    }
+
+    /// Starts a frame: the viewports of the last one are written over.
+    pub(crate) fn begin_frame(&self) {
+        self.arena.begin_frame();
     }
 
     /// The quad that draws `command`, if it is a rectangle or a shadow.
@@ -213,6 +252,7 @@ impl Quads {
                     matrix: [cos, sin, -sin, cos],
                     params: [centre_x - turned_x, centre_y - turned_y, 0.0, 0.0],
                     arc: [0.0; 4],
+                    extra: [0.0; 4],
                 });
             }
             DrawCommand::Arc {
@@ -235,6 +275,7 @@ impl Quads {
                     matrix: [1.0, 0.0, 0.0, 1.0],
                     params: [0.0; 4],
                     arc: [*sweep, *thickness, *start, 0.0],
+                    extra: [0.0; 4],
                 });
             }
             DrawCommand::Gradient {
@@ -257,6 +298,55 @@ impl Quads {
                     matrix: [1.0, 0.0, 0.0, 1.0],
                     params: [0.0; 4],
                     arc: [0.0, 0.0, *angle, 1.0],
+                    extra: [0.0; 4],
+                });
+            }
+            DrawCommand::RadialGradient {
+                rect,
+                center,
+                radius,
+                from,
+                to,
+                corner_radius,
+            } => {
+                return Some(Instance {
+                    rect: [
+                        rect.origin.x,
+                        rect.origin.y,
+                        rect.size.width,
+                        rect.size.height,
+                    ],
+                    fill: self.channels(*from),
+                    border_color: self.channels(*to),
+                    radii: [*corner_radius; 4],
+                    matrix: [1.0, 0.0, 0.0, 1.0],
+                    params: [0.0; 4],
+                    arc: [0.0, 0.0, 0.0, 1.0],
+                    extra: [center.0, center.1, *radius, 1.0],
+                });
+            }
+            DrawCommand::SweepGradient {
+                rect,
+                center,
+                start,
+                from,
+                to,
+                corner_radius,
+            } => {
+                return Some(Instance {
+                    rect: [
+                        rect.origin.x,
+                        rect.origin.y,
+                        rect.size.width,
+                        rect.size.height,
+                    ],
+                    fill: self.channels(*from),
+                    border_color: self.channels(*to),
+                    radii: [*corner_radius; 4],
+                    matrix: [1.0, 0.0, 0.0, 1.0],
+                    params: [0.0; 4],
+                    arc: [0.0, 0.0, *start, 1.0],
+                    extra: [center.0, center.1, 0.0, 2.0],
                 });
             }
             _ => return None,
@@ -278,6 +368,7 @@ impl Quads {
             matrix: [1.0, 0.0, 0.0, 1.0],
             params: [0.0, 0.0, border_width, softness],
             arc: [0.0; 4],
+            extra: [0.0; 4],
         })
     }
 
@@ -297,9 +388,9 @@ impl Quads {
         })
     }
 
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, batch: &Batch) {
+    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, viewport: &Viewport, batch: &Batch) {
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.viewport_group, &[]);
+        viewport.set(pass);
         pass.set_vertex_buffer(0, batch.buffer.slice(..));
         pass.draw(0..6, 0..batch.count);
     }

@@ -1,14 +1,16 @@
 //! Creating the renderer: the device, the surface and what is built on them.
 
-use glyphon::{Cache, FontSystem, SwashCache, TextAtlas, Viewport};
+use glyphon::{Cache, FontSystem, SwashCache, TextAtlas};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::blur::Blur;
 use crate::composite::Composite;
 use crate::image::Images;
 use crate::path::Paths;
 use crate::quad::Quads;
+use crate::shaders::Shaders;
 use crate::{Renderer, Result, SurfaceFactory, srgb_to_linear};
 
 /// The window background, as sRGB.
@@ -57,6 +59,21 @@ impl Renderer {
     where
         T: Into<wgpu::SurfaceTarget<'static>> + Clone + 'static,
     {
+        Self::with_transparency(instance, target, size, false)
+    }
+
+    /// Like [`Renderer::new`], and when `transparent` the surface lets what is behind the
+    /// window show through wherever the frame is not opaque, if the platform supports it.
+    /// The window itself has to be created transparent too.
+    pub fn with_transparency<T>(
+        instance: wgpu::Instance,
+        target: T,
+        size: (u32, u32),
+        transparent: bool,
+    ) -> Result<Self>
+    where
+        T: Into<wgpu::SurfaceTarget<'static>> + Clone + 'static,
+    {
         let create_surface: SurfaceFactory =
             Box::new(move |instance| instance.create_surface(target.clone()));
         let surface = create_surface(&instance)?;
@@ -82,12 +99,16 @@ impl Renderer {
             width: size.0.max(1),
             height: size.1.max(1),
             present_mode: wgpu::PresentMode::Fifo,
-            // Opaque, so a window the compositor blends never shows through a faded layer.
-            alpha_mode: if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
-                wgpu::CompositeAlphaMode::Opaque
-            } else {
-                caps.alpha_modes.first().copied().unwrap_or_default()
-            },
+            // Opaque unless the window is transparent, so a window the compositor blends never shows through a faded layer.
+            alpha_mode: [
+                wgpu::CompositeAlphaMode::PostMultiplied,
+                wgpu::CompositeAlphaMode::PreMultiplied,
+            ]
+            .into_iter()
+            .filter(|_| transparent)
+            .chain([wgpu::CompositeAlphaMode::Opaque])
+            .find(|mode| caps.alpha_modes.contains(mode))
+            .unwrap_or_else(|| caps.alpha_modes.first().copied().unwrap_or_default()),
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
             color_space: wgpu::SurfaceColorSpace::Auto,
@@ -173,12 +194,13 @@ impl Renderer {
     ) -> Self {
         let (font_system, font_generation) = shared_fonts();
         let cache = Cache::new(&device);
-        let viewport = Viewport::new(&device, &cache);
         let atlas = TextAtlas::new(&device, &queue, &cache, format);
         let quads = Quads::new(&device, format);
         let images = Images::new(&device, format, quads.viewport_layout());
         let paths = Paths::new(&device, format, quads.viewport_layout());
-        let composite = Composite::new(&device, format);
+        let composite = Composite::new(&device, &queue, format);
+        let blur = Blur::new(&device, &queue, format);
+        let shaders = Shaders::new(&device, format, quads.viewport_layout());
         let [r, g, b] = BACKGROUND.map(|channel| {
             let value = f32::from(channel) / 255.0;
             f64::from(if format.is_srgb() {
@@ -201,13 +223,16 @@ impl Renderer {
             measured: HashMap::new(),
             frame: 0,
             swash_cache: SwashCache::new(),
-            viewport,
+            text_cache: cache,
+            text_viewports: HashMap::new(),
             atlas,
             text_renderers: Vec::new(),
             quads,
             images,
             paths,
             composite,
+            blur,
+            shaders,
             layer_pool: Default::default(),
             clear,
             surface,

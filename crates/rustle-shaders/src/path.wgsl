@@ -6,6 +6,7 @@ struct Viewport {
     size: vec2<f32>,
     scale: f32,
     padding: f32,
+    origin: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -24,7 +25,7 @@ struct Fragment {
 
 @vertex
 fn vertex(vertex: Vertex) -> Fragment {
-    let physical = vertex.position * viewport.scale;
+    let physical = vertex.position * viewport.scale - viewport.origin;
     var out: Fragment;
     out.position = vec4<f32>(
         physical.x / viewport.size.x * 2.0 - 1.0,

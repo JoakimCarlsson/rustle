@@ -9,7 +9,7 @@ use rustle_graphics::DrawCommand;
 use crate::composite::{Mask, Placement};
 use crate::quad::Instance;
 use crate::text::{Content, Setting, Shaped, legible_color, legible_weight, shape};
-use crate::{Renderer, image, path};
+use crate::{Renderer, image, path, shaders};
 
 impl Renderer {
     /// Splits `commands` into layers: each is the rectangles drawn together,
@@ -54,14 +54,100 @@ impl Renderer {
                             pivot: center,
                             rotation: *rotation,
                             scale: *scale,
-                            opacity: *alpha,
-                            mask: None,
+                            ..Placement::plain(*alpha, None)
                         }),
                         scissor,
+                        region: whole(scissor, target),
                     });
                     current = Layer::new(scissor);
                 }
-                DrawCommand::PopLayer => {
+                DrawCommand::PushEffect { rect, effect } => {
+                    push_layer(&mut frames, current.take());
+                    let mut filter = effect.color_filter.map(|filter| filter.matrix());
+                    if let (Some(matrix), true) = (filter.as_mut(), self.format.is_srgb()) {
+                        for row in 0..3 {
+                            matrix[row * 5 + 4] =
+                                crate::srgb_to_linear(matrix[row * 5 + 4].clamp(0.0, 1.0));
+                        }
+                    }
+                    let blur = effect.blur.max(0.0) * scale_factor;
+                    let placement = Placement {
+                        filter,
+                        blend: effect.blend_mode,
+                        blur,
+                        ..Placement::plain(effect.alpha, None)
+                    };
+                    let inner = scissor(&clips, scale_factor, target);
+                    let outer = if blur > 0.0 {
+                        scissor_within(&clips, rect, scale_factor, target)
+                    } else {
+                        inner
+                    };
+                    let region = if blur > 0.0 {
+                        let reach = (blur * 3.0).ceil() as u32 + 2;
+                        intersection(
+                            whole(inner, target),
+                            grow(whole(outer, target), reach, target),
+                        )
+                    } else {
+                        whole(inner, target)
+                    };
+                    frames.push(Frame {
+                        items: Vec::new(),
+                        placement: Some(placement),
+                        scissor: outer,
+                        region,
+                    });
+                    current = Layer::new(inner);
+                }
+                DrawCommand::BackdropBlur {
+                    rect,
+                    corner_radius,
+                    blur,
+                } => {
+                    push_layer(&mut frames, current.take());
+                    let pixels = |value: f32| value * scale_factor;
+                    let item = Item::Backdrop {
+                        rect: [
+                            pixels(rect.origin.x),
+                            pixels(rect.origin.y),
+                            pixels(rect.size.width),
+                            pixels(rect.size.height),
+                        ],
+                        corner_radius: pixels(*corner_radius),
+                        sigma: pixels(blur.max(0.0)),
+                        scissor: scissor_within(&clips, rect, scale_factor, target),
+                    };
+                    if let Some(frame) = frames.last_mut() {
+                        frame.items.push(item);
+                    }
+                    current = Layer::new(scissor(&clips, scale_factor, target));
+                }
+                DrawCommand::Shader {
+                    rect,
+                    corner_radius,
+                    brush,
+                } => {
+                    push_layer(&mut frames, current.take());
+                    let item = Item::Shader {
+                        scissor: scissor(&clips, scale_factor, target),
+                        call: shaders::Call {
+                            rect: [
+                                rect.origin.x,
+                                rect.origin.y,
+                                rect.size.width,
+                                rect.size.height,
+                            ],
+                            corner_radius: *corner_radius,
+                            brush: brush.clone(),
+                        },
+                    };
+                    if let Some(frame) = frames.last_mut() {
+                        frame.items.push(item);
+                    }
+                    current = Layer::new(scissor(&clips, scale_factor, target));
+                }
+                DrawCommand::PopLayer | DrawCommand::PopEffect => {
                     push_layer(&mut frames, current.take());
                     if frames.len() > 1 {
                         close_group(&mut frames);
@@ -85,12 +171,9 @@ impl Renderer {
                         let pixels = |value: f32| value * scale_factor;
                         frames.push(Frame {
                             items: Vec::new(),
-                            placement: Some(Placement {
-                                pivot: (0.0, 0.0),
-                                rotation: 0.0,
-                                scale: 1.0,
-                                opacity: 1.0,
-                                mask: Some(Mask {
+                            placement: Some(Placement::plain(
+                                1.0,
+                                Some(Mask {
                                     rect: [
                                         pixels(rect.origin.x),
                                         pixels(rect.origin.y),
@@ -99,8 +182,9 @@ impl Renderer {
                                     ],
                                     radii: radii.map(pixels),
                                 }),
-                            }),
+                            )),
                             scissor,
+                            region: whole(scissor, target),
                         });
                     }
                     current = Layer::new(scissor);
@@ -116,6 +200,8 @@ impl Renderer {
                 DrawCommand::Rect { .. }
                 | DrawCommand::Shadow { .. }
                 | DrawCommand::Gradient { .. }
+                | DrawCommand::RadialGradient { .. }
+                | DrawCommand::SweepGradient { .. }
                 | DrawCommand::Arc { .. }
                 | DrawCommand::Line { .. } => {
                     // A rectangle after an outline, text or a picture must paint over it, so it starts a new layer.
@@ -307,10 +393,24 @@ impl Layer {
 /// Layers and groups of layers, in drawing order.
 pub(super) enum Item {
     Layer(Layer),
+    /// A rounded rectangle filled by a program's shader.
+    Shader {
+        scissor: Option<(u32, u32, u32, u32)>,
+        call: shaders::Call,
+    },
+    /// What is drawn so far in the rectangle, replaced by a blur of it. All in physical pixels.
+    Backdrop {
+        rect: [f32; 4],
+        corner_radius: f32,
+        sigma: f32,
+        scissor: Option<(u32, u32, u32, u32)>,
+    },
     /// Layers drawn as one picture and put on what is below as `placement` says.
     Group {
         placement: Placement,
         scissor: Option<(u32, u32, u32, u32)>,
+        /// Where the group's content can lie, in physical pixels: what its texture holds.
+        region: (u32, u32, u32, u32),
         items: Vec<Item>,
     },
 }
@@ -321,6 +421,7 @@ struct Frame {
     items: Vec<Item>,
     placement: Option<Placement>,
     scissor: Option<(u32, u32, u32, u32)>,
+    region: (u32, u32, u32, u32),
 }
 
 fn push_layer(frames: &mut [Frame], layer: Option<Layer>) {
@@ -334,13 +435,72 @@ fn close_group(frames: &mut Vec<Frame>) {
     let Some(frame) = frames.pop() else {
         return;
     };
+    if frame.items.is_empty() {
+        return;
+    }
     if let (Some(placement), Some(parent)) = (frame.placement, frames.last_mut()) {
         parent.items.push(Item::Group {
             placement,
             scissor: frame.scissor,
+            region: frame.region,
             items: frame.items,
         });
     }
+}
+
+/// `scissor` as a rectangle, which is the whole target without one.
+pub(super) fn whole(
+    scissor: Option<(u32, u32, u32, u32)>,
+    target: (u32, u32),
+) -> (u32, u32, u32, u32) {
+    scissor.unwrap_or((0, 0, target.0, target.1))
+}
+
+/// What two rectangles (left, top, width and height) have in common; empty if nothing.
+pub(super) fn intersection(
+    a: (u32, u32, u32, u32),
+    b: (u32, u32, u32, u32),
+) -> (u32, u32, u32, u32) {
+    let left = a.0.max(b.0);
+    let top = a.1.max(b.1);
+    let right = (a.0 + a.2).min(b.0 + b.2);
+    let bottom = (a.1 + a.3).min(b.1 + b.3);
+    (
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    )
+}
+
+/// `rect` grown by `by` pixels on every side, kept inside the target.
+pub(super) fn grow(
+    rect: (u32, u32, u32, u32),
+    by: u32,
+    target: (u32, u32),
+) -> (u32, u32, u32, u32) {
+    let left = rect.0.saturating_sub(by);
+    let top = rect.1.saturating_sub(by);
+    let right = (rect.0 + rect.2 + by).min(target.0);
+    let bottom = (rect.1 + rect.3 + by).min(target.1);
+    (
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    )
+}
+
+/// Like [`scissor`], with `rect` as one more clip.
+fn scissor_within(
+    clips: &[Rect],
+    rect: &Rect,
+    scale_factor: f32,
+    target: (u32, u32),
+) -> Option<(u32, u32, u32, u32)> {
+    let mut within = clips.to_vec();
+    within.push(*rect);
+    scissor(&within, scale_factor, target)
 }
 
 /// The pixels the innermost of `clips` leaves visible, or `None` without clips.
@@ -404,10 +564,14 @@ fn bounds(command: &DrawCommand) -> Option<(f32, f32, f32, f32)> {
             around(rect, border.map_or(0.0, |border| border.width) + 1.0)
         }
         DrawCommand::Gradient { rect, .. }
+        | DrawCommand::RadialGradient { rect, .. }
+        | DrawCommand::SweepGradient { rect, .. }
+        | DrawCommand::Shader { rect, .. }
         | DrawCommand::Arc { rect, .. }
         | DrawCommand::Image { rect, .. }
         | DrawCommand::Path { rect, .. } => around(rect, 2.0),
         DrawCommand::Shadow { rect, blur, .. } => around(rect, blur * 2.0 + 2.0),
+        DrawCommand::BackdropBlur { rect, .. } => around(rect, 1.0),
         DrawCommand::Line {
             from, to, width, ..
         } => (
@@ -463,6 +627,8 @@ fn bounds(command: &DrawCommand) -> Option<(f32, f32, f32, f32)> {
         }
         DrawCommand::PushLayer { .. }
         | DrawCommand::PopLayer
+        | DrawCommand::PushEffect { .. }
+        | DrawCommand::PopEffect
         | DrawCommand::PushClip { .. }
         | DrawCommand::PushRoundedClip { .. }
         | DrawCommand::PopClip => return None,
