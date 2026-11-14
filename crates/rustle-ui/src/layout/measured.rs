@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Rect, Size};
@@ -11,17 +12,20 @@ use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
 use crate::{CharPosition, TextEditing};
 
+/// A transient layout result retained until painting finishes.
 pub(super) struct Measured {
     pub(super) size: Size,
     pub(super) paint: Paint,
 }
 
+/// Painting data retained until normal and deferred painting finish.
+/// Rich spans are taken once by the painter and transferred into the display list.
 pub(super) enum Paint {
     Canvas {
         draw: Rc<dyn Fn(Size) -> Vec<DrawCommand>>,
     },
     RichText {
-        spans: Vec<StyledSpan>,
+        spans: Cell<Vec<StyledSpan>>,
         style: TextStyle,
         editing: Option<TextEditing>,
     },

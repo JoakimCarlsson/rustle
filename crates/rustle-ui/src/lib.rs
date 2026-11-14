@@ -15,6 +15,9 @@ mod modifier;
 mod scroll;
 mod semantics;
 
+#[cfg(test)]
+mod skippable_tests;
+
 pub use canvas::Canvas;
 pub use cursor::CursorIcon;
 pub use input::{
@@ -129,9 +132,71 @@ pub enum Content {
     },
 }
 
+/// Children collected by a scope, sharing an unchanged cached batch until it is extended.
+#[derive(Default)]
+enum Scope {
+    #[default]
+    Empty,
+    Owned(Vec<Node>),
+    Shared(Rc<Vec<Node>>),
+}
+
+impl Scope {
+    /// Returns the number of nodes currently collected in this scope.
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Owned(children) => children.len(),
+            Self::Shared(children) => children.len(),
+        }
+    }
+
+    /// Returns mutable children, copying a shared batch only when this scope is extended.
+    fn children_mut(&mut self) -> &mut Vec<Node> {
+        if matches!(self, Self::Empty) {
+            *self = Self::Owned(Vec::new());
+        }
+        match self {
+            Self::Owned(children) => children,
+            Self::Shared(children) => Rc::make_mut(children),
+            Self::Empty => unreachable!(),
+        }
+    }
+
+    /// Appends a cached batch, retaining its allocation when it is the scope's first output.
+    fn append(&mut self, children: Rc<Vec<Node>>) {
+        if children.is_empty() {
+            return;
+        }
+        if matches!(self, Self::Empty) {
+            *self = Self::Shared(children);
+        } else {
+            self.children_mut().extend(children.iter().cloned());
+        }
+    }
+
+    /// Returns owned children, cloning only when another owner retains the cached batch.
+    fn into_vec(self) -> Vec<Node> {
+        match self {
+            Self::Empty => Vec::new(),
+            Self::Owned(children) => children,
+            Self::Shared(children) => Rc::unwrap_or_clone(children),
+        }
+    }
+
+    /// Returns shared children without copying a cached batch.
+    fn into_shared(self) -> Rc<Vec<Node>> {
+        match self {
+            Self::Empty => Rc::new(Vec::new()),
+            Self::Owned(children) => Rc::new(children),
+            Self::Shared(children) => children,
+        }
+    }
+}
+
 thread_local! {
     /// One entry per open scope, each holding the children emitted so far.
-    static SCOPES: RefCell<Vec<Vec<Node>>> = const { RefCell::new(Vec::new()) };
+    static SCOPES: RefCell<Vec<Scope>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Restores the scope stack to `depth` on drop, so a panic inside a
@@ -141,16 +206,21 @@ struct ScopeGuard {
 }
 
 impl Drop for ScopeGuard {
+    /// Restores the stack depth that preceded this collection, including during unwinding.
     fn drop(&mut self) {
         SCOPES.with(|scopes| scopes.borrow_mut().truncate(self.depth));
     }
 }
 
-/// Runs `content` in a fresh scope and returns the nodes it emitted.
-pub fn collect(content: impl FnOnce()) -> Vec<Node> {
+/// Runs `content` in a fresh scope and returns its owned or shared children.
+///
+/// # Panics
+///
+/// Propagates a panic from `content`, restoring the previous scope stack.
+fn collect_scope(content: impl FnOnce()) -> Scope {
     let depth = SCOPES.with(|scopes| {
         let mut scopes = scopes.borrow_mut();
-        scopes.push(Vec::new());
+        scopes.push(Scope::Empty);
         scopes.len() - 1
     });
     let _guard = ScopeGuard { depth };
@@ -158,6 +228,15 @@ pub fn collect(content: impl FnOnce()) -> Vec<Node> {
     SCOPES
         .with(|scopes| scopes.borrow_mut().pop())
         .expect("composition scope stack was corrupted")
+}
+
+/// Runs `content` in a fresh scope and returns the nodes it emitted.
+///
+/// # Panics
+///
+/// Propagates a panic from `content`, restoring the previous scope stack.
+pub fn collect(content: impl FnOnce()) -> Vec<Node> {
+    collect_scope(content).into_vec()
 }
 
 /// Emits `node` into the current scope.
@@ -168,7 +247,7 @@ pub fn collect(content: impl FnOnce()) -> Vec<Node> {
 pub fn emit(node: Node) {
     let node = SCOPES.with(|scopes| match scopes.borrow_mut().last_mut() {
         Some(children) => {
-            children.push(node);
+            children.children_mut().push(node);
             None
         }
         None => Some(node),
@@ -184,15 +263,15 @@ pub fn emit(node: Node) {
 /// A single root element is returned as is; anything else is placed on top of
 /// each other by an [`Overlay`].
 pub fn compose(root: impl FnOnce()) -> Node {
-    let mut children = collect(root);
+    let children = collect_scope(root);
     if children.len() == 1 {
-        children.remove(0)
+        children.into_vec().remove(0)
     } else {
         Node {
             modifier: Modifier::new(),
             content: Content::Layout {
                 policy: Rc::new(Overlay::default()),
-                children: Rc::new(children),
+                children: children.into_shared(),
             },
         }
     }
@@ -204,12 +283,12 @@ pub fn compose(root: impl FnOnce()) -> Node {
 /// remembers belongs to this call.
 #[track_caller]
 pub fn layout(modifier: Modifier, policy: impl Layout + 'static, content: impl FnOnce()) {
-    let children = rustle_runtime::group(|| collect(content));
+    let children = rustle_runtime::group(|| collect_scope(content).into_shared());
     emit(Node {
         modifier,
         content: Content::Layout {
             policy: Rc::new(policy),
-            children: Rc::new(children),
+            children,
         },
     });
 }
@@ -222,13 +301,24 @@ pub fn layout(modifier: Modifier, policy: impl Layout + 'static, content: impl F
 /// tree that is expensive to compose and often unchanged, passing everything
 /// it takes from outside in `deps`.
 ///
-/// Anything in `content` that reads a composition local stops it being skipped.
+/// Cached children are shared until surrounding output requires an owned list.
+/// Effects inside a skipped block do not run again.
 #[track_caller]
 pub fn skippable<D: PartialEq + 'static>(deps: D, content: impl FnOnce()) {
-    let nodes = rustle_runtime::memo(deps, || collect(content));
-    for node in nodes {
-        emit(node);
-    }
+    let nodes = rustle_runtime::memo(deps, || collect_scope(content).into_shared());
+    let uncollected = SCOPES.with(|scopes| {
+        let mut scopes = scopes.borrow_mut();
+        if let Some(scope) = scopes.last_mut() {
+            scope.append(nodes);
+            None
+        } else {
+            Some(nodes)
+        }
+    });
+    assert!(
+        uncollected.is_none_or(|nodes| nodes.is_empty()),
+        "composables can only be called during composition"
+    );
 }
 
 /// Emits an area drawn by `draw`, which paints shapes, lines and text in the

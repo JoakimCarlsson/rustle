@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::{Border, Color, DrawCommand};
-use rustle_text::{StyledSpan, TextMeasurer, TextSpan};
+use rustle_text::{TextMeasurer, TextSpan};
 use rustle_unit::Constraints;
 
 use super::ContentScale;
@@ -50,6 +50,7 @@ struct Deferred<'a> {
     measured: &'a Measured,
 }
 
+/// Paints the transient measured tree into an independently owned display list.
 struct Painter<'a> {
     /// The drag-end handler of the area being painted, for the drag handler inside it.
     pending_end: Option<Rc<dyn Fn()>>,
@@ -226,6 +227,7 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// Paints `measured` once at `origin`, deferring raised descendants and consuming rich spans.
     fn paint(&mut self, measured: &'a Measured, origin: Offset) {
         let rect = Rect::new(origin, measured.size);
         match &measured.paint {
@@ -401,6 +403,7 @@ impl<'a> Painter<'a> {
                 style,
                 editing,
             } => {
+                let mut spans = spans.take();
                 if self.merging == 0 {
                     let label: String = spans.iter().map(|span| span.text.as_str()).collect();
                     self.list.semantics.push(SemanticsNode {
@@ -409,12 +412,12 @@ impl<'a> Painter<'a> {
                         on_click: None,
                     });
                 }
-                let joined: String = spans.iter().map(|span| span.text.as_str()).collect();
                 if let Some(editing) = editing
                     && let Some(layout) = editing.layout.borrow().clone()
                     && let Some((start, end)) = editing.selection
                     && start != end
                 {
+                    let joined: String = spans.iter().map(|span| span.text.as_str()).collect();
                     let byte_of = |index: usize| {
                         joined
                             .char_indices()
@@ -440,25 +443,21 @@ impl<'a> Painter<'a> {
                         span.underline || span.strikethrough || span.background.is_some()
                     });
                 let layout = decorated.then(|| {
-                    rustle_text::layout_styled(spans, style, Some(measured.size.width + 1.0))
+                    rustle_text::layout_styled(&spans, style, Some(measured.size.width + 1.0))
                 });
                 if let Some(layout) = &layout {
                     let faded = |color| self.faded(color);
                     let backgrounds = layout.background_commands(origin, &faded);
                     self.list.commands.extend(backgrounds);
                 }
-                let faded = spans
-                    .iter()
-                    .map(|span| StyledSpan {
-                        color: self.faded(span.color),
-                        ..span.clone()
-                    })
-                    .collect();
+                for span in &mut spans {
+                    span.color = self.faded(span.color);
+                }
                 self.list.commands.push(DrawCommand::RichText {
                     x: origin.x,
                     y: origin.y,
                     width: measured.size.width,
-                    spans: faded,
+                    spans,
                     font_size: style.font_size,
                     line_height: style.line_height,
                     align: style.align,
@@ -891,3 +890,7 @@ impl<'a> Painter<'a> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "paint_tests.rs"]
+mod tests;

@@ -51,6 +51,14 @@ make lint
 
 `cargo run --example embedded -p rustle` checks the embedding API without a window: it clicks, types through an input method, replaces the root and draws two interfaces into textures it made.
 
+To measure animated-frame CPU work and offscreen rendering in release mode:
+
+```sh
+BENCH_ROWS=600 BENCH_FRAMES=300 cargo run --release -p rustle --example bench
+```
+
+The benchmark compares ordinary and skippable rows in a non-lazy scrolling list at 900×700, after five warmup frames. It reports composition and layout/paint medians, render-plus-readback time, and measured total-frame median/p95/p99. The rendering stage includes GPU synchronization and pixel readback, not just GPU execution; these are not native-window FPS measurements. Increase `BENCH_ROWS` to check scaling, use a positive `BENCH_FRAMES`, and repeat runs to account for other work on the machine. For application lists that should only compose visible items, use the lazy list APIs instead.
+
 To see what a change looks like without opening a window, draw one frame offscreen to a PNG:
 
 ```

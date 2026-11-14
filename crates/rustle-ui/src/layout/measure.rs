@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Size};
@@ -9,6 +10,7 @@ use super::measured::{Measured, Paint};
 use crate::modifier::Element;
 use crate::{CharPosition, Content, Node};
 
+/// Measures `node` within `constraints`, retaining its painting data.
 pub(super) fn measure_node(
     node: &Node,
     constraints: Constraints,
@@ -17,6 +19,7 @@ pub(super) fn measure_node(
     measure_modified(&node.modifier.elements, node, constraints, text)
 }
 
+/// Wraps `inner` in a paint modifier without changing its measured size.
 fn wrap(inner: Measured, paint: impl FnOnce(Box<Measured>) -> Paint) -> Measured {
     Measured {
         size: inner.size,
@@ -363,6 +366,7 @@ fn character_boundaries(
     (layout, boundaries)
 }
 
+/// Measures a node's content, retaining owned text and resolved rich spans.
 fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMeasurer) -> Measured {
     match &node.content {
         Content::Text {
@@ -423,7 +427,7 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
                     constraints.max_width,
                 )),
                 paint: Paint::RichText {
-                    spans,
+                    spans: Cell::new(spans),
                     style: *style,
                     editing,
                 },

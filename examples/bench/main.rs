@@ -3,11 +3,12 @@
 //! Run it with `cargo run --release --example bench`. It composes a long list
 //! next to a value that changes every frame, and times the three stages of a
 //! frame separately: composing, laying out and painting into commands, and
-//! turning the commands into GPU work (`layers`, measured through an offscreen
-//! snapshot, which also reads the picture back, so it is an upper bound).
+//! turning the commands into GPU work (measured through an offscreen snapshot,
+//! including synchronization and readback, not isolated GPU execution). It also
+//! reports the measured frame median, p95 and p99 to reveal long frames.
 //!
 //! Set `BENCH_ROWS` to change the number of rows (default 600, five nodes each
-//! plus a few more) and `BENCH_FRAMES` for the number of timed frames.
+//! plus a few more) and `BENCH_FRAMES` for a positive number of timed frames.
 
 use std::time::{Duration, Instant};
 
@@ -77,6 +78,7 @@ struct Timings {
     compose: Vec<Duration>,
     layout: Vec<Duration>,
     gpu: Vec<Duration>,
+    total: Vec<Duration>,
 }
 
 /// The median in milliseconds, which other work on the machine disturbs less than the mean.
@@ -85,6 +87,19 @@ fn median(times: &mut [Duration]) -> f64 {
     times[times.len() / 2].as_secs_f64() * 1000.0
 }
 
+/// Returns a nearest-rank percentile in milliseconds from ascending frame times.
+///
+/// # Panics
+/// Panics if `times` is empty or `percent` is outside 1 through 100.
+fn percentile(times: &[Duration], percent: usize) -> f64 {
+    assert!(!times.is_empty() && (1..=100).contains(&percent));
+    times[(times.len() * percent).div_ceil(100) - 1].as_secs_f64() * 1000.0
+}
+
+/// Times `frames` warmed-up animated frames for `rows`, optionally skipping rows.
+///
+/// # Errors
+/// Returns an error if renderer creation, composition output or readback fails.
 fn run(
     rows: usize,
     skip: bool,
@@ -105,9 +120,9 @@ fn run(
     let constraints = Constraints::loose(Size::new(width as f32, height as f32));
     let mut timings = Timings::default();
     let mut nodes = 0;
-    // Warm up: shapes the text, fills caches.
     for frame in 0..frames + 5 {
         value.set((frame % 100) as f32 / 100.0);
+        let frame_start = Instant::now();
         let start = Instant::now();
         composition.recompose();
         let composed = start.elapsed();
@@ -119,15 +134,21 @@ fn run(
         let start = Instant::now();
         renderer.snapshot(&list.commands, 1.0)?;
         let drawn = start.elapsed();
+        let total = frame_start.elapsed();
         if frame >= 5 {
             timings.compose.push(composed);
             timings.layout.push(laid_out);
             timings.gpu.push(drawn);
+            timings.total.push(total);
         }
     }
     Ok((timings, nodes))
 }
 
+/// Runs both row modes and prints their stage medians and frame-time percentiles.
+///
+/// # Errors
+/// Returns an error if no frames are requested or a benchmark run fails.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rows = std::env::var("BENCH_ROWS")
         .ok()
@@ -137,14 +158,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|frames| frames.parse().ok())
         .unwrap_or(60);
+    if frames == 0 {
+        return Err("BENCH_FRAMES must be greater than zero".into());
+    }
     for skip in [false, true] {
         let (mut timings, commands) = run(rows, skip, frames)?;
         println!(
-            "rows={rows} skippable={skip} commands={commands}: median per frame: compose {:.2} ms, layout+paint {:.2} ms, gpu {:.2} ms",
+            "rows={rows} skippable={skip} commands={commands}: median per frame: compose {:.2} ms, layout+paint {:.2} ms, render+readback {:.2} ms; total median {:.2} ms, p95 {:.2} ms, p99 {:.2} ms",
             median(&mut timings.compose),
             median(&mut timings.layout),
             median(&mut timings.gpu),
+            median(&mut timings.total),
+            percentile(&timings.total, 95),
+            percentile(&timings.total, 99),
         );
     }
     Ok(())
+}
+
+/// Regression coverage for frame-time percentile reporting.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Nearest-rank tails select samples without interpolation, including short runs.
+    #[test]
+    fn percentiles_report_tail_samples() {
+        let times: Vec<_> = (1..=100).map(Duration::from_millis).collect();
+        assert_eq!(percentile(&times, 95), 95.0);
+        assert_eq!(percentile(&times, 99), 99.0);
+        assert_eq!(percentile(&times[..1], 99), 1.0);
+        assert_eq!(percentile(&times[..3], 95), 3.0);
+    }
 }
