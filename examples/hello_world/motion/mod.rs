@@ -9,10 +9,12 @@ mod counter;
 mod easing;
 mod feedback;
 mod kanban;
+mod lazy;
 mod loaders;
 mod stagger;
 mod swipe;
 mod tabs;
+mod transitions;
 
 use std::time::Duration;
 
@@ -27,10 +29,12 @@ use counter::counter_and_bars;
 use easing::easing_race;
 use feedback::feedback;
 use kanban::kanban;
+use lazy::lazy_lists;
 use loaders::loaders;
 use stagger::stagger;
 use swipe::swipe_list;
 use tabs::sliding_tabs;
+use transitions::transitions;
 
 /// A value that runs from 0 to 1 over `seconds`, again and again.
 #[composable]
@@ -92,7 +96,9 @@ pub fn motion_page(ctx: &Ctx) {
                     });
                 },
             );
+            transitions();
             kanban(ctx);
+            lazy_lists();
         },
     );
 }

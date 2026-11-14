@@ -9,11 +9,18 @@
 //!
 //! Set `BENCH_ROWS` to change the number of rows (default 600, five nodes each
 //! plus a few more) and `BENCH_FRAMES` for a positive number of timed frames.
+//!
+//! A second scenario, `effects`, draws a grid of cards that each have a rounded clip,
+//! an effect layer and (every third card) a backdrop blur, straight to the renderer,
+//! and times the frame including readback. Set `BENCH_SCENARIO` to `list` or `effects`
+//! to run only one, `BENCH_CARDS` for the number of cards (default 300) and
+//! `BENCH_SIZE` as `WIDTHxHEIGHT` (default 1920x1080).
 
 use std::time::{Duration, Instant};
 
 use rustle::prelude::*;
-use rustle_geometry::Size;
+use rustle_geometry::{Offset, Rect, Size};
+use rustle_graphics::{DrawCommand, LayerEffect};
 use rustle_unit::Constraints;
 use rustle_wgpu::Renderer;
 
@@ -34,41 +41,79 @@ fn row_item(index: usize) {
     );
 }
 
-/// Builds the scene. With `skip`, each row is a skippable block, so rows whose
-/// inputs did not change are not composed again.
-fn scene(rows: usize, skip: bool, value: f32) {
+/// How the scene is composed.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    /// The root composes everything again on every change.
+    Plain,
+    /// Each row is a skippable block, so rows with equal inputs are not composed again.
+    Skippable,
+    /// The changing bar and the list are restartable blocks: the bar alone is composed
+    /// again, and the list keeps its laid-out subtree.
+    Restartable,
+}
+
+impl Mode {
+    /// The name printed with the results.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::Skippable => "skippable",
+            Self::Restartable => "restartable",
+        }
+    }
+}
+
+/// The bar and percentage that change every frame.
+fn bar(value: f32) {
+    row_with(
+        Modifier::new().fill_max_width().height(24.0).padding(4.0),
+        || {
+            spacer(
+                Modifier::new()
+                    .width(10.0 + value * 400.0)
+                    .fill_max_height()
+                    .background_rounded(Color::rgb(80, 160, 255), 4.0),
+            );
+            text(format!("{:.0}%", value * 100.0));
+        },
+    );
+}
+
+/// The scrolling list of `rows` rows.
+fn list(rows: usize, mode: Mode, state: &ScrollState) {
+    column_with(
+        Modifier::new()
+            .weight(1.0)
+            .fill_max_width()
+            .vertical_scroll(state),
+        || {
+            for index in 0..rows {
+                key(index, || {
+                    if mode == Mode::Skippable {
+                        rustle::skippable(index, || row_item(index));
+                    } else {
+                        row_item(index);
+                    }
+                });
+            }
+        },
+    );
+}
+
+/// Builds the scene around the value that changes every frame.
+fn scene(rows: usize, mode: Mode, value: &State<f32>) {
+    let state = remember_scroll_state();
     column_with(Modifier::new().fill_max_size(), || {
-        // The part that changes every frame.
-        row_with(
-            Modifier::new().fill_max_width().height(24.0).padding(4.0),
-            || {
-                spacer(
-                    Modifier::new()
-                        .width(10.0 + value * 400.0)
-                        .fill_max_height()
-                        .background_rounded(Color::rgb(80, 160, 255), 4.0),
-                );
-                text(format!("{:.0}%", value * 100.0));
-            },
-        );
-        let state = remember_scroll_state();
-        column_with(
-            Modifier::new()
-                .weight(1.0)
-                .fill_max_width()
-                .vertical_scroll(&state),
-            || {
-                for index in 0..rows {
-                    key(index, || {
-                        if skip {
-                            rustle::skippable(index, || row_item(index));
-                        } else {
-                            row_item(index);
-                        }
-                    });
-                }
-            },
-        );
+        if mode == Mode::Restartable {
+            let value = value.clone();
+            rustle::restartable((), move || bar(value.get()));
+            let state = state.clone();
+            rustle::restartable(rows, move || list(rows, mode, &state));
+        } else {
+            bar(value.get());
+            list(rows, mode, &state);
+        }
     });
 }
 
@@ -96,13 +141,13 @@ fn percentile(times: &[Duration], percent: usize) -> f64 {
     times[(times.len() * percent).div_ceil(100) - 1].as_secs_f64() * 1000.0
 }
 
-/// Times `frames` warmed-up animated frames for `rows`, optionally skipping rows.
+/// Times `frames` warmed-up animated frames for `rows` composed as `mode`.
 ///
 /// # Errors
 /// Returns an error if renderer creation, composition output or readback fails.
 fn run(
     rows: usize,
-    skip: bool,
+    mode: Mode,
     frames: u32,
 ) -> Result<(Timings, usize), Box<dyn std::error::Error>> {
     let (width, height) = (900, 700);
@@ -111,7 +156,7 @@ fn run(
     let mut composition = rustle_ui::composition(move || {
         let value = remember(|| 0.0_f32);
         *inner.borrow_mut() = Some(value.clone());
-        scene(rows, skip, value.get());
+        scene(rows, mode, &value);
     });
     composition.compose();
     let value = shared.borrow().clone().ok_or("no state")?;
@@ -145,15 +190,80 @@ fn run(
     Ok((timings, nodes))
 }
 
-/// Runs both row modes and prints their stage medians and frame-time percentiles.
+/// The commands for `cards` cards in a grid over a `width` by `height` window: each is a
+/// rounded clip holding a fill, an effect layer and, for every third card, a backdrop blur.
+fn effect_cards(cards: usize, width: f32, height: f32, shift: f32) -> Vec<DrawCommand> {
+    let (card_width, card_height) = (120.0, 80.0);
+    let columns = ((width / (card_width + 8.0)) as usize).max(1);
+    let mut commands = vec![DrawCommand::Gradient {
+        rect: Rect::new(Offset::new(0.0, 0.0), Size::new(width, height)),
+        from: Color::rgb(30, 60, 160),
+        to: Color::rgb(160, 40, 90),
+        angle: 0.8,
+        corner_radius: 0.0,
+    }];
+    for index in 0..cards {
+        let x = (index % columns) as f32 * (card_width + 8.0) + 4.0 + shift;
+        let y = (index / columns) as f32 * (card_height + 8.0) + 4.0;
+        let rect = Rect::new(Offset::new(x, y), Size::new(card_width, card_height));
+        commands.push(DrawCommand::PushRoundedClip {
+            rect,
+            radii: [12.0; 4],
+        });
+        if index % 3 == 0 {
+            commands.push(DrawCommand::BackdropBlur {
+                rect,
+                corner_radius: 12.0,
+                blur: 6.0,
+            });
+        }
+        commands.push(DrawCommand::PushEffect {
+            rect,
+            effect: LayerEffect {
+                alpha: 0.85,
+                ..LayerEffect::default()
+            },
+        });
+        commands.push(DrawCommand::Rect {
+            rect,
+            color: Color::rgba(255, 255, 255, 90),
+            corner_radius: 0.0,
+            border: None,
+        });
+        commands.push(DrawCommand::PopEffect);
+        commands.push(DrawCommand::PopClip);
+    }
+    commands
+}
+
+/// Times `frames` warmed-up frames of the effect cards, returning each frame's time.
+///
+/// # Errors
+/// Returns an error if the renderer cannot be created or a frame cannot be read back.
+fn run_effects(
+    cards: usize,
+    (width, height): (u32, u32),
+    frames: u32,
+) -> Result<Vec<Duration>, Box<dyn std::error::Error>> {
+    let mut renderer = Renderer::offscreen(width, height)?;
+    let mut times = Vec::new();
+    for frame in 0..frames + 5 {
+        let commands = effect_cards(cards, width as f32, height as f32, (frame % 8) as f32);
+        let start = Instant::now();
+        renderer.snapshot(&commands, 1.0)?;
+        if frame >= 5 {
+            times.push(start.elapsed());
+        }
+    }
+    Ok(times)
+}
+
+/// Runs the scenarios chosen by `BENCH_SCENARIO` and prints their timings.
 ///
 /// # Errors
 /// Returns an error if no frames are requested or a benchmark run fails.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let rows = std::env::var("BENCH_ROWS")
-        .ok()
-        .and_then(|rows| rows.parse().ok())
-        .unwrap_or(600);
+    let scenario = std::env::var("BENCH_SCENARIO").unwrap_or_default();
     let frames: u32 = std::env::var("BENCH_FRAMES")
         .ok()
         .and_then(|frames| frames.parse().ok())
@@ -161,10 +271,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if frames == 0 {
         return Err("BENCH_FRAMES must be greater than zero".into());
     }
-    for skip in [false, true] {
-        let (mut timings, commands) = run(rows, skip, frames)?;
+    if scenario != "effects" {
+        lists(frames)?;
+    }
+    if scenario != "list" {
+        let cards = std::env::var("BENCH_CARDS")
+            .ok()
+            .and_then(|cards| cards.parse().ok())
+            .unwrap_or(300);
+        let size = std::env::var("BENCH_SIZE")
+            .ok()
+            .and_then(|size| {
+                let (width, height) = size.split_once('x')?;
+                Some((width.parse().ok()?, height.parse().ok()?))
+            })
+            .unwrap_or((1920, 1080));
+        let mut times = run_effects(cards, size, frames)?;
         println!(
-            "rows={rows} skippable={skip} commands={commands}: median per frame: compose {:.2} ms, layout+paint {:.2} ms, render+readback {:.2} ms; total median {:.2} ms, p95 {:.2} ms, p99 {:.2} ms",
+            "effects cards={cards} size={}x{}: render+readback median {:.2} ms, p95 {:.2} ms, p99 {:.2} ms",
+            size.0,
+            size.1,
+            median(&mut times),
+            percentile(&times, 95),
+            percentile(&times, 99),
+        );
+    }
+    Ok(())
+}
+
+/// Runs the list in each composition mode and prints the stage medians and frame-time percentiles.
+///
+/// # Errors
+/// Returns an error if a benchmark run fails.
+fn lists(frames: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let rows = std::env::var("BENCH_ROWS")
+        .ok()
+        .and_then(|rows| rows.parse().ok())
+        .unwrap_or(600);
+    for mode in [Mode::Plain, Mode::Skippable, Mode::Restartable] {
+        let (mut timings, commands) = run(rows, mode, frames)?;
+        println!(
+            "rows={rows} mode={} commands={commands}: median per frame: compose {:.2} ms, layout+paint {:.2} ms, render+readback {:.2} ms; total median {:.2} ms, p95 {:.2} ms, p99 {:.2} ms",
+            mode.name(),
             median(&mut timings.compose),
             median(&mut timings.layout),
             median(&mut timings.gpu),

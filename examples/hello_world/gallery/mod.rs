@@ -5,6 +5,8 @@ mod alerts;
 mod buttons;
 mod cards;
 mod forms;
+mod gestures;
+mod layouts;
 mod navigation;
 mod overlays;
 
@@ -16,6 +18,8 @@ use alerts::alerts;
 use buttons::{avatars, badges, buttons};
 use cards::{login_card, tables};
 use forms::{choices, inputs, otp, selects};
+use gestures::gestures;
+use layouts::layouts;
 use navigation::navigation;
 use overlays::{calendars, collapsible, hover_card, overlays};
 
@@ -67,8 +71,10 @@ pub fn gallery_page(ctx: &Ctx) {
                         choices();
                         login_card(ctx);
                         calendars();
+                        layouts();
                     });
                     column_with(Modifier::new().weight(1.0), || {
+                        gestures();
                         badges();
                         avatars();
                         alerts();
