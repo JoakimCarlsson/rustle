@@ -25,7 +25,7 @@ mod window_tests;
 mod windows;
 
 pub use accesskit_winit::Event as AccessibilityEvent;
-pub use app::{Wake, run, run_with};
+pub use app::{Wake, external_waker, run, run_with, set_external_handler};
 pub use embedded::Embedded;
 pub use host::Host;
 pub use preview::{preview, preview_window};

@@ -1,9 +1,9 @@
 //! The event loop: the entry point, the application state and frame running.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::process;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use rustle_geometry::Size;
@@ -22,6 +22,8 @@ use crate::window::WindowOptions;
 pub(crate) enum UserEvent {
     /// State changed or a frame was requested.
     Wake,
+    /// Another thread asked the loop to run the handler set with [`set_external_handler`].
+    External,
     /// The platform's accessibility API asked for something.
     Accessibility(accesskit_winit::Event),
 }
@@ -43,6 +45,40 @@ impl From<Wake> for UserEvent {
 /// A host whose event loop carries its own user event type implements `From<Wake>` for it
 /// and calls [`Host::wake`](crate::Host::wake) when it receives it.
 pub struct Wake;
+
+/// The proxy of the loop [`run`] and [`run_with`] own, for [`external_waker`].
+static EXTERNAL_PROXY: OnceLock<Mutex<EventLoopProxy<UserEvent>>> = OnceLock::new();
+
+thread_local! {
+    /// What the loop's thread runs when [`external_waker`] is called.
+    static EXTERNAL_HANDLER: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// A function any thread may call to make the loop that [`run`] or [`run_with`] owns run the handler set with [`set_external_handler`], and then compose again if that changed state.
+///
+/// It does nothing before the loop exists or when there is no window loop, as in [`preview`](crate::preview).
+pub fn external_waker() -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(|| {
+        if let Some(proxy) = EXTERNAL_PROXY.get()
+            && let Ok(proxy) = proxy.lock()
+        {
+            let _ = proxy.send_event(UserEvent::External);
+        }
+    })
+}
+
+/// Sets what the loop's thread runs when [`external_waker`] is called, replacing the previous handler. Call it from the thread that runs the loop, such as from a composable.
+pub fn set_external_handler(handler: impl Fn() + 'static) {
+    EXTERNAL_HANDLER.with(|slot| *slot.borrow_mut() = Some(Rc::new(handler)));
+}
+
+/// Runs the handler set with [`set_external_handler`], if any.
+pub(crate) fn run_external_handler() {
+    let handler = EXTERNAL_HANDLER.with(|slot| slot.borrow().clone());
+    if let Some(handler) = handler {
+        handler();
+    }
+}
 
 /// Makes the accessibility adapter of a window, which needs the event loop's proxy.
 pub(crate) type MakeAdapter = Box<dyn Fn(&ActiveEventLoop, &Window) -> accesskit_winit::Adapter>;
@@ -88,6 +124,7 @@ pub fn run_with(options: WindowOptions, root: impl FnMut() + 'static) {
         .build()
         .and_then(|event_loop| {
             let proxy = event_loop.create_proxy();
+            let _ = EXTERNAL_PROXY.set(Mutex::new(proxy.clone()));
             let mut app = App::new(
                 provided,
                 dark,

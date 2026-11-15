@@ -25,6 +25,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, _: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Wake => {}
+            UserEvent::External => crate::app::run_external_handler(),
             UserEvent::Accessibility(event) => {
                 self.accessibility_event_for(event.window_id, event.window_event)
             }
