@@ -58,15 +58,17 @@ impl Clipboard for SystemClipboard {
     }
 }
 
+/// Turns winit's modifier state into Rustle's.
 pub(crate) fn modifiers(state: ModifiersState) -> Modifiers {
     Modifiers {
         shift: state.shift_key(),
         ctrl: state.control_key(),
         alt: state.alt_key(),
-        meta: state.super_key(),
+        meta: state.meta_key(),
     }
 }
 
+/// Turns winit's key event into Rustle's, with the modifiers held as `modifiers`.
 pub(crate) fn key_event(event: &WinitKeyEvent, modifiers: Modifiers) -> KeyEvent {
     let key = match &event.logical_key {
         WinitKey::Named(named) => match named {
@@ -83,7 +85,6 @@ pub(crate) fn key_event(event: &WinitKeyEvent, modifiers: Modifiers) -> KeyEvent
             NamedKey::End => Key::End,
             NamedKey::PageUp => Key::PageUp,
             NamedKey::PageDown => Key::PageDown,
-            NamedKey::Space => Key::Character(" ".to_string()),
             NamedKey::Insert => Key::Insert,
             NamedKey::PrintScreen => Key::PrintScreen,
             NamedKey::ContextMenu => Key::ContextMenu,
@@ -96,7 +97,7 @@ pub(crate) fn key_event(event: &WinitKeyEvent, modifiers: Modifiers) -> KeyEvent
             NamedKey::Shift => Key::Shift,
             NamedKey::Control => Key::Control,
             NamedKey::Alt => Key::Alt,
-            NamedKey::Super | NamedKey::Meta => Key::Super,
+            NamedKey::Meta => Key::Super,
             other => function_key(*other).map_or(Key::Other, Key::F),
         },
         WinitKey::Character(text) => Key::Character(text.to_string()),
@@ -138,6 +139,6 @@ pub(crate) fn pointer_button(button: MouseButton) -> PointerButton {
         MouseButton::Middle => PointerButton::Middle,
         MouseButton::Back => PointerButton::Back,
         MouseButton::Forward => PointerButton::Forward,
-        MouseButton::Other(number) => PointerButton::Other(number),
+        other => PointerButton::Other(other as u16),
     }
 }

@@ -8,6 +8,10 @@ use rustle_ui::{DisplayList, Focus, LiveRegion, Role as UiRole, ScrollDirection}
 
 use crate::app::App;
 
+mod adapter;
+
+pub(crate) use adapter::{Adapter, Request, Requests};
+
 /// The window itself, parent of every described area.
 const WINDOW: NodeId = NodeId(0);
 
@@ -217,11 +221,12 @@ impl App {
             .update_if_active(|| tree(display, scale_factor, focused));
     }
 
-    pub(crate) fn accessibility_event(&mut self, event: accesskit_winit::WindowEvent) {
+    /// Answers a request of the platform's accessibility API for the active window.
+    pub(crate) fn accessibility_event(&mut self, event: Request) {
         use accesskit::Action;
         match event {
-            accesskit_winit::WindowEvent::InitialTreeRequested => self.update_accessibility(),
-            accesskit_winit::WindowEvent::ActionRequested(request) => {
+            Request::InitialTreeRequested => self.update_accessibility(),
+            Request::ActionRequested(request) => {
                 let described = index_of(request.target_node)
                     .and_then(|index| self.ui.display.semantics.get(index));
                 match request.action {
@@ -290,7 +295,7 @@ impl App {
                     _ => {}
                 }
             }
-            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+            Request::AccessibilityDeactivated => {}
         }
     }
 }

@@ -3,7 +3,9 @@
 use std::cell::{Cell, RefCell};
 use std::process;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use rustle_geometry::Size;
@@ -11,43 +13,20 @@ use rustle_ui::Composition;
 use rustle_unit::Constraints;
 use rustle_wgpu::Renderer;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::Window;
+use winit::window::{Window, WindowId};
 
+use crate::accessibility::{Adapter, Request, Requests};
+use crate::file_drops::FileDrag;
 use crate::interface::Interface;
 use crate::preview::snapshot;
 use crate::saved;
 use crate::window::WindowOptions;
 
-/// What wakes the event loop.
-pub(crate) enum UserEvent {
-    /// State changed or a frame was requested.
-    Wake,
-    /// Another thread asked the loop to run the handler set with [`set_external_handler`].
-    External,
-    /// The platform's accessibility API asked for something.
-    Accessibility(accesskit_winit::Event),
-}
-
-impl From<accesskit_winit::Event> for UserEvent {
-    fn from(event: accesskit_winit::Event) -> Self {
-        Self::Accessibility(event)
-    }
-}
-
-impl From<Wake> for UserEvent {
-    fn from(_: Wake) -> Self {
-        Self::Wake
-    }
-}
-
-/// The user event a host's event loop receives when state changed or a frame was requested.
-///
-/// A host whose event loop carries its own user event type implements `From<Wake>` for it
-/// and calls [`Host::wake`](crate::Host::wake) when it receives it.
-pub struct Wake;
-
 /// The proxy of the loop [`run`] and [`run_with`] own, for [`external_waker`].
-static EXTERNAL_PROXY: OnceLock<Mutex<EventLoopProxy<UserEvent>>> = OnceLock::new();
+static EXTERNAL_PROXY: OnceLock<EventLoopProxy> = OnceLock::new();
+
+/// Whether [`external_waker`] was called since the loop last ran the external handler.
+static EXTERNAL_PENDING: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     /// What the loop's thread runs when [`external_waker`] is called.
@@ -59,10 +38,9 @@ thread_local! {
 /// It does nothing before the loop exists or when there is no window loop, as in [`preview`](crate::preview).
 pub fn external_waker() -> Arc<dyn Fn() + Send + Sync> {
     Arc::new(|| {
-        if let Some(proxy) = EXTERNAL_PROXY.get()
-            && let Ok(proxy) = proxy.lock()
-        {
-            let _ = proxy.send_event(UserEvent::External);
+        if let Some(proxy) = EXTERNAL_PROXY.get() {
+            EXTERNAL_PENDING.store(true, Ordering::Release);
+            proxy.wake_up();
         }
     })
 }
@@ -72,16 +50,22 @@ pub fn set_external_handler(handler: impl Fn() + 'static) {
     EXTERNAL_HANDLER.with(|slot| *slot.borrow_mut() = Some(Rc::new(handler)));
 }
 
-/// Runs the handler set with [`set_external_handler`], if any.
+/// Runs the handler set with [`set_external_handler`] if [`external_waker`] was called since
+/// it last ran.
 pub(crate) fn run_external_handler() {
+    if !EXTERNAL_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
     let handler = EXTERNAL_HANDLER.with(|slot| slot.borrow().clone());
     if let Some(handler) = handler {
         handler();
     }
 }
 
-/// Makes the accessibility adapter of a window, which needs the event loop's proxy.
-pub(crate) type MakeAdapter = Box<dyn Fn(&ActiveEventLoop, &Window) -> accesskit_winit::Adapter>;
+/// Wakes the event loop of `proxy`, as the function [`App::new`] is given.
+pub(crate) fn waker(proxy: EventLoopProxy) -> impl Fn() + Clone + Send + Sync + 'static {
+    move || proxy.wake_up()
+}
 
 /// Composes `root` and shows it in a native window until closed.
 ///
@@ -120,33 +104,15 @@ pub fn run_with(options: WindowOptions, root: impl FnMut() + 'static) {
     rustle_runtime::set_saver(Rc::new(saved::FileSaver::open()));
     let dark = Rc::new(Cell::new(true));
     let provided = provided(root, Rc::clone(&dark));
-    let result = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .and_then(|event_loop| {
-            let proxy = event_loop.create_proxy();
-            let _ = EXTERNAL_PROXY.set(Mutex::new(proxy.clone()));
-            let mut app = App::new(
-                provided,
-                dark,
-                options,
-                Some(adapter_with(proxy.clone())),
-                {
-                    let proxy = proxy.clone();
-                    move || {
-                        let _ = proxy.send_event(UserEvent::Wake);
-                    }
-                },
-            );
-            // A new composition is dirty, so the first wake-up also composes it.
-            let _ = proxy.send_event(UserEvent::Wake);
-            event_loop.set_control_flow(ControlFlow::Wait);
-            let result = event_loop.run_app(&mut app);
-            if let Some(error) = app.error.take() {
-                eprintln!("rustle: {error}");
-                process::exit(1);
-            }
-            result
-        });
+    let result = EventLoop::new().and_then(|event_loop| {
+        let proxy = event_loop.create_proxy();
+        let _ = EXTERNAL_PROXY.set(proxy.clone());
+        let app = App::new(provided, dark, options, true, waker(proxy.clone()));
+        // A new composition is dirty, so the first wake-up also composes it.
+        proxy.wake_up();
+        event_loop.set_control_flow(ControlFlow::Wait);
+        event_loop.run_app(crate::handler::Running(app))
+    });
     if let Err(error) = result {
         eprintln!("rustle: {error}");
         process::exit(1);
@@ -165,16 +131,6 @@ pub(crate) fn provided(
     }
 }
 
-/// Makes accessibility adapters whose requests arrive as `T` on the event loop of `proxy`.
-pub(crate) fn adapter_with<T>(proxy: EventLoopProxy<T>) -> MakeAdapter
-where
-    T: From<accesskit_winit::Event> + Send + 'static,
-{
-    Box::new(move |event_loop, window| {
-        accesskit_winit::Adapter::with_event_loop_proxy(event_loop, window, proxy.clone())
-    })
-}
-
 pub(crate) struct App {
     /// Whether the system is set to a dark appearance, as the root sees it.
     pub(crate) dark: Rc<Cell<bool>>,
@@ -184,8 +140,13 @@ pub(crate) struct App {
     pub(crate) ui: Interface,
     /// How the window looks when it opens.
     pub(crate) options: WindowOptions,
-    /// Makes the window's accessibility adapter once the window exists.
-    pub(crate) make_adapter: Option<MakeAdapter>,
+    /// Where the accessibility adapters of native windows send the platform's requests, or
+    /// `None` when this application has no native windows.
+    pub(crate) requests: Option<Requests>,
+    /// The platform's accessibility requests, as the adapters queued them.
+    pub(crate) requested: Receiver<(WindowId, Request)>,
+    /// The files being dragged over a window, from the moment they enter it.
+    pub(crate) file_drag: Option<FileDrag>,
     pub(crate) window: Option<WindowState>,
     /// The registry key of the window the fields above belong to.
     pub(crate) key: u64,
@@ -195,32 +156,34 @@ pub(crate) struct App {
     /// Which of `slots` is in the fields above. The main window is always slot 0.
     pub(crate) active: usize,
     pub(crate) error: Option<String>,
-    /// Wakes the event loop from any thread, as state changes do. Only the
-    /// Wayland file drop listener reads it, so it is unread elsewhere.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub(crate) wake: Arc<dyn Fn() + Send + Sync>,
 }
 
 pub(crate) struct WindowState {
-    pub(crate) adapter: accesskit_winit::Adapter,
+    pub(crate) adapter: Adapter,
     pub(crate) renderer: Renderer,
-    pub(crate) window: Arc<Window>,
+    pub(crate) window: Arc<dyn Window>,
 }
 
 impl App {
     /// An application that composes `root`, with no window until the event loop resumes.
     ///
-    /// `wake` is called, from any thread, when state changed or a frame was requested, and
-    /// must make the event loop call [`App::recompose_and_layout`].
+    /// `wake` is called, from any thread, when state changed, a frame was requested or the
+    /// platform's accessibility API asked for something, and must make the event loop call
+    /// [`App::woken`]. `native` says whether the application opens native windows, which
+    /// get accessibility adapters.
     pub(crate) fn new(
         root: impl FnMut() + 'static,
         dark: Rc<Cell<bool>>,
         options: WindowOptions,
-        make_adapter: Option<MakeAdapter>,
+        native: bool,
         wake: impl Fn() + Clone + Send + Sync + 'static,
     ) -> Self {
         let mut composition = rustle_ui::composition(root);
-        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(wake.clone());
+        let (queue, requested) = mpsc::channel();
+        let requests = native.then(|| Requests {
+            queue,
+            wake: Arc::new(wake.clone()),
+        });
         // State changes wake the event loop instead of being polled for.
         let invalidated = wake.clone();
         composition.on_invalidate(invalidated);
@@ -233,13 +196,14 @@ impl App {
             started: Instant::now(),
             ui: Interface::new(),
             options,
-            make_adapter,
+            requests,
+            requested,
+            file_drag: None,
             window: None,
             key: crate::window::MAIN,
             slots: vec![crate::windows::WindowCtx::default()],
             active: 0,
             error: None,
-            wake: waker,
         }
     }
 
@@ -262,7 +226,7 @@ impl App {
             return;
         };
         let scale_factor = state.window.scale_factor() as f32;
-        let size = state.window.inner_size();
+        let size = state.window.surface_size();
         let constraints = Constraints::loose(Size::new(
             size.width as f32 / scale_factor,
             size.height as f32 / scale_factor,
@@ -303,7 +267,8 @@ impl App {
         }
     }
 
-    pub(crate) fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
+    /// Records why the application cannot go on and stops the event loop.
+    pub(crate) fn fail(&mut self, event_loop: &dyn ActiveEventLoop, error: impl ToString) {
         self.error = Some(error.to_string());
         event_loop.exit();
     }

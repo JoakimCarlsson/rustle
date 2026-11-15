@@ -11,8 +11,12 @@ use std::sync::Arc;
 
 use rustle_wgpu::Renderer;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Theme as WinitTheme, Window, WindowId};
+use winit::window::{
+    ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, Theme as WinitTheme, Window,
+    WindowId,
+};
 
+use crate::accessibility::{Adapter, Request};
 use crate::app::{App, WindowState};
 use crate::interface::Interface;
 use crate::window::{Entry, MAIN, REGISTRY, WindowOptions, WindowTheme};
@@ -65,7 +69,7 @@ impl App {
     }
 
     /// The main window, which is always slot 0.
-    pub(crate) fn main_window(&self) -> Option<&Arc<Window>> {
+    pub(crate) fn main_window(&self) -> Option<&Arc<dyn Window>> {
         self.slot_window(0).map(|state| &state.window)
     }
 
@@ -95,30 +99,32 @@ impl App {
     /// Creates a native window with its renderer and accessibility adapter.
     pub(crate) fn open_native(
         &self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         options: &WindowOptions,
     ) -> Result<WindowState, String> {
         let parent = options.parent.and_then(|parent| {
             REGISTRY.with(|r| r.borrow().entries.get(&parent.key)?.window.clone())
         });
-        let window = Arc::new(
+        let attributes = options.attributes(parent.as_deref());
+        let attributes = options.named(attributes, event_loop);
+        let window: Arc<dyn Window> = Arc::from(
             event_loop
-                .create_window(options.attributes(parent.as_deref()))
+                .create_window(attributes)
                 .map_err(|error| error.to_string())?,
         );
         let instance = shared_instance(event_loop);
-        let make_adapter = self
-            .make_adapter
+        let requests = self
+            .requests
             .as_ref()
             .ok_or("this application has no native windows")?;
-        let adapter = make_adapter(event_loop, &window);
+        let adapter = Adapter::new(&*window, requests);
         if options.visible {
             window.set_visible(true);
             if options.modal {
                 window.focus_window();
             }
         }
-        let size = window.inner_size();
+        let size = window.surface_size();
         let renderer = Renderer::with_transparency(
             instance,
             window.clone(),
@@ -153,7 +159,7 @@ impl App {
     /// Does what composition and the window handles asked for: opens windows that appeared,
     /// closes ones that left, applies changed options, forgets presses the system took over
     /// and runs close requests.
-    pub(crate) fn sync_windows(&mut self, event_loop: &ActiveEventLoop) {
+    pub(crate) fn sync_windows(&mut self, event_loop: &dyn ActiveEventLoop) {
         let (cancelled, closes) = REGISTRY.with(|r| {
             let mut registry = r.borrow_mut();
             (
@@ -230,7 +236,7 @@ impl App {
             return;
         }
         if let Some(state) = &ctx.window {
-            let window: &Window = &state.window;
+            let window: &dyn Window = &*state.window;
             if ctx.options.title != options.title {
                 window.set_title(&options.title);
             }
@@ -241,22 +247,21 @@ impl App {
                 window.set_resizable(options.resizable);
             }
             if ctx.options.min_size != options.min_size {
-                window.set_min_inner_size(Some(winit::dpi::LogicalSize::new(
-                    options.min_size.0,
-                    options.min_size.1,
-                )));
+                window.set_min_surface_size(Some(
+                    winit::dpi::LogicalSize::new(options.min_size.0, options.min_size.1).into(),
+                ));
             }
             if ctx.options.fullscreen != options.fullscreen {
                 window.set_fullscreen(
                     options
                         .fullscreen
-                        .then_some(winit::window::Fullscreen::Borderless(None)),
+                        .then_some(winit::monitor::Fullscreen::Borderless(None)),
                 );
             }
             if ctx.options.position != options.position
                 && let Some((x, y)) = options.position
             {
-                window.set_outer_position(winit::dpi::LogicalPosition::new(x, y));
+                window.set_outer_position(winit::dpi::LogicalPosition::new(x, y).into());
             }
             if ctx.options.theme != options.theme {
                 window.set_theme(options.theme.map(WindowTheme::winit));
@@ -265,7 +270,7 @@ impl App {
                 window.focus_window();
             }
             if !options.ime_allowed {
-                window.set_ime_allowed(false);
+                let _ = window.request_ime_update(ImeRequest::Disable);
             }
         }
         ctx.options = options;
@@ -274,13 +279,17 @@ impl App {
     /// Handles an event of the window `id`, whichever it is.
     pub(crate) fn window_event_for(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         id: WindowId,
         event: winit::event::WindowEvent,
     ) {
         let Some(index) = self.slot_of(id) else {
             return;
         };
+        if self.file_drag_event(event_loop, index, id, &event) {
+            self.sync_windows(event_loop);
+            return;
+        }
         if let Some(modal) = self.blocking_modal(index)
             && is_input(&event)
         {
@@ -317,11 +326,7 @@ impl App {
     }
 
     /// Answers a request of the platform's accessibility API for the window `id`.
-    pub(crate) fn accessibility_event_for(
-        &mut self,
-        id: WindowId,
-        event: accesskit_winit::WindowEvent,
-    ) {
+    pub(crate) fn accessibility_event_for(&mut self, id: WindowId, event: Request) {
         if let Some(index) = self.slot_of(id) {
             self.activate(index);
             self.accessibility_event(event);
@@ -339,7 +344,9 @@ impl App {
             && let Some(state) = &self.window
             && !self.ui.carrying.as_ref().is_some_and(|c| c.active)
         {
-            state.window.set_cursor(winit_cursor(self.ui.cursor()));
+            state
+                .window
+                .set_cursor(winit_cursor(self.ui.cursor()).into());
         }
     }
 
@@ -352,7 +359,10 @@ impl App {
             self.ui.ime_area = None;
             let allowed = self.ui.focused.is_some() && self.ime_allowed();
             if let Some(state) = &self.window {
-                state.window.set_ime_allowed(allowed);
+                let _ = state.window.request_ime_update(ImeRequest::Disable);
+                if allowed {
+                    let _ = state.window.request_ime_update(ime_enable());
+                }
             }
         }
         if self.ui.take_redraw()
@@ -365,7 +375,9 @@ impl App {
     /// Shows the cursor for a pointer that just moved.
     pub(crate) fn show_cursor(&self) {
         if let Some(state) = &self.window {
-            state.window.set_cursor(winit_cursor(self.ui.cursor()));
+            state
+                .window
+                .set_cursor(winit_cursor(self.ui.cursor()).into());
         }
     }
 
@@ -379,14 +391,36 @@ impl App {
         self.ui.ime_area = area;
         if let (Some(area), Some(state)) = (area, &self.window) {
             let scale = state.window.scale_factor();
-            state.window.set_ime_cursor_area(
-                winit::dpi::LogicalPosition::new(area.origin.x as f64, area.origin.y as f64)
-                    .to_physical::<f64>(scale),
-                winit::dpi::LogicalSize::new(area.size.width as f64, area.size.height as f64)
-                    .to_physical::<f64>(scale),
-            );
+            let _ = state.window.request_ime_update(ImeRequest::Update(
+                ImeRequestData::default()
+                    .with_cursor_area(ime_position(area, scale), ime_size(area, scale)),
+            ));
         }
     }
+}
+
+/// The request that turns the input method on, before the caret it serves is known.
+fn ime_enable() -> ImeRequest {
+    let data = ImeRequestData::default().with_cursor_area(
+        winit::dpi::LogicalPosition::new(0.0, 0.0).into(),
+        winit::dpi::LogicalSize::new(0.0, 0.0).into(),
+    );
+    let capabilities = ImeCapabilities::new().with_cursor_area();
+    ImeEnableRequest::new(capabilities, data).map_or(ImeRequest::Disable, ImeRequest::Enable)
+}
+
+/// Where the caret `area` is, for the input method, in physical pixels.
+fn ime_position(area: rustle_geometry::Rect, scale_factor: f64) -> winit::dpi::Position {
+    winit::dpi::LogicalPosition::new(f64::from(area.origin.x), f64::from(area.origin.y))
+        .to_physical::<f64>(scale_factor)
+        .into()
+}
+
+/// How large the caret `area` is, for the input method, in physical pixels.
+fn ime_size(area: rustle_geometry::Rect, scale_factor: f64) -> winit::dpi::Size {
+    winit::dpi::LogicalSize::new(f64::from(area.size.width), f64::from(area.size.height))
+        .to_physical::<f64>(scale_factor)
+        .into()
 }
 
 /// Runs the close request of the secondary window `key`: its `on_close_request` runs, and a
@@ -465,18 +499,13 @@ fn is_input(event: &winit::event::WindowEvent) -> bool {
     use winit::event::WindowEvent as E;
     matches!(
         event,
-        E::MouseInput { .. }
-            | E::MouseWheel { .. }
-            | E::KeyboardInput { .. }
-            | E::Touch(_)
-            | E::Ime(_)
-            | E::DroppedFile(_)
+        E::PointerButton { .. } | E::MouseWheel { .. } | E::KeyboardInput { .. } | E::Ime(_)
     )
 }
 
 /// Turns Rustle's cursor icon into winit's.
-fn winit_cursor(icon: rustle_ui::CursorIcon) -> winit::window::CursorIcon {
-    use winit::window::CursorIcon as W;
+fn winit_cursor(icon: rustle_ui::CursorIcon) -> winit::cursor::CursorIcon {
+    use winit::cursor::CursorIcon as W;
     match icon {
         rustle_ui::CursorIcon::Default => W::Default,
         rustle_ui::CursorIcon::Pointer => W::Pointer,
@@ -505,7 +534,7 @@ thread_local! {
 ///
 /// Each window used to make its own. Dropping one window's instance while another's was in use
 /// crashed some Vulkan drivers (NVIDIA on Wayland) inside the next frame's swapchain acquire.
-fn shared_instance(event_loop: &ActiveEventLoop) -> wgpu::Instance {
+fn shared_instance(event_loop: &dyn ActiveEventLoop) -> wgpu::Instance {
     INSTANCE.with(|cell| {
         cell.get_or_init(|| {
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(Box::new(

@@ -5,7 +5,8 @@ use std::rc::Rc;
 
 use rustle_runtime::{State, remember};
 use winit::dpi::{LogicalPosition, LogicalSize, Size};
-use winit::window::{Fullscreen, Theme};
+use winit::monitor::Fullscreen;
+use winit::window::Theme;
 
 use crate::window;
 use crate::window::{MAIN, REGISTRY, WindowHandle, WindowOptions, WindowTheme, current_window};
@@ -117,11 +118,11 @@ fn options_become_window_attributes() {
     assert!(attributes.transparent);
     assert_eq!(attributes.preferred_theme, Some(Theme::Light));
     assert_eq!(
-        attributes.inner_size,
+        attributes.surface_size,
         Some(Size::Logical(LogicalSize::new(640.0, 480.0)))
     );
     assert_eq!(
-        attributes.min_inner_size,
+        attributes.min_surface_size,
         Some(Size::Logical(LogicalSize::new(200.0, 100.0)))
     );
     assert_eq!(

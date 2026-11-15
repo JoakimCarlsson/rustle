@@ -80,7 +80,7 @@ thread_local! {
 
 impl Shadow {
     /// What shows the shadow of `window` on the desktop it opened on.
-    fn open(window: &Window) -> Self {
+    fn open(window: &dyn Window) -> Self {
         #[cfg(target_os = "linux")]
         {
             use winit::raw_window_handle::{
@@ -121,7 +121,7 @@ impl Shadow {
 
     /// Fits the shadow to `window` as it is now: `shadow` cast around its frame while it is
     /// `floating`, and gone while it is not.
-    fn fit(&mut self, window: &Window, shadow: &WindowShadow, floating: bool) {
+    fn fit(&mut self, window: &dyn Window, shadow: &WindowShadow, floating: bool) {
         match self {
             Self::Absent => {
                 let _ = (window, shadow, floating);
@@ -129,7 +129,7 @@ impl Shadow {
             #[cfg(target_os = "linux")]
             Self::Strips(strips) => {
                 let scale = window.scale_factor();
-                let size = window.inner_size().to_logical::<f64>(scale);
+                let size = window.surface_size().to_logical::<f64>(scale);
                 strips.fit(
                     (size.width.round() as u32, size.height.round() as u32),
                     scale,
@@ -150,14 +150,14 @@ impl Shadow {
 }
 
 /// Whether `window` floats: neither maximized nor full screen.
-fn floating(window: &Window) -> bool {
+fn floating(window: &dyn Window) -> bool {
     !window.is_maximized() && window.fullscreen().is_none()
 }
 
 /// Fits the shadow of `window` to how it is now, as `shadow` describes it, opening what
 /// shows it the first time; takes it away when `shadow` is `None`. Call it before each frame
 /// is presented, so that a change shows with the frame.
-pub(crate) fn fit(window: &Window, shadow: Option<&WindowShadow>) {
+pub(crate) fn fit(window: &dyn Window, shadow: Option<&WindowShadow>) {
     SHADOWS.with(|shadows| {
         let mut shadows = shadows.borrow_mut();
         match shadow {
@@ -182,7 +182,7 @@ pub(crate) fn fit(window: &Window, shadow: Option<&WindowShadow>) {
 /// How wide the band is that `window` leaves around its content for its shadow, in logical
 /// pixels: `margin` while the window floats and its shadow is drawn inside it, as on X11,
 /// and none otherwise.
-pub(crate) fn band(window: &Window, margin: f32) -> f32 {
+pub(crate) fn band(window: &dyn Window, margin: f32) -> f32 {
     let inside = SHADOWS.with(|shadows| {
         shadows
             .borrow_mut()

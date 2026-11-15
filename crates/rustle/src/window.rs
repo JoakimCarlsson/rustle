@@ -12,6 +12,8 @@ use std::sync::Arc;
 use rustle_runtime::CompositionLocal;
 use rustle_ui::Node;
 use winit::dpi::LogicalSize;
+use winit::event_loop::ActiveEventLoop;
+use winit::monitor::Fullscreen;
 use winit::window::{Window, WindowAttributes};
 
 /// The appearance a window is given, whatever the system prefers.
@@ -239,20 +241,17 @@ impl WindowOptions {
     /// The winit attributes for a window with these options, as a child of `parent` where
     /// the system has a notion of a parent that does not confine the window to it. It is
     /// made hidden, because the accessibility adapter has to exist before the window is shown.
-    pub(crate) fn attributes(&self, parent: Option<&Window>) -> WindowAttributes {
-        let attributes = Window::default_attributes()
+    pub(crate) fn attributes(&self, parent: Option<&dyn Window>) -> WindowAttributes {
+        let attributes = WindowAttributes::default()
             .with_title(self.title.as_str())
             .with_visible(false)
             .with_decorations(self.decorations)
             .with_resizable(self.resizable)
             .with_transparent(self.transparent)
             .with_theme(self.theme.map(WindowTheme::winit))
-            .with_fullscreen(
-                self.fullscreen
-                    .then_some(winit::window::Fullscreen::Borderless(None)),
-            )
-            .with_inner_size(LogicalSize::new(self.size.0, self.size.1))
-            .with_min_inner_size(LogicalSize::new(self.min_size.0, self.min_size.1));
+            .with_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)))
+            .with_surface_size(LogicalSize::new(self.size.0, self.size.1))
+            .with_min_surface_size(LogicalSize::new(self.min_size.0, self.min_size.1));
         let attributes = match self.position {
             Some((x, y)) => attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
             None => attributes,
@@ -264,14 +263,16 @@ impl WindowOptions {
     fn platform_attributes(
         &self,
         attributes: WindowAttributes,
-        parent: Option<&Window>,
+        parent: Option<&dyn Window>,
     ) -> WindowAttributes {
-        use winit::platform::macos::WindowAttributesExtMacOS;
+        use winit::platform::macos::WindowAttributesMacOS;
         use winit::raw_window_handle::HasWindowHandle;
-        let attributes = attributes
-            .with_titlebar_transparent(self.macos_titlebar_transparent)
-            .with_fullsize_content_view(self.macos_fullsize_content)
-            .with_title_hidden(self.macos_title_hidden);
+        let attributes = attributes.with_platform_attributes(Box::new(
+            WindowAttributesMacOS::default()
+                .with_titlebar_transparent(self.macos_titlebar_transparent)
+                .with_fullsize_content_view(self.macos_fullsize_content)
+                .with_title_hidden(self.macos_title_hidden),
+        ));
         match parent.and_then(|parent| parent.window_handle().ok()) {
             // SAFETY: the handle comes from a live window of this application. On macOS the
             // child is a window attached to its parent, which moves with it and is not
@@ -281,54 +282,69 @@ impl WindowOptions {
         }
     }
 
-    #[cfg(all(
-        unix,
-        not(any(target_os = "macos", target_os = "android", target_os = "ios"))
-    ))]
-    fn platform_attributes(
-        &self,
-        attributes: WindowAttributes,
-        _parent: Option<&Window>,
-    ) -> WindowAttributes {
-        use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
-        match &self.app_id {
-            Some(id) => {
-                let attributes = WindowAttributesExtWayland::with_name(attributes, id, id);
-                WindowAttributesExtX11::with_name(attributes, id, id)
-            }
-            None => attributes,
-        }
-    }
-
     #[cfg(target_os = "windows")]
     fn platform_attributes(
         &self,
         attributes: WindowAttributes,
-        parent: Option<&Window>,
+        parent: Option<&dyn Window>,
     ) -> WindowAttributes {
-        use winit::platform::windows::WindowAttributesExtWindows;
+        use winit::platform::windows::WindowAttributesWindows;
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         match parent
             .and_then(|parent| parent.window_handle().ok())
             .map(|handle| handle.as_raw())
         {
-            Some(RawWindowHandle::Win32(handle)) => attributes.with_owner_window(handle.hwnd.get()),
+            Some(RawWindowHandle::Win32(handle)) => attributes.with_platform_attributes(Box::new(
+                WindowAttributesWindows::default().with_owner_window(handle.hwnd.get() as _),
+            )),
             _ => attributes,
         }
     }
 
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "windows",
-        all(
-            unix,
-            not(any(target_os = "macos", target_os = "android", target_os = "ios"))
-        )
-    )))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     fn platform_attributes(
         &self,
         attributes: WindowAttributes,
-        _parent: Option<&Window>,
+        _parent: Option<&dyn Window>,
+    ) -> WindowAttributes {
+        attributes
+    }
+    /// `attributes` with the application id the desktop groups the window by, where the
+    /// windowing system of `event_loop` has one: the Wayland app id or the X11 class.
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "ios"))
+    ))]
+    pub(crate) fn named(
+        &self,
+        attributes: WindowAttributes,
+        event_loop: &dyn ActiveEventLoop,
+    ) -> WindowAttributes {
+        use winit::platform::wayland::{ActiveEventLoopExtWayland, WindowAttributesWayland};
+        use winit::platform::x11::WindowAttributesX11;
+        let Some(id) = &self.app_id else {
+            return attributes;
+        };
+        if event_loop.is_wayland() {
+            attributes.with_platform_attributes(Box::new(
+                WindowAttributesWayland::default().with_name(id, id),
+            ))
+        } else {
+            attributes.with_platform_attributes(Box::new(
+                WindowAttributesX11::default().with_name(id, id),
+            ))
+        }
+    }
+
+    /// `attributes` as they are: only Wayland and X11 name windows by an application id.
+    #[cfg(not(all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "ios"))
+    )))]
+    pub(crate) fn named(
+        &self,
+        attributes: WindowAttributes,
+        _event_loop: &dyn ActiveEventLoop,
     ) -> WindowAttributes {
         attributes
     }
@@ -399,9 +415,9 @@ impl WindowHandle {
     /// The window the root composable is shown in.
     pub const MAIN: WindowHandle = WindowHandle { key: MAIN };
 
-    fn with_window<R>(self, f: impl FnOnce(&Window) -> R) -> Option<R> {
+    fn with_window<R>(self, f: impl FnOnce(&dyn Window) -> R) -> Option<R> {
         let window = REGISTRY.with(|r| r.borrow().entries.get(&self.key)?.window.clone())?;
-        Some(f(&window))
+        Some(f(&*window))
     }
 
     /// Starts moving the window with the pointer, until the button is released. Call it from
@@ -454,9 +470,7 @@ impl WindowHandle {
 
     /// Makes the window cover the whole screen, or restores it.
     pub fn set_fullscreen(self, fullscreen: bool) {
-        self.with_window(|w| {
-            w.set_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
-        });
+        self.with_window(|w| w.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None))));
     }
 
     /// Whether the window covers the whole screen.
@@ -468,7 +482,7 @@ impl WindowHandle {
     /// Moves the window's top left corner to `x`, `y`, in logical pixels on the desktop.
     /// Wayland does not let a window move itself.
     pub fn set_position(self, x: f32, y: f32) {
-        self.with_window(|w| w.set_outer_position(winit::dpi::LogicalPosition::new(x, y)));
+        self.with_window(|w| w.set_outer_position(winit::dpi::LogicalPosition::new(x, y).into()));
     }
 
     /// Where the window's top left corner is, in logical pixels on the desktop, if the
@@ -648,7 +662,7 @@ pub(crate) struct Entry {
     pub(crate) tree: Option<Node>,
     pub(crate) on_close: Option<Rc<dyn Fn()>>,
     /// The native window, once the event loop has opened it.
-    pub(crate) window: Option<Arc<Window>>,
+    pub(crate) window: Option<Arc<dyn Window>>,
     /// Whether the user closed a window that closes itself, so it is not opened again.
     pub(crate) closed: bool,
 }
