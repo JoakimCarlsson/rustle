@@ -222,7 +222,13 @@ impl Renderer {
                         push_layer(&mut frames, current.take());
                         current = Layer::new(scissor);
                     }
-                    self.paths.push(&mut current.paths, command, scale_factor);
+                    self.paths.push(
+                        &self.device,
+                        &self.queue,
+                        &mut current.paths,
+                        command,
+                        scale_factor,
+                    );
                 }
                 DrawCommand::Image { .. } => {
                     // A picture after text, an outline or a rectangle must paint over it.
