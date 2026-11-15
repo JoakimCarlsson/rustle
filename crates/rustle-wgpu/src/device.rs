@@ -114,7 +114,8 @@ impl Renderer {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
-        Ok(Self::build(
+        let see_through = surface_config.alpha_mode != wgpu::CompositeAlphaMode::Opaque;
+        let mut renderer = Self::build(
             Some(instance),
             device,
             queue,
@@ -122,7 +123,11 @@ impl Renderer {
             surface_config,
             Some(surface),
             Some(create_surface),
-        ))
+        );
+        if see_through {
+            renderer.clear = wgpu::Color::TRANSPARENT;
+        }
+        Ok(renderer)
     }
 
     /// Creates a renderer with no window, drawing into pictures on request
