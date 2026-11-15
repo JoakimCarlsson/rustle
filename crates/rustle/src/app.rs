@@ -31,6 +31,23 @@ static EXTERNAL_PENDING: AtomicBool = AtomicBool::new(false);
 thread_local! {
     /// What the loop's thread runs when [`external_waker`] is called.
     static EXTERNAL_HANDLER: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+    /// What the loop's thread asks before the main window closes, set with [`set_close_handler`].
+    static CLOSE_HANDLER: RefCell<Option<Rc<dyn Fn() -> bool>>> = const { RefCell::new(None) };
+}
+
+/// Sets what is asked when the main window is about to close, by the desktop or by
+/// [`WindowHandle::close`](crate::WindowHandle::close): the window closes, ending the
+/// application, only when `handler` returns `true`. Replaces the previous handler. Call it
+/// from the thread that runs the loop, such as from a composable.
+pub fn set_close_handler(handler: impl Fn() -> bool + 'static) {
+    CLOSE_HANDLER.with(|slot| *slot.borrow_mut() = Some(Rc::new(handler)));
+}
+
+/// Whether the main window may close now: what the handler set with [`set_close_handler`]
+/// says, or `true` when none is set.
+pub(crate) fn main_may_close() -> bool {
+    let handler = CLOSE_HANDLER.with(|slot| slot.borrow().clone());
+    handler.is_none_or(|handler| handler())
 }
 
 /// A function any thread may call to make the loop that [`run`] or [`run_with`] owns run the handler set with [`set_external_handler`], and then compose again if that changed state.

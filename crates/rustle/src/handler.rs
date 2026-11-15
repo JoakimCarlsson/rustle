@@ -123,7 +123,11 @@ impl App {
         }
         state.adapter.process_event(&*state.window, &event);
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                if crate::app::main_may_close() {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::SurfaceResized(size) => {
                 state.renderer.resize(size.width, size.height);
                 self.relayout();

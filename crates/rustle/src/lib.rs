@@ -27,7 +27,7 @@ mod window;
 mod window_tests;
 mod windows;
 
-pub use app::{external_waker, run, run_with, set_external_handler};
+pub use app::{external_waker, run, run_with, set_close_handler, set_external_handler};
 pub use embedded::Embedded;
 pub use frame_timing::{FrameTiming, set_frame_observer};
 pub use host::Host;

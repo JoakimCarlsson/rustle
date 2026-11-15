@@ -178,7 +178,9 @@ impl App {
         }
         for key in closes {
             if key == MAIN {
-                event_loop.exit();
+                if crate::app::main_may_close() {
+                    event_loop.exit();
+                }
                 continue;
             }
             close_requested(key);
