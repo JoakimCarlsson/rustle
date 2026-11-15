@@ -430,6 +430,25 @@ fn font_features(ligatures: bool) -> FontFeatures {
     features
 }
 
+/// The weight of the face of `font_family` a request for `weight` settles on, so a named
+/// family without that exact weight is drawn in its nearest face rather than in another
+/// family that has it; generic families keep `weight`.
+fn available_weight(font_system: &FontSystem, font_family: FontFamily, weight: u16) -> u16 {
+    if !matches!(font_family, FontFamily::Named(_)) {
+        return weight;
+    }
+    let query = glyphon::cosmic_text::fontdb::Query {
+        families: &[family(font_family)],
+        weight: Weight(weight),
+        ..Default::default()
+    };
+    font_system
+        .db()
+        .query(&query)
+        .and_then(|id| font_system.db().face(id))
+        .map_or(weight, |face| face.weight.0)
+}
+
 /// The attributes of a run: family, weight, slant, letter spacing, ligatures and,
 /// if it has a size of its own, the metrics that size gives.
 fn attributes(
@@ -504,7 +523,7 @@ pub(super) fn shape(
             text,
             &attributes(
                 font_family,
-                font_weight,
+                available_weight(font_system, font_family, font_weight),
                 italic,
                 letter_spacing,
                 ligatures,
@@ -521,7 +540,11 @@ pub(super) fn shape(
                     span.text.as_str(),
                     attributes(
                         span.font_family,
-                        legible_weight(span.font_weight, span.color),
+                        available_weight(
+                            font_system,
+                            span.font_family,
+                            legible_weight(span.font_weight, span.color),
+                        ),
                         span.italic,
                         span.letter_spacing,
                         span.ligatures,
