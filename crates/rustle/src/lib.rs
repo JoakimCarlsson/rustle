@@ -18,6 +18,7 @@ mod overlay;
 mod pointer;
 mod preview;
 mod saved;
+mod shadow;
 #[cfg(test)]
 mod testing;
 mod window;
@@ -31,6 +32,7 @@ pub use embedded::Embedded;
 pub use frame_timing::{FrameTiming, set_frame_observer};
 pub use host::Host;
 pub use preview::{preview, preview_window};
+pub use shadow::{ShadowLayer, WindowShadow};
 pub use window::{ResizeEdge, WindowHandle, WindowOptions, WindowTheme, current_window, window};
 
 pub use rustle_animation::{

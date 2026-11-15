@@ -180,6 +180,7 @@ impl App {
                 self.ui.commit(text);
             }
             WindowEvent::RedrawRequested => {
+                crate::shadow::fit(&state.window, self.options.shadow.as_ref());
                 let scale_factor = state.window.scale_factor() as f32;
                 let commands = self.ui.commands();
                 let built = Instant::now();

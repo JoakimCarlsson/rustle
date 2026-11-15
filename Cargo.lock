@@ -2351,6 +2351,7 @@ dependencies = [
  "accesskit_winit",
  "arboard",
  "pollster",
+ "rustix 1.1.6",
  "rustle-animation",
  "rustle-charts",
  "rustle-foundation",
@@ -2365,8 +2366,12 @@ dependencies = [
  "rustle-unit",
  "rustle-wgpu",
  "rustle-widgets",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
  "wgpu",
  "winit",
+ "x11rb",
 ]
 
 [[package]]

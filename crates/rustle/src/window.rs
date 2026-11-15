@@ -102,6 +102,9 @@ pub struct WindowOptions {
     /// composition to stop calling [`window`]. `on_close_request` still runs, so the state
     /// that guards the call can be cleared.
     pub closes_itself: bool,
+    /// The shadow the window casts around its frame while it floats, when it draws its own
+    /// frame without the system's decorations. See [`WindowShadow`](crate::WindowShadow).
+    pub shadow: Option<crate::WindowShadow>,
 }
 
 impl Default for WindowOptions {
@@ -125,6 +128,7 @@ impl Default for WindowOptions {
             modal: false,
             parent: None,
             closes_itself: false,
+            shadow: None,
         }
     }
 }
@@ -439,6 +443,15 @@ impl WindowHandle {
         self.with_window(|w| w.is_maximized()).unwrap_or(false)
     }
 
+    /// How wide the band is that the window leaves around its content for its shadow, in
+    /// logical pixels: `margin` while it floats and the desktop wants the shadow drawn inside
+    /// the window, as on X11, and none where the shadow is drawn beside the window, as on
+    /// Wayland, or there is none. Draw the shadow in the band, in a transparent window.
+    pub fn shadow_band(self, margin: f32) -> f32 {
+        self.with_window(|w| crate::shadow::band(w, margin))
+            .unwrap_or(0.0)
+    }
+
     /// Makes the window cover the whole screen, or restores it.
     pub fn set_fullscreen(self, fullscreen: bool) {
         self.with_window(|w| {
@@ -465,6 +478,49 @@ impl WindowHandle {
             let position = w.outer_position().ok()?;
             let logical = position.to_logical::<f32>(w.scale_factor());
             Some((logical.x, logical.y))
+        })
+        .flatten()
+    }
+
+    /// How many physical pixels make one logical pixel on the window's screen; 1 when the
+    /// window is not open.
+    pub fn scale_factor(self) -> f32 {
+        self.with_window(|w| w.scale_factor() as f32).unwrap_or(1.0)
+    }
+
+    /// The window's Wayland display and `wl_surface`, as raw pointers, when it is open on
+    /// Wayland: for work the window does not do itself, such as surfaces laid beside it.
+    /// The display stays open while the event loop runs and the surface while the window
+    /// is open.
+    pub fn wayland_surface(
+        self,
+    ) -> Option<(
+        std::ptr::NonNull<std::ffi::c_void>,
+        std::ptr::NonNull<std::ffi::c_void>,
+    )> {
+        use winit::raw_window_handle::{
+            HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
+        };
+        self.with_window(|w| {
+            let display = w.display_handle().ok()?.as_raw();
+            let window = w.window_handle().ok()?.as_raw();
+            match (display, window) {
+                (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(window)) => {
+                    Some((display.display, window.surface))
+                }
+                _ => None,
+            }
+        })
+        .flatten()
+    }
+
+    /// The window's X11 window id, when it is open on X11.
+    pub fn x11_window(self) -> Option<u32> {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        self.with_window(|w| match w.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Xlib(handle) => Some(handle.window as u32),
+            RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
+            _ => None,
         })
         .flatten()
     }
