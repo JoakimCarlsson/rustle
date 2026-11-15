@@ -40,6 +40,22 @@ impl Clipboard for SystemClipboard {
     fn set_text(&self, text: &str) {
         self.with(|clipboard| clipboard.set_text(text).ok());
     }
+
+    fn files(&self) -> Vec<std::path::PathBuf> {
+        self.with(|clipboard| clipboard.get().file_list().ok())
+            .unwrap_or_default()
+    }
+
+    fn image(&self) -> Option<rustle_ui::ClipboardImage> {
+        self.with(|clipboard| {
+            let image = clipboard.get_image().ok()?;
+            Some(rustle_ui::ClipboardImage {
+                width: u32::try_from(image.width).ok()?,
+                height: u32::try_from(image.height).ok()?,
+                rgba: image.bytes.into_owned(),
+            })
+        })
+    }
 }
 
 pub(crate) fn modifiers(state: ModifiersState) -> Modifiers {

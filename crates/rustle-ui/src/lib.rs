@@ -32,9 +32,9 @@ pub use gesture::{
     remember_draggable_state, remember_scrollable_state, remember_transformable_state,
 };
 pub use input::{
-    Clipboard, DropHandler, Focus, Key, KeyCode, KeyEvent, KeyHandler, KeyLocation, Modifiers,
-    PhysicalKey, PointerButton, PointerEvent, PointerPhase, Preedit, PressEvent, clipboard,
-    remember_focus, set_clipboard, take_focus_request,
+    Clipboard, ClipboardImage, DropHandler, Focus, Key, KeyCode, KeyEvent, KeyHandler, KeyLocation,
+    Modifiers, PhysicalKey, PointerButton, PointerEvent, PointerPhase, Preedit, PressEvent,
+    clipboard, remember_focus, set_clipboard, take_focus_request,
 };
 pub use layout::ContentScale;
 pub use layout::{

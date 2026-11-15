@@ -612,10 +612,31 @@ pub fn remember_focus() -> Focus {
     })
 }
 
-/// Reads and writes the system clipboard as text.
+/// A picture on the clipboard: its size in pixels and its pixels as RGBA rows, top first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClipboardImage {
+    /// How many pixels across it is.
+    pub width: u32,
+    /// How many pixels down it is.
+    pub height: u32,
+    /// Four bytes per pixel, red, green, blue and alpha, row after row.
+    pub rgba: Vec<u8>,
+}
+
+/// Reads and writes the system clipboard as text, and reads files and pictures copied in other programs.
 pub trait Clipboard {
+    /// The text on the clipboard, if there is any.
     fn text(&self) -> Option<String>;
+    /// Puts `text` on the clipboard.
     fn set_text(&self, text: &str);
+    /// The files copied in a file manager, if the clipboard holds a list of them.
+    fn files(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+    /// The picture on the clipboard, if it holds one.
+    fn image(&self) -> Option<ClipboardImage> {
+        None
+    }
 }
 
 /// Installs the clipboard text editing uses. The host does this at startup.
