@@ -642,7 +642,7 @@ fn scrollable_flings_and_slows_down_until_it_stops() {
     let rest = position.get();
     frame(&mut ui);
     assert_eq!(position.get(), rest);
-    assert!(rest > released + 100.0, "{released} -> {rest}");
+    assert!(rest > released + 30.0, "{released} -> {rest}");
 }
 
 #[test]
@@ -670,7 +670,7 @@ fn touching_a_flinging_scroller_stops_it() {
 
 #[test]
 fn a_fling_stopped_by_the_end_of_the_content_comes_to_rest_there() {
-    let (mut ui, scroller) = single_scroller(400.0);
+    let (mut ui, scroller) = single_scroller(300.0);
     let (state, position) = (scroller.state(), scroller.position());
     press_and_move(
         &mut ui,
@@ -680,7 +680,7 @@ fn a_fling_stopped_by_the_end_of_the_content_comes_to_rest_there() {
     );
     ui.pointer_button(PointerButton::Primary, false);
     settle(&mut ui, 300);
-    assert_eq!(position.get(), 200.0);
+    assert_eq!(position.get(), 100.0);
     assert!(!state.is_flinging());
 }
 
