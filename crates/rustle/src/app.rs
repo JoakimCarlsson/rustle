@@ -84,7 +84,7 @@ pub fn run(root: impl FnMut() + 'static) {
 pub fn run_with(options: WindowOptions, root: impl FnMut() + 'static) {
     // Developer tool: draw one frame without a window and write it as a PNG.
     //   RUSTLE_SNAPSHOT=out.png [RUSTLE_SNAPSHOT_SIZE=1280x800] [RUSTLE_SNAPSHOT_LIGHT=1]
-    //   [RUSTLE_SNAPSHOT_INPUT="click:x,y;type:text;key:Backspace"] replays input first
+    //   [RUSTLE_SNAPSHOT_SCALE=2] [RUSTLE_SNAPSHOT_INPUT="click:x,y;type:text;key:Backspace"] replays input first
     if let Some(path) = std::env::var_os("RUSTLE_SNAPSHOT") {
         rustle_runtime::set_saver(Rc::new(saved::FileSaver::open()));
         let size = std::env::var("RUSTLE_SNAPSHOT_SIZE")

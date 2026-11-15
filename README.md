@@ -67,6 +67,8 @@ RUSTLE_SNAPSHOT=out.png RUSTLE_SNAPSHOT_SIZE=800x600 cargo run --example hello_w
 
 `RUSTLE_SNAPSHOT_LIGHT=1` renders the light theme. Any application started through `rustle::run` supports this.
 
+`RUSTLE_SNAPSHOT_SCALE=2` (or `1.25`, `1.5`, ...) draws the picture at that scale factor, as a HiDPI screen would: the layout keeps its logical size and the picture has that many physical pixels per logical pixel.
+
 To check behaviour as well as looks, replay input against the real layout before the picture is taken:
 
 ```

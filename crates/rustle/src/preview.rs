@@ -21,6 +21,10 @@ use crate::window::REGISTRY;
 /// appearance. State, effects and tasks that wait on frames are not run
 /// beyond the first composition. This is the way to see a composable without
 /// opening a window, from a build script, a tool or another program.
+///
+/// `RUSTLE_SNAPSHOT_SCALE` draws it at a scale factor, such as `2`: the layout
+/// stays `width` by `height` logical pixels and the picture is that many times
+/// larger, as a window on a HiDPI screen draws it.
 pub fn preview(
     root: impl FnMut() + 'static,
     (width, height): (u32, u32),
@@ -59,6 +63,17 @@ fn window_size(index: usize) -> Option<(u32, u32)> {
     })
 }
 
+/// The scale factor snapshots are drawn at: `RUSTLE_SNAPSHOT_SCALE`, such as `2` or `1.5`,
+/// or 1 when it is unset or not a positive number. The layout keeps its logical size and
+/// the picture has that many physical pixels per logical pixel, as on a HiDPI screen.
+fn snapshot_scale() -> f32 {
+    std::env::var("RUSTLE_SNAPSHOT_SCALE")
+        .ok()
+        .and_then(|value| value.trim().parse::<f32>().ok())
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(1.0)
+}
+
 /// Composes `root` and draws it, or its secondary window `window`, off screen, into a PNG at
 /// `path`. Without a `size` the window's own size is used.
 pub(crate) fn snapshot(
@@ -78,7 +93,11 @@ pub(crate) fn snapshot(
         (None, Some(index)) => window_size(index).ok_or("the root opened no such window")?,
         (None, None) => (1280, 800),
     };
-    let mut renderer = Renderer::offscreen(width, height)?;
+    let scale = snapshot_scale();
+    let mut renderer = Renderer::offscreen(
+        (width as f32 * scale).round().max(1.0) as u32,
+        (height as f32 * scale).round().max(1.0) as u32,
+    )?;
     let constraints = Constraints::loose(Size::new(width as f32, height as f32));
     // Laying out can change state, such as scrolling a caret into view, which
     // composes and lays out again, as the event loop does. A few rounds settle it.
@@ -284,7 +303,7 @@ pub(crate) fn snapshot(
         advance_frames(&mut composition, &mut clock, step_ms);
         display = settle(&mut composition, &mut renderer)?;
     }
-    let (width, height, pixels) = renderer.snapshot(&display.commands, 1.0)?;
+    let (width, height, pixels) = renderer.snapshot(&display.commands, scale)?;
     let image = ImageData::from_rgba(width, height, pixels).ok_or("bad snapshot size")?;
     std::fs::write(path, image.encode_png()?)?;
     Ok(())
