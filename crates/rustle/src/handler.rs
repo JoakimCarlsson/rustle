@@ -88,6 +88,7 @@ impl App {
 
     /// Reacts to what happened to the window.
     pub(crate) fn window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        let started = Instant::now();
         if matches!(event, WindowEvent::RedrawRequested) {
             self.run_frame();
         }
@@ -181,8 +182,12 @@ impl App {
             WindowEvent::RedrawRequested => {
                 let scale_factor = state.window.scale_factor() as f32;
                 let commands = self.ui.commands();
+                let built = Instant::now();
                 match state.renderer.render(&commands, scale_factor) {
-                    Ok(true) => {}
+                    Ok(true) => crate::frame_timing::observe(crate::FrameTiming {
+                        scene: built - started,
+                        render: built.elapsed(),
+                    }),
                     Ok(false) => state.window.request_redraw(),
                     Err(error) => return self.fail(event_loop, error),
                 }
