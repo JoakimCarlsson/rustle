@@ -287,6 +287,15 @@ pub(crate) fn snapshot(
                         if let Some(old) = focused.take() {
                             old.set_focused(false);
                         }
+                    } else if event.pressed && event.key == Key::Tab {
+                        let next = next_focus(&display, focused.as_ref(), modifiers.shift);
+                        if let Some(old) = &focused {
+                            old.set_focused(false);
+                        }
+                        if let Some(new) = &next {
+                            new.set_focused(true);
+                        }
+                        focused = next;
                     } else if focused.is_none() && display.key_handlers.is_empty() {
                         eprintln!("rustle: no focused area to receive {step}");
                     }
@@ -369,6 +378,24 @@ fn advance_frames(
         composition.run_frame(*clock);
         composition.recompose();
     }
+}
+
+/// The area Tab (or Shift+Tab when `back`) moves focus to from `current`, in
+/// the order the areas were painted, as the event loop moves it.
+fn next_focus(display: &DisplayList, current: Option<&Focus>, back: bool) -> Option<Focus> {
+    let regions = &display.focusables;
+    let count = regions.len();
+    if count == 0 {
+        return None;
+    }
+    let at = current.and_then(|focus| regions.iter().position(|r| r.focus.id() == focus.id()));
+    let index = match (at, back) {
+        (None, false) => 0,
+        (None, true) => count - 1,
+        (Some(index), false) => (index + 1) % count,
+        (Some(index), true) => (index + count - 1) % count,
+    };
+    Some(regions[index].focus.clone())
 }
 
 /// The logical key a replay step names.
