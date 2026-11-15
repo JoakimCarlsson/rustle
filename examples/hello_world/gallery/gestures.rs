@@ -7,14 +7,14 @@ use crate::ui::panel;
 /// A knob dragged along a track that settles on one of three stops when let go.
 #[composable]
 fn anchored_track() {
-    let theme = theme();
+    let theme = color_scheme();
     let state = remember_anchored_draggable_state(vec![0.0, 80.0, 160.0], 0);
     let stop = state.target();
     stack_with(
         Modifier::new()
             .width(196.0)
             .height(36.0)
-            .background_rounded(theme.accent, 18.0)
+            .background_rounded(theme.surface_variant, 18.0)
             .anchored_draggable(&state, Axis::Horizontal),
         || {
             stack_with(
@@ -32,13 +32,13 @@ fn anchored_track() {
 /// A square dragged freely in one axis, with how far and how fast it was let go.
 #[composable]
 fn draggable_box() {
-    let theme = theme();
+    let theme = color_scheme();
     let state = remember_draggable_state();
     stack_with(
         Modifier::new()
             .width(260.0)
             .height(44.0)
-            .background_rounded(theme.accent, 8.0)
+            .background_rounded(theme.surface_variant, 8.0)
             .clip(),
         || {
             stack_with(
@@ -61,13 +61,13 @@ fn draggable_box() {
 /// An area panned with one pointer, zoomed and turned with two (Ctrl and the wheel zoom).
 #[composable]
 fn transform_area() {
-    let theme = theme();
+    let theme = color_scheme();
     let state = remember_transformable_state();
     stack_with(
         Modifier::new()
             .width(260.0)
             .height(120.0)
-            .background_rounded(theme.accent, 8.0)
+            .background_rounded(theme.surface_variant, 8.0)
             .clip()
             .transformable(&state),
         || {
@@ -93,7 +93,7 @@ fn transform_area() {
 /// A list inside a list: the inner one scrolls first, the outer takes what is left over.
 #[composable]
 fn nested_lists() {
-    let theme = theme();
+    let theme = color_scheme();
     let outer_position = remember(|| 0.0_f32);
     let outer = remember_scrollable_state({
         let position = outer_position.clone();
@@ -118,7 +118,7 @@ fn nested_lists() {
         Modifier::new()
             .width(260.0)
             .height(140.0)
-            .background_rounded(theme.accent, 8.0)
+            .background_rounded(theme.surface_variant, 8.0)
             .clip()
             .scrollable(&outer, Axis::Vertical),
         || {

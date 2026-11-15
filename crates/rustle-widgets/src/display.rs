@@ -8,12 +8,12 @@ use rustle_foundation::{
 use rustle_graphics::Color;
 use rustle_text::FontWeight;
 
-use crate::theme::theme;
+use crate::theme::{color_scheme, text_style_of, typography};
 
 /// Emits a small rounded label that can be selected, calling `on_click` when clicked.
 #[track_caller]
 pub fn chip(label: &str, selected: bool, on_click: impl Fn() + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     let fill = animate_color_as_state(
         if selected {
             theme.primary
@@ -48,7 +48,7 @@ pub fn chip(label: &str, selected: bool, on_click: impl Fn() + 'static) {
             } else {
                 theme.on_surface
             };
-            let style = LOCAL_TEXT_STYLE.current().color(color).font_size(15.0);
+            let style = text_style_of(typography().label_large).color(color);
             LOCAL_TEXT_STYLE.provide(style, || text(label.to_string()));
         },
     );
@@ -66,11 +66,7 @@ pub fn badge(count: u32) {
             .padding_xy(5.0, 0.0),
         BoxAlignment::Center,
         || {
-            let style = LOCAL_TEXT_STYLE
-                .current()
-                .color(Color::rgb(255, 255, 255))
-                .font_size(12.0)
-                .bold();
+            let style = text_style_of(typography().label_medium).color(Color::rgb(255, 255, 255));
             rustle_foundation::text_styled(Modifier::new(), count.to_string(), style);
         },
     );
@@ -87,10 +83,10 @@ pub enum BadgeStyle {
 /// Emits a small rounded label such as a status or a count.
 #[track_caller]
 pub fn pill(label: &str, style: BadgeStyle) {
-    let theme = theme();
+    let theme = color_scheme();
     let (fill, content, border) = match style {
         BadgeStyle::Default => (theme.primary, theme.on_primary, Color::TRANSPARENT),
-        BadgeStyle::Secondary => (theme.accent, theme.on_surface, Color::TRANSPARENT),
+        BadgeStyle::Secondary => (theme.surface_variant, theme.on_surface, Color::TRANSPARENT),
         BadgeStyle::Outline => (Color::TRANSPARENT, theme.on_surface, theme.outline),
     };
     stack_with(
@@ -99,11 +95,7 @@ pub fn pill(label: &str, style: BadgeStyle) {
             .border(1.0, border, 100.0)
             .padding_xy(8.0, 1.0),
         || {
-            let text_style = LOCAL_TEXT_STYLE
-                .current()
-                .color(content)
-                .font_size(12.0)
-                .font_weight(FontWeight::MEDIUM);
+            let text_style = text_style_of(typography().label_medium).color(content);
             text_styled(Modifier::new(), label.to_string(), text_style);
         },
     );
@@ -112,11 +104,11 @@ pub fn pill(label: &str, style: BadgeStyle) {
 /// Emits a round avatar of `size` showing `initials`.
 #[track_caller]
 pub fn avatar(initials: &str, size: f32) {
-    let theme = theme();
+    let theme = color_scheme();
     stack_aligned(
         Modifier::new()
             .size(size, size)
-            .background_rounded(theme.accent, size / 2.0),
+            .background_rounded(theme.surface_variant, size / 2.0),
         BoxAlignment::Center,
         || {
             let text_style = LOCAL_TEXT_STYLE

@@ -10,7 +10,11 @@ use rustle_geometry::{Offset, Size};
 use rustle_text::FontWeight;
 use rustle_unit::Constraints;
 
-use crate::theme::{theme, with_text_color};
+use crate::shape::{Shape, ShapeModifier};
+use crate::theme::{
+    absolute_tonal_elevation, color_scheme, provide_content_color, provide_tonal_elevation, shapes,
+    text_style_of, typography,
+};
 
 /// Emits a container filled with the theme's surface color, around `content`.
 #[track_caller]
@@ -21,14 +25,39 @@ pub fn surface(content: impl FnOnce()) {
 /// Emits a surface with `modifier`, which applies outside the surface's own look.
 #[track_caller]
 pub fn surface_with(modifier: Modifier, content: impl FnOnce()) {
-    let theme = theme();
-    let radius = theme.corner_radius + 4.0;
+    let theme = color_scheme();
+    let radius = shapes().medium;
     stack_with(
         modifier
-            .background_rounded(theme.surface, radius)
-            .border(1.0, theme.outline, radius),
-        || with_text_color(theme.on_surface, content),
+            .background_shape(theme.surface, radius)
+            .border_shape(1.0, theme.outline, radius),
+        || provide_content_color(theme.on_surface, content),
     );
+}
+
+/// Emits a surface as Compose's `Surface` does: filled in `shape` with the color of a surface
+/// raised by `tonal_elevation` above the surfaces around it, casting a shadow of
+/// `shadow_elevation`, and with the text colored for it.
+#[track_caller]
+pub fn surface_elevated(
+    modifier: Modifier,
+    shape: Shape,
+    tonal_elevation: f32,
+    shadow_elevation: f32,
+    content: impl FnOnce(),
+) {
+    let scheme = color_scheme();
+    let total = absolute_tonal_elevation() + tonal_elevation;
+    let color = scheme.surface_color_at_elevation(total);
+    let mut modifier = modifier;
+    if shadow_elevation > 0.0 {
+        modifier = modifier.shadow(shadow_elevation, shape.radius());
+    }
+    stack_with(modifier.background_shape(color, shape), || {
+        provide_tonal_elevation(tonal_elevation, || {
+            provide_content_color(scheme.content_color_for(scheme.surface), content)
+        })
+    });
 }
 
 /// Emits a surface: a card with a hairline border.
@@ -51,7 +80,7 @@ pub fn card_header(heading: &str, description: &str) {
 /// Emits a thin line across the available width.
 #[track_caller]
 pub fn divider() {
-    let theme = theme();
+    let theme = color_scheme();
     spacer(
         Modifier::new()
             .fill_max_width()
@@ -63,7 +92,7 @@ pub fn divider() {
 /// Emits a hairline across the available width.
 #[track_caller]
 pub fn separator() {
-    let theme = theme();
+    let theme = color_scheme();
     spacer(
         Modifier::new()
             .fill_max_width()
@@ -75,7 +104,7 @@ pub fn separator() {
 /// Emits a bar across the top showing `title`, in the theme's primary color.
 #[track_caller]
 pub fn top_app_bar(title: &str) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         Modifier::new()
             .fill_max_width()
@@ -85,11 +114,7 @@ pub fn top_app_bar(title: &str) {
         Arrangement::Start,
         Alignment::Center,
         || {
-            let style = LOCAL_TEXT_STYLE
-                .current()
-                .color(theme.on_primary)
-                .font_size(21.0)
-                .bold();
+            let style = text_style_of(typography().title_large).color(theme.on_primary);
             text_styled(
                 Modifier::new().semantics(Semantics::new(Role::Label).heading(1)),
                 title.to_string(),
@@ -254,16 +279,18 @@ pub fn scaffold_with(
 /// Emits text in the muted color, for descriptions and captions.
 #[track_caller]
 pub fn muted(content: &str) {
-    muted_sized(content, 14.0);
+    let text_style =
+        text_style_of(typography().body_medium).color(color_scheme().on_surface_variant);
+    text_styled(Modifier::new(), content.to_string(), text_style);
 }
 
 /// Emits muted text of a given size.
 #[track_caller]
 pub fn muted_sized(content: &str, size: f32) {
-    let theme = theme();
+    let theme = color_scheme();
     let text_style = LOCAL_TEXT_STYLE
         .current()
-        .color(theme.on_surface_muted)
+        .color(theme.on_surface_variant)
         .font_size(size);
     text_styled(Modifier::new(), content.to_string(), text_style);
 }
@@ -286,7 +313,7 @@ pub fn title(content: &str, size: f32) {
 /// it and optional `trailing` text at the end.
 #[track_caller]
 pub fn list_item(headline: &str, supporting: Option<&str>, trailing: Option<&str>) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         Modifier::new().fill_max_width().padding_xy(16.0, 10.0),
         Arrangement::SpaceBetween,
@@ -295,15 +322,13 @@ pub fn list_item(headline: &str, supporting: Option<&str>, trailing: Option<&str
             column(|| {
                 text(headline.to_string());
                 if let Some(supporting) = supporting {
-                    let style = LOCAL_TEXT_STYLE
-                        .current()
-                        .color(theme.on_surface_muted)
-                        .font_size(14.0);
+                    let style =
+                        text_style_of(typography().body_medium).color(theme.on_surface_variant);
                     rustle_foundation::text_styled(Modifier::new(), supporting.to_string(), style);
                 }
             });
             if let Some(trailing) = trailing {
-                let style = LOCAL_TEXT_STYLE.current().color(theme.on_surface_muted);
+                let style = LOCAL_TEXT_STYLE.current().color(theme.on_surface_variant);
                 rustle_foundation::text_styled(Modifier::new(), trailing.to_string(), style);
             }
         },

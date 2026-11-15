@@ -2,6 +2,8 @@
 
 use rustle::prelude::*;
 
+use crate::extended::extended_colors;
+
 use super::{kbd, wrap};
 use crate::ctx::Ctx;
 use crate::ui::{icon_action, panel};
@@ -78,7 +80,7 @@ pub(super) fn buttons(ctx: &Ctx) {
                         row_arranged(
                             Modifier::new()
                                 .fill_max_size()
-                                .background_rounded(theme().accent, 8.0),
+                                .background_rounded(color_scheme().surface_variant, 8.0),
                             Arrangement::Center,
                             Alignment::Center,
                             || {
@@ -111,7 +113,7 @@ pub(super) fn buttons(ctx: &Ctx) {
 
 #[composable]
 pub(super) fn badges() {
-    let theme = theme();
+    let theme = color_scheme();
     panel("Badge", "Status, counts and keyboard hints.", || {
         wrap(|| {
             pill("Badge", BadgeStyle::Default);
@@ -127,7 +129,7 @@ pub(super) fn badges() {
                     spacer(
                         Modifier::new()
                             .size(7.0, 7.0)
-                            .background_rounded(theme.success, 4.0),
+                            .background_rounded(extended_colors().success, 4.0),
                     );
                     muted_sized("Online", 12.0);
                 },
@@ -139,7 +141,7 @@ pub(super) fn badges() {
                 Arrangement::SpacedBy(6.0),
                 Alignment::Center,
                 || {
-                    icon(phosphor::CHECK, 12.0, theme.success);
+                    icon(phosphor::CHECK, 12.0, extended_colors().success);
                     muted_sized("Verified", 12.0);
                 },
             );
@@ -161,7 +163,7 @@ pub(super) fn badges() {
 
 #[composable]
 pub(super) fn avatars() {
-    let theme = theme();
+    let theme = color_scheme();
     panel("Avatar", "Single, and stacked as a group.", || {
         row_arranged(
             Modifier::new(),

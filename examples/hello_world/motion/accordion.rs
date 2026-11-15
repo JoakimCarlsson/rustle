@@ -11,7 +11,7 @@ pub(super) fn accordion_item(
     open: bool,
     on_toggle: impl Fn() + 'static,
 ) {
-    let theme = theme();
+    let theme = color_scheme();
     let turn = animate_float_as_state(if open { 180.0 } else { 0.0 }, tween(220)).get();
     column_with(Modifier::new().fill_max_width(), || {
         row_arranged(
@@ -32,7 +32,7 @@ pub(super) fn accordion_item(
                 stack_aligned(
                     Modifier::new().size(16.0, 16.0).rotate(turn),
                     BoxAlignment::Center,
-                    || icon(phosphor::CARET_DOWN, 16.0, theme.on_surface_muted),
+                    || icon(phosphor::CARET_DOWN, 16.0, theme.on_surface_variant),
                 );
             },
         );

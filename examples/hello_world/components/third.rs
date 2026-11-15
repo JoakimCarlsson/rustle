@@ -16,7 +16,7 @@ pub(super) fn account_names(balances: [f64; 3]) -> Vec<String> {
 
 #[composable]
 pub(super) fn third_column(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let url = remember_text_field_state("https://example.com/ledger/connect");
     let refreshes = remember(|| 0u32);
     let amount = remember_text_field_state("1,200.00");
@@ -96,7 +96,7 @@ pub(super) fn third_column(ctx: &Ctx) {
             column_with(
                 Modifier::new()
                     .fill_max_width()
-                    .background_rounded(theme.secondary, 10.0)
+                    .background_rounded(theme.secondary_container, 10.0)
                     .border(1.0, theme.outline, 10.0)
                     .padding(14.0),
                 || {
@@ -149,7 +149,7 @@ pub(super) fn third_column(ctx: &Ctx) {
                         .clickable(move || home.go(0)),
                     || muted_sized("Home", 13.0),
                 );
-                icon(phosphor::CARET_RIGHT, 12.0, theme.on_surface_muted);
+                icon(phosphor::CARET_RIGHT, 12.0, theme.on_surface_variant);
                 let trail = [("Billing", 8usize), ("Cards", 2), ("Statements", 6)]
                     .map(|(label, page)| {
                         let ctx = ctx.clone();
@@ -162,12 +162,12 @@ pub(super) fn third_column(ctx: &Ctx) {
                             Modifier::new()
                                 .semantics(Semantics::new(Role::Button).label("More".to_string()))
                                 .clickable(move || open()),
-                            || icon(phosphor::DOTS_THREE, 14.0, theme.on_surface_muted),
+                            || icon(phosphor::DOTS_THREE, 14.0, theme.on_surface_variant),
                         )
                     },
                     trail,
                 );
-                icon(phosphor::CARET_RIGHT, 12.0, theme.on_surface_muted);
+                icon(phosphor::CARET_RIGHT, 12.0, theme.on_surface_variant);
                 text("Payments".to_string());
             },
         );
@@ -204,7 +204,7 @@ pub(super) fn third_column(ctx: &Ctx) {
                                 .merging_descendants(),
                         )
                         .clickable(move || toggle.set(if open { None } else { Some(index) }))
-                        .background_rounded(theme.secondary, 10.0)
+                        .background_rounded(theme.secondary_container, 10.0)
                         .padding(14.0),
                     || {
                         row_arranged(
@@ -217,7 +217,7 @@ pub(super) fn third_column(ctx: &Ctx) {
                                     Arrangement::SpacedBy(12.0),
                                     Alignment::Center,
                                     || {
-                                        icon(glyph, 16.0, theme.on_surface_muted);
+                                        icon(glyph, 16.0, theme.on_surface_variant);
                                         column_with(Modifier::new().width_in(120.0, 260.0), || {
                                             title(heading, 13.0);
                                             muted_sized(detail, 12.0);
@@ -231,7 +231,7 @@ pub(super) fn third_column(ctx: &Ctx) {
                                         phosphor::CARET_RIGHT
                                     },
                                     14.0,
-                                    theme.on_surface_muted,
+                                    theme.on_surface_variant,
                                 );
                             },
                         );

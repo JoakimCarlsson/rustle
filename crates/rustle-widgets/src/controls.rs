@@ -7,7 +7,7 @@ use rustle_icons::phosphor;
 use rustle_runtime::remember;
 
 use crate::icons::icon;
-use crate::theme::theme;
+use crate::theme::color_scheme;
 
 /// Reads a value assistive technology sets on a toggle: `true`, `on`, `checked` or `1`
 /// turn it on, `false`, `off`, `unchecked` or `0` turn it off, anything else is ignored.
@@ -31,7 +31,7 @@ fn parse_percent(text: &str) -> Option<f32> {
 pub fn checkbox(checked: bool, on_change: impl Fn(bool) + 'static) {
     let on_change = std::rc::Rc::new(on_change);
     let set = std::rc::Rc::clone(&on_change);
-    let theme = theme();
+    let theme = color_scheme();
     let fill = animate_color_as_state(
         if checked {
             theme.primary
@@ -75,10 +75,14 @@ pub fn checkbox(checked: bool, on_change: impl Fn(bool) + 'static) {
 pub fn switch(checked: bool, on_change: impl Fn(bool) + 'static) {
     let on_change = std::rc::Rc::new(on_change);
     let set = std::rc::Rc::clone(&on_change);
-    let theme = theme();
+    let theme = color_scheme();
     let thumb = animate_float_as_state(if checked { 18.0 } else { 2.0 }, tween(140));
     let track = animate_color_as_state(
-        if checked { theme.primary } else { theme.accent },
+        if checked {
+            theme.primary
+        } else {
+            theme.surface_variant
+        },
         tween(140),
     );
     let knob = if checked {
@@ -115,7 +119,7 @@ pub fn switch(checked: bool, on_change: impl Fn(bool) + 'static) {
 /// Emits a radio button that is selected or not and runs `on_select` when clicked.
 #[track_caller]
 pub fn radio_button(selected: bool, on_select: impl Fn() + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     let outline = if selected {
         theme.primary
     } else {
@@ -145,7 +149,7 @@ pub fn radio_button(selected: bool, on_select: impl Fn() + 'static) {
 #[track_caller]
 pub fn slider(width: f32, value: f32, on_change: impl Fn(f32) + 'static) {
     const THUMB: f32 = 16.0;
-    let theme = theme();
+    let theme = color_scheme();
     let value = value.clamp(0.0, 1.0);
     let travel = (width - THUMB).max(1.0);
     let on_change = std::rc::Rc::new(on_change);
@@ -169,7 +173,7 @@ pub fn slider(width: f32, value: f32, on_change: impl Fn(f32) + 'static) {
                 Modifier::new()
                     .fill_max_width()
                     .height(6.0)
-                    .background_rounded(theme.accent, 3.0),
+                    .background_rounded(theme.surface_variant, 3.0),
             );
             spacer(
                 Modifier::new()
@@ -195,7 +199,7 @@ pub fn slider(width: f32, value: f32, on_change: impl Fn(f32) + 'static) {
 pub fn range_slider(width: f32, start: f32, end: f32, on_change: impl Fn(f32, f32) + 'static) {
     const THUMB: f32 = 20.0;
     rustle_runtime::group(|| {
-        let theme = theme();
+        let theme = color_scheme();
         let travel = (width - THUMB).max(1.0);
         let (start, end) = (start.clamp(0.0, 1.0), end.clamp(0.0, 1.0));
         // Which thumb the current drag moves: 0 not decided yet, 1 the start, 2 the end.

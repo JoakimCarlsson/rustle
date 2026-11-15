@@ -4,15 +4,15 @@ use std::rc::Rc;
 
 use rustle_animation::{animate_float_as_state, tween};
 use rustle_foundation::{
-    Alignment, Arrangement, BoxAlignment, LOCAL_TEXT_STYLE, Modifier, Role, Semantics, column_with,
-    floating, row_arranged, spacer, stack_aligned, stack_with, text,
+    Alignment, Arrangement, BoxAlignment, Modifier, Role, Semantics, column_with, floating,
+    row_arranged, spacer, stack_aligned, stack_with, text,
 };
 use rustle_graphics::Color;
 use rustle_runtime::remember;
 
 use crate::card;
 use crate::text_button;
-use crate::theme::{theme, with_text_color};
+use crate::theme::{color_scheme, provide_content_color, text_style_of, typography};
 
 /// Emits a modal dialog: a dimmed layer over the whole area with `content` in
 /// a card at its center. Clicking the dimmed area calls `on_dismiss`.
@@ -61,7 +61,7 @@ pub fn alert_dialog(
         move || on_dismiss(),
         || {
             column_with(Modifier::new().width_in(260.0, 380.0), || {
-                let heading = LOCAL_TEXT_STYLE.current().font_size(22.0).bold();
+                let heading = text_style_of(typography().title_large);
                 rustle_foundation::text_styled(Modifier::new(), title.to_string(), heading);
                 spacer(Modifier::new().height(8.0));
                 text(message.to_string());
@@ -86,7 +86,7 @@ pub fn alert_dialog(
 #[track_caller]
 pub fn bottom_sheet(visible: bool, on_dismiss: impl Fn() + 'static, content: impl FnOnce()) {
     rustle_runtime::group(|| {
-        let theme = theme();
+        let theme = color_scheme();
         let progress = animate_float_as_state(if visible { 1.0 } else { 0.0 }, tween(260)).get();
         let height = remember(|| std::rc::Rc::new(std::cell::Cell::new(300.0_f32))).get();
         if !visible && progress < 0.001 {
@@ -114,7 +114,7 @@ pub fn bottom_sheet(visible: bool, on_dismiss: impl Fn() + 'static, content: imp
                         // Takes clicks, so they do not dismiss the sheet.
                         .clickable_plain(|| {})
                         .padding(24.0),
-                    || with_text_color(theme.on_surface, content),
+                    || provide_content_color(theme.on_surface, content),
                 );
             },
         );

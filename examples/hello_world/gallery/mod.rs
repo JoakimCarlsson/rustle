@@ -31,12 +31,12 @@ fn wrap(content: impl FnOnce()) {
 
 #[composable]
 fn kbd(label: &str) {
-    let theme = theme();
+    let theme = color_scheme();
     stack_aligned(
         Modifier::new()
             .height(22.0)
             .width_in(22.0, 120.0)
-            .background_rounded(theme.accent, 5.0)
+            .background_rounded(theme.surface_variant, 5.0)
             .border(1.0, theme.outline, 5.0)
             .padding_xy(6.0, 0.0),
         BoxAlignment::Center,
@@ -46,7 +46,7 @@ fn kbd(label: &str) {
                 label.to_string(),
                 LOCAL_TEXT_STYLE
                     .current()
-                    .color(theme.on_surface_muted)
+                    .color(theme.on_surface_variant)
                     .font_size(11.0)
                     .font_family(FontFamily::Monospace),
             );

@@ -6,6 +6,7 @@
 mod components;
 mod ctx;
 mod dashboard;
+mod extended;
 mod gallery;
 mod motion;
 mod overlays;
@@ -21,27 +22,35 @@ use crate::ctx::{remember_ctx, toast_timer};
 #[composable]
 fn app() {
     let ctx = remember_ctx();
-    let theme = match ctx.dark.get() {
-        Some(true) => Theme::dark(),
-        Some(false) => Theme::light(),
-        None => system_theme(),
+    let scheme = match ctx.dark.get() {
+        Some(true) => dark_color_scheme(),
+        Some(false) => light_color_scheme(),
+        None if is_system_in_dark_theme() => dark_color_scheme(),
+        None => light_color_scheme(),
     };
     toast_timer(&ctx);
 
-    provide_theme(theme, || {
-        stack_with(Modifier::new().fill_max_size(), || {
-            if ctx.signed_in.get() {
-                shell(&ctx, theme);
-            } else {
-                overlays::signed_out(&ctx);
-            }
-            overlays::overlays(&ctx);
-        });
+    let extended = if scheme == dark_color_scheme() {
+        extended::ExtendedColors::dark()
+    } else {
+        extended::ExtendedColors::light()
+    };
+    extended::provide_extended_colors(extended, || {
+        theme(scheme, None, None, || {
+            stack_with(Modifier::new().fill_max_size(), || {
+                if ctx.signed_in.get() {
+                    shell(&ctx, scheme);
+                } else {
+                    overlays::signed_out(&ctx);
+                }
+                overlays::overlays(&ctx);
+            });
+        })
     });
 }
 
 #[composable]
-fn shell(ctx: &ctx::Ctx, theme: Theme) {
+fn shell(ctx: &ctx::Ctx, theme: ColorScheme) {
     row_arranged(
         Modifier::new().fill_max_size().background(theme.background),
         Arrangement::Start,

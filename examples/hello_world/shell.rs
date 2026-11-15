@@ -7,7 +7,7 @@ use crate::ui::icon_action;
 
 #[composable]
 pub fn sidebar(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let compact = ctx.collapsed.get();
     let page = ctx.page.get();
     let width = animate_float_as_state(if compact { 64.0 } else { 256.0 }, tween(180)).get();
@@ -163,7 +163,7 @@ pub fn sidebar(ctx: &Ctx) {
 /// The mail button, which opens the notifications.
 #[composable]
 fn notifications(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let unread = ctx.unread();
     let mut items: Vec<MenuItem> = ctx
         .notices
@@ -213,7 +213,7 @@ fn notifications(ctx: &Ctx) {
                                 spacer(
                                     Modifier::new()
                                         .size(8.0, 8.0)
-                                        .background_rounded(theme.danger, 4.0),
+                                        .background_rounded(theme.error, 4.0),
                                 )
                             },
                         );
@@ -227,7 +227,7 @@ fn notifications(ctx: &Ctx) {
 
 #[composable]
 fn user_row(ctx: &Ctx, compact: bool) {
-    let theme = theme();
+    let theme = color_scheme();
     let items = vec![
         MenuItem::new("Account", {
             let ctx = ctx.clone();
@@ -284,7 +284,11 @@ fn user_row(ctx: &Ctx, compact: bool) {
                         },
                     );
                     if !compact {
-                        icon(phosphor::DOTS_THREE_VERTICAL, 16.0, theme.on_surface_muted);
+                        icon(
+                            phosphor::DOTS_THREE_VERTICAL,
+                            16.0,
+                            theme.on_surface_variant,
+                        );
                     }
                 },
             );
@@ -295,11 +299,11 @@ fn user_row(ctx: &Ctx, compact: bool) {
 
 #[composable]
 fn nav_item(glyph: Icon, label: &str, active: bool, compact: bool, on_click: impl Fn() + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     let color = if active {
         theme.on_surface
     } else {
-        theme.on_surface_muted
+        theme.on_surface_variant
     };
     row_arranged(
         Modifier::new()
@@ -312,7 +316,7 @@ fn nav_item(glyph: Icon, label: &str, active: bool, compact: bool, on_click: imp
             .clickable(on_click)
             .background_rounded(
                 if active {
-                    theme.accent
+                    theme.surface_variant
                 } else {
                     Color::TRANSPARENT
                 },
@@ -337,7 +341,7 @@ fn nav_item(glyph: Icon, label: &str, active: bool, compact: bool, on_click: imp
 
 #[composable]
 pub fn top_bar(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         Modifier::new()
             .fill_max_width()

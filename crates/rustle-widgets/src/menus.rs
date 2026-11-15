@@ -15,7 +15,7 @@ use crate::card;
 use crate::icons::icon;
 use crate::popup;
 use crate::select_field;
-use crate::theme::{theme, with_text_color};
+use crate::theme::{color_scheme, provide_content_color};
 
 /// Emits a menu of `content` below what was emitted before it, while `expanded`.
 /// Emit it right after the control that opens it, in the same column or stack.
@@ -56,7 +56,7 @@ pub fn dropdown_menu_at(
 /// Emits one entry of a menu showing `label` that runs `on_click` when clicked.
 #[track_caller]
 pub fn dropdown_menu_item(label: &str, on_click: impl Fn() + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     stack_with(
         Modifier::new()
             .fill_max_width()
@@ -67,7 +67,7 @@ pub fn dropdown_menu_item(label: &str, on_click: impl Fn() + 'static) {
             )
             .clickable(on_click)
             .padding_xy(16.0, 10.0),
-        || with_text_color(theme.on_surface, || text(label.to_string())),
+        || provide_content_color(theme.on_surface, || text(label.to_string())),
     );
 }
 
@@ -115,7 +115,7 @@ impl MenuItem {
 #[track_caller]
 pub fn menu(trigger: impl FnOnce(Rc<dyn Fn()>), items: Vec<MenuItem>) {
     rustle_runtime::group(|| {
-        let theme = theme();
+        let theme = color_scheme();
         let open = rustle_runtime::remember(|| false);
         let opener = open.clone();
         let dismiss = open.clone();
@@ -154,7 +154,7 @@ pub fn menu(trigger: impl FnOnce(Rc<dyn Fn()>), items: Vec<MenuItem>) {
                         let (item, close) = (item.clone(), open.clone());
                         key(index, || {
                             let color = if item.destructive {
-                                theme.danger
+                                theme.error
                             } else {
                                 theme.on_surface
                             };
@@ -185,7 +185,7 @@ pub fn menu(trigger: impl FnOnce(Rc<dyn Fn()>), items: Vec<MenuItem>) {
                                     text_styled(Modifier::new(), item.label.clone(), style);
                                     if item.checked {
                                         spacer(Modifier::new().weight(1.0));
-                                        icon(phosphor::CHECK, 14.0, theme.on_surface_muted);
+                                        icon(phosphor::CHECK, 14.0, theme.on_surface_variant);
                                     }
                                 },
                             );

@@ -12,13 +12,14 @@ use rustle_text::FontWeight;
 
 use crate::BadgeStyle;
 use crate::pill;
-use crate::theme::theme;
+use crate::shape::ShapeModifier;
+use crate::theme::{color_scheme, shapes, text_style_of, typography};
 
 /// Emits a row of tabs labelled `labels`, with `selected` underlined, calling
 /// `on_select` with the index of the tab clicked.
 #[track_caller]
 pub fn tab_row(selected: usize, labels: &[&str], on_select: impl Fn(usize) + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     let on_select = Rc::new(on_select);
     // Tabs keep their natural width and the row scrolls when they do not all fit.
     let scroll = remember_scroll_state();
@@ -32,7 +33,7 @@ pub fn tab_row(selected: usize, labels: &[&str], on_select: impl Fn(usize) + 'st
                     let color = if active {
                         theme.primary
                     } else {
-                        theme.on_surface_muted
+                        theme.on_surface_variant
                     };
                     let style = LOCAL_TEXT_STYLE
                         .current()
@@ -77,12 +78,12 @@ pub fn tabs_list(
     tabs: &[(&str, Option<u32>)],
     on_select: impl Fn(usize) + 'static,
 ) {
-    let theme = theme();
+    let theme = color_scheme();
     let on_select = Rc::new(on_select);
     row_arranged(
         Modifier::new()
-            .background_rounded(theme.secondary, theme.corner_radius + 2.0)
-            .border(1.0, theme.outline, theme.corner_radius + 2.0)
+            .background_shape(theme.secondary_container, shapes().small)
+            .border_shape(1.0, theme.outline, shapes().small)
             .padding(3.0),
         Arrangement::SpacedBy(2.0),
         Alignment::Center,
@@ -100,26 +101,24 @@ pub fn tabs_list(
                                     .merging_descendants(),
                             )
                             .clickable(move || on_select(index))
-                            .background_rounded(
+                            .background_shape(
                                 if active {
-                                    theme.accent
+                                    theme.surface_variant
                                 } else {
                                     Color::TRANSPARENT
                                 },
-                                theme.corner_radius,
+                                shapes().small,
                             )
                             .padding_xy(12.0, 5.0),
                         Arrangement::SpacedBy(6.0),
                         Alignment::Center,
                         || {
-                            let text_style = LOCAL_TEXT_STYLE
-                                .current()
-                                .color(if active {
+                            let text_style =
+                                text_style_of(typography().label_large).color(if active {
                                     theme.on_surface
                                 } else {
-                                    theme.on_surface_muted
-                                })
-                                .font_weight(FontWeight::MEDIUM);
+                                    theme.on_surface_variant
+                                });
                             text_styled(Modifier::new(), label.to_string(), text_style);
                             if let Some(count) = count {
                                 pill(&count.to_string(), BadgeStyle::Secondary);
@@ -135,11 +134,11 @@ pub fn tabs_list(
 /// Emits joined buttons, one per label, with `selected` highlighted.
 #[track_caller]
 pub fn segmented_control(selected: usize, labels: &[&str], on_select: impl Fn(usize) + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     let on_select = Rc::new(on_select);
     row_arranged(
         Modifier::new()
-            .border(1.0, theme.outline, theme.corner_radius)
+            .border_shape(1.0, theme.outline, shapes().small)
             .clip(),
         Arrangement::Start,
         Alignment::Center,
@@ -158,20 +157,18 @@ pub fn segmented_control(selected: usize, labels: &[&str], on_select: impl Fn(us
                             )
                             .clickable(move || on_select(index))
                             .background(if active {
-                                theme.accent
+                                theme.surface_variant
                             } else {
                                 Color::TRANSPARENT
                             })
                             .padding_xy(14.0, 6.0),
                         || {
-                            let text_style = LOCAL_TEXT_STYLE
-                                .current()
-                                .color(if active {
+                            let text_style =
+                                text_style_of(typography().label_large).color(if active {
                                     theme.on_surface
                                 } else {
-                                    theme.on_surface_muted
-                                })
-                                .font_weight(FontWeight::MEDIUM);
+                                    theme.on_surface_variant
+                                });
                             text_styled(Modifier::new(), label.to_string(), text_style);
                         },
                     );
@@ -189,7 +186,7 @@ pub fn navigation_bar(
     items: &[(&str, &str)],
     on_select: impl Fn(usize) + 'static,
 ) {
-    let theme = theme();
+    let theme = color_scheme();
     let on_select = Rc::new(on_select);
     row_arranged(
         Modifier::new()
@@ -206,7 +203,7 @@ pub fn navigation_bar(
                     let color = if active {
                         theme.primary
                     } else {
-                        theme.on_surface_muted
+                        theme.on_surface_variant
                     };
                     column_arranged(
                         Modifier::new()
@@ -227,7 +224,7 @@ pub fn navigation_bar(
                                 glyph.to_string(),
                                 icon,
                             );
-                            let caption = LOCAL_TEXT_STYLE.current().color(color).font_size(13.0);
+                            let caption = text_style_of(typography().label_medium).color(color);
                             rustle_foundation::text_styled(
                                 Modifier::new(),
                                 label.to_string(),

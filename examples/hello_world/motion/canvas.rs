@@ -9,7 +9,7 @@ use crate::ui::panel;
 
 #[composable]
 pub(super) fn equalizer() {
-    let theme = theme();
+    let theme = color_scheme();
     let t = clock(5.0).get();
     let (strong, faint) = (
         theme.primary,
@@ -49,10 +49,10 @@ pub(super) fn equalizer() {
 }
 
 pub(super) fn waves(t: f32) {
-    let theme = theme();
+    let theme = color_scheme();
     let layers = [
         (theme.primary, 0.9, 1.0, 2.0),
-        (theme.on_surface_muted, 0.6, 1.6, 1.5),
+        (theme.on_surface_variant, 0.6, 1.6, 1.5),
         (theme.outline, 0.4, 2.4, 1.5),
     ];
     canvas(

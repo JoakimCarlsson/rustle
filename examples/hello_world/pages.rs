@@ -26,7 +26,7 @@ pub fn collection_page(
     noun: &str,
     glyph: Icon,
 ) {
-    let theme = theme();
+    let theme = color_scheme();
     let list = ctx.collections[index].clone();
     let query = remember_text_field_state("");
     let draft = remember_text_field_state("");
@@ -127,7 +127,7 @@ pub fn collection_page(
                                                 star.update(|l| l[slot].starred = !l[slot].starred)
                                             },
                                         );
-                                        icon(glyph.clone(), 18.0, theme.on_surface_muted);
+                                        icon(glyph.clone(), 18.0, theme.on_surface_variant);
                                         column(|| {
                                             title(&item.name, 14.0);
                                             muted_sized(&item.detail, 13.0);
@@ -381,7 +381,7 @@ pub fn settings_page(ctx: &Ctx) {
 
 #[composable]
 pub fn help_page(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let open = remember(|| None::<usize>);
     let message = remember_text_field_state("");
     page_frame(
@@ -433,7 +433,7 @@ pub fn help_page(ctx: &Ctx) {
                                             icon(
                                                 if shown { phosphor::CARET_UP } else { phosphor::CARET_DOWN },
                                                 14.0,
-                                                theme.on_surface_muted,
+                                                theme.on_surface_variant,
                                             );
                                         },
                                     );

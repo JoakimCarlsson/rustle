@@ -9,7 +9,7 @@ const LANES: [&str; 3] = ["To do", "In progress", "Done"];
 
 #[composable]
 pub(super) fn kanban(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let cards = remember_state_list(|| {
         vec![
             (0_usize, "Write the docs", 0_usize),
@@ -55,7 +55,7 @@ pub(super) fn kanban(ctx: &Ctx) {
                                             }
                                         });
                                     })
-                                    .background_rounded(theme.secondary, 10.0)
+                                    .background_rounded(theme.secondary_container, 10.0)
                                     .border(1.0, theme.outline, 10.0)
                                     .padding(10.0),
                                 || {
@@ -91,7 +91,7 @@ pub(super) fn kanban(ctx: &Ctx) {
                                                     icon(
                                                         phosphor::DOTS_SIX_VERTICAL,
                                                         14.0,
-                                                        theme.on_surface_muted,
+                                                        theme.on_surface_variant,
                                                     );
                                                     text(label.to_string());
                                                 },

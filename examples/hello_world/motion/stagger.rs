@@ -9,7 +9,7 @@ use crate::ui::panel;
 
 #[composable]
 pub(super) fn stagger_row(index: usize, run: u64, glyph: Icon, label: &str, detail: &str) {
-    let theme = theme();
+    let theme = color_scheme();
     let progress = remember_animatable(0.0_f32);
     let driven = progress.clone();
     launched_effect(run, move |scope| async move {
@@ -25,7 +25,7 @@ pub(super) fn stagger_row(index: usize, run: u64, glyph: Icon, label: &str, deta
             .fill_max_width()
             .alpha(shown)
             .offset((1.0 - shown) * 32.0, 0.0)
-            .background_rounded(theme.secondary, 10.0)
+            .background_rounded(theme.secondary_container, 10.0)
             .border(1.0, theme.outline, 10.0)
             .padding_xy(12.0, 10.0),
         Arrangement::SpacedBy(12.0),
@@ -34,7 +34,7 @@ pub(super) fn stagger_row(index: usize, run: u64, glyph: Icon, label: &str, deta
             stack_aligned(
                 Modifier::new()
                     .size(32.0, 32.0)
-                    .background_rounded(theme.accent, 8.0),
+                    .background_rounded(theme.surface_variant, 8.0),
                 BoxAlignment::Center,
                 || icon(glyph, 15.0, theme.on_surface),
             );

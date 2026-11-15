@@ -17,7 +17,7 @@ pub(super) fn day_label(offset: usize) -> String {
 
 #[composable]
 pub(super) fn visitors_chart(metric: &Metric) {
-    let theme = theme();
+    let theme = color_scheme();
     let range = remember(|| 0usize);
     // April 7 to June 30 is 85 days; shorter ranges end on the same day.
     let points = [85usize, 30, 7][range.get().min(2)];
@@ -73,7 +73,7 @@ pub(super) fn visitors_chart(metric: &Metric) {
                         Modifier::new().fill_max_size(),
                         vec![
                             Series::new(second, theme.primary).filled(),
-                            Series::new(first, theme.on_surface_muted).filled(),
+                            Series::new(first, theme.on_surface_variant).filled(),
                         ],
                         labels,
                         if points > 30 { 8 } else { 3 },

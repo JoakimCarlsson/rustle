@@ -7,7 +7,7 @@ use crate::ui::{icon_box, key_value, money};
 
 #[composable]
 pub(super) fn report_sheet(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     column_with(Modifier::new().fill_max_width().padding(24.0), || {
         row_arranged(
             Modifier::new().fill_max_width(),

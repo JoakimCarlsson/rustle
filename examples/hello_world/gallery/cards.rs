@@ -48,7 +48,7 @@ pub(super) fn login_card(ctx: &Ctx) {
 
 #[composable]
 pub(super) fn tables() {
-    let theme = theme();
+    let theme = color_scheme();
     let rows = [
         ("INV001", "Paid", "Credit Card", "$250.00"),
         ("INV002", "Pending", "PayPal", "$150.00"),
@@ -78,7 +78,7 @@ pub(super) fn tables() {
                         let pick = selected.clone();
                         let fill = animate_color_as_state(
                             if selected.get() == Some(index) {
-                                theme.accent
+                                theme.surface_variant
                             } else {
                                 Color::TRANSPARENT
                             },

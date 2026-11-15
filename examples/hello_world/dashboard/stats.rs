@@ -6,7 +6,7 @@ use super::Metric;
 
 #[composable]
 pub(super) fn delta_pill(label: &str, up: bool) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         Modifier::new()
             .border(1.0, theme.outline, 100.0)
@@ -34,7 +34,7 @@ pub(super) fn delta_pill(label: &str, up: bool) {
 
 #[composable]
 pub(super) fn stat_card(metric: &Metric, selected: bool, on_click: impl Fn() + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     card(
         Modifier::new()
             .weight(1.0)
@@ -44,14 +44,14 @@ pub(super) fn stat_card(metric: &Metric, selected: bool, on_click: impl Fn() + '
                     .merging_descendants(),
             )
             .clickable(on_click)
-            .border(
+            .border_shape(
                 1.5,
                 if selected {
-                    theme.on_surface_muted
+                    theme.on_surface_variant
                 } else {
                     Color::TRANSPARENT
                 },
-                theme.corner_radius,
+                shapes().medium,
             ),
         || {
             column_with(Modifier::new().fill_max_width().padding(20.0), || {

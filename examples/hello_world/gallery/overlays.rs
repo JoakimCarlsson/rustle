@@ -8,7 +8,7 @@ use crate::ui::panel;
 
 #[composable]
 pub(super) fn collapsible() {
-    let theme = theme();
+    let theme = color_scheme();
     let open = remember(|| false);
     let turn = animate_float_as_state(if open.get() { 180.0 } else { 0.0 }, tween(200)).get();
     panel("Collapsible", "Show a little, or all of it.", || {
@@ -33,7 +33,7 @@ pub(super) fn collapsible() {
                         stack_aligned(
                             Modifier::new().size(16.0, 16.0).rotate(turn),
                             BoxAlignment::Center,
-                            || icon(phosphor::CARET_DOWN, 16.0, theme.on_surface_muted),
+                            || icon(phosphor::CARET_DOWN, 16.0, theme.on_surface_variant),
                         );
                     },
                 );
@@ -56,7 +56,7 @@ pub(super) fn collapsible() {
 
 #[composable]
 pub(super) fn repo_row(name: &str) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         Modifier::new()
             .fill_max_width()
@@ -80,7 +80,7 @@ pub(super) fn repo_row(name: &str) {
 
 #[composable]
 pub(super) fn hover_card() {
-    let theme = theme();
+    let theme = color_scheme();
     let hovered = remember(|| false);
     let hover = hovered.clone();
     let shown = animate_float_as_state(if hovered.get() { 1.0 } else { 0.0 }, tween(160)).get();

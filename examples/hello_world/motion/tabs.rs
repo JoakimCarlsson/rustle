@@ -6,7 +6,7 @@ use crate::ui::panel;
 
 #[composable]
 pub(super) fn sliding_tabs() {
-    let theme = theme();
+    let theme = color_scheme();
     const WIDTH: f32 = 96.0;
     let labels = ["Overview", "Analytics", "Reports"];
     let selected = remember(|| 0_usize);
@@ -17,7 +17,7 @@ pub(super) fn sliding_tabs() {
         || {
             stack_aligned(
                 Modifier::new()
-                    .background_rounded(theme.secondary, 10.0)
+                    .background_rounded(theme.secondary_container, 10.0)
                     .border(1.0, theme.outline, 10.0)
                     .padding(3.0),
                 BoxAlignment::CenterStart,
@@ -27,7 +27,7 @@ pub(super) fn sliding_tabs() {
                             .offset(x, 0.0)
                             .size(WIDTH, 30.0)
                             .shadow(3.0, 8.0)
-                            .background_rounded(theme.accent, 8.0),
+                            .background_rounded(theme.surface_variant, 8.0),
                     );
                     row_arranged(
                         Modifier::new(),
@@ -52,7 +52,7 @@ pub(super) fn sliding_tabs() {
                                             let color = if selected.get() == index {
                                                 theme.on_surface
                                             } else {
-                                                theme.on_surface_muted
+                                                theme.on_surface_variant
                                             };
                                             text_styled(
                                                 Modifier::new(),

@@ -7,7 +7,7 @@ use rustle_foundation::{
 };
 use rustle_runtime::{key, launched_effect, remember};
 
-use crate::theme::theme;
+use crate::theme::color_scheme;
 
 /// Emits `content` while `visible`, fading and expanding it in and collapsing
 /// and fading it out. The content leaves the composition, and forgets its
@@ -163,7 +163,7 @@ pub fn horizontal_pager(
 /// Emits a row of dots, `count` of them, with the one at `current` filled.
 #[track_caller]
 pub fn page_indicator(count: usize, current: usize) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         Modifier::new(),
         Arrangement::SpacedBy(8.0),

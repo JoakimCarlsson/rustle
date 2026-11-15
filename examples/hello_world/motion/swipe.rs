@@ -8,7 +8,7 @@ use crate::ui::panel;
 
 #[composable]
 pub(super) fn swipe_list(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let start = || {
         vec![
             (0_usize, "Eddie Lake commented on Design"),
@@ -41,13 +41,13 @@ pub(super) fn swipe_list(ctx: &Ctx) {
                             row_arranged(
                                 Modifier::new()
                                     .fill_max_width()
-                                    .background_rounded(theme.secondary, 10.0)
+                                    .background_rounded(theme.secondary_container, 10.0)
                                     .border(1.0, theme.outline, 10.0)
                                     .padding_xy(14.0, 12.0),
                                 Arrangement::SpacedBy(10.0),
                                 Alignment::Center,
                                 || {
-                                    icon(phosphor::BELL, 15.0, theme.on_surface_muted);
+                                    icon(phosphor::BELL, 15.0, theme.on_surface_variant);
                                     text(message.to_string());
                                 },
                             );

@@ -7,14 +7,14 @@ use crate::ui::{chart_style, key_value, money, panel, tinted};
 
 #[composable]
 pub(super) fn holding_row(name: &str, shares: &str, bars: Vec<f32>, dividend: f64) {
-    let theme = theme();
+    let theme = color_scheme();
     let open = remember(|| false);
     let reinvest = remember(|| false);
     let toggle = open.clone();
     column_with(
         Modifier::new()
             .fill_max_width()
-            .background_rounded(theme.secondary, 10.0)
+            .background_rounded(theme.secondary_container, 10.0)
             .border(1.0, theme.outline, 10.0),
         || {
             row_arranged(
@@ -43,7 +43,7 @@ pub(super) fn holding_row(name: &str, shares: &str, bars: Vec<f32>, dividend: f6
                                 Modifier::new().size(64.0, 28.0),
                                 bars,
                                 Vec::new(),
-                                theme.on_surface_muted,
+                                theme.on_surface_variant,
                                 theme.outline,
                                 None,
                                 false,
@@ -56,7 +56,7 @@ pub(super) fn holding_row(name: &str, shares: &str, bars: Vec<f32>, dividend: f6
                                     phosphor::CARET_DOWN
                                 },
                                 14.0,
-                                theme.on_surface_muted,
+                                theme.on_surface_variant,
                             );
                         },
                     );
@@ -91,7 +91,7 @@ pub(super) fn holding_row(name: &str, shares: &str, bars: Vec<f32>, dividend: f6
 
 #[composable]
 pub(super) fn second_column(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let months = ["Dec", "Jan", "Feb", "Mar", "Apr", "May"];
     let amounts = [5200.0, 7400.0, 6600.0, 8200.0, 5600.0, 7800.0];
     let (hover, hovered) = bar_hover(months.len());
@@ -120,7 +120,7 @@ pub(super) fn second_column(ctx: &Ctx) {
             vec![52.0, 74.0, 66.0, 82.0, 56.0, 78.0],
             months.map(String::from).to_vec(),
             theme.primary,
-            theme.accent,
+            theme.surface_variant,
             shown.map(|i| (i, theme.on_surface)),
             true,
             chart_style(),

@@ -57,7 +57,7 @@ pub(super) fn inputs(ctx: &Ctx) {
                     "Enter a valid email address.".to_string(),
                     LOCAL_TEXT_STYLE
                         .current()
-                        .color(theme().danger)
+                        .color(color_scheme().error)
                         .font_size(12.0),
                 );
             });
@@ -257,7 +257,7 @@ pub(super) fn selects(ctx: &Ctx) {
 
 #[composable]
 pub(super) fn otp() {
-    let theme = theme();
+    let theme = color_scheme();
     let code = remember_text_field_state("");
     panel("Input OTP", "A six digit code, one box per digit.", || {
         let digits: Vec<char> = code
@@ -283,7 +283,7 @@ pub(super) fn otp() {
                             stack_aligned(
                                 Modifier::new()
                                     .size(40.0, 46.0)
-                                    .background_rounded(theme.secondary, 8.0)
+                                    .background_rounded(theme.secondary_container, 8.0)
                                     .border(if current { 1.5 } else { 1.0 }, outline, 8.0),
                                 BoxAlignment::Center,
                                 || {

@@ -9,7 +9,7 @@ type Entry = (Icon, &'static str);
 
 #[composable]
 pub(super) fn nav_list(heading: &str, entries: &[Entry], filter: &str, toast: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let selected = remember(|| None::<usize>);
     card(Modifier::new().weight(1.0), || {
         column_with(Modifier::new().fill_max_width().padding(12.0), || {
@@ -28,7 +28,7 @@ pub(super) fn nav_list(heading: &str, entries: &[Entry], filter: &str, toast: &C
                     let color = if active {
                         theme.on_surface
                     } else {
-                        theme.on_surface_muted
+                        theme.on_surface_variant
                     };
                     row_arranged(
                         Modifier::new()
@@ -44,7 +44,7 @@ pub(super) fn nav_list(heading: &str, entries: &[Entry], filter: &str, toast: &C
                             })
                             .background_rounded(
                                 if active {
-                                    theme.accent
+                                    theme.surface_variant
                                 } else {
                                     Color::TRANSPARENT
                                 },
@@ -70,12 +70,12 @@ pub(super) fn nav_list(heading: &str, entries: &[Entry], filter: &str, toast: &C
 
 #[composable]
 pub(super) fn target_card(ctx: &Ctx, label: &str, goal: f64, saved: State<f64>) {
-    let theme = theme();
+    let theme = color_scheme();
     let percent = (saved.get() / goal).clamp(0.0, 1.0) as f32;
     column_with(
         Modifier::new()
             .fill_max_width()
-            .background_rounded(theme.secondary, 10.0)
+            .background_rounded(theme.secondary_container, 10.0)
             .border(1.0, theme.outline, 10.0)
             .padding(16.0),
         || {
@@ -136,7 +136,7 @@ pub(super) fn target_card(ctx: &Ctx, label: &str, goal: f64, saved: State<f64>) 
 
 #[composable]
 pub(super) fn first_column(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let name = remember_text_field_state("");
     let message = remember_text_field_state("");
     let radios = remember(|| 0usize);
@@ -173,7 +173,7 @@ pub(super) fn first_column(ctx: &Ctx) {
             || {
                 text_field(Modifier::new().fill_max_width(), &name, "Name");
                 stack_with(Modifier::new().padding_xy(12.0, 0.0), || {
-                    icon(phosphor::MAGNIFYING_GLASS, 15.0, theme.on_surface_muted);
+                    icon(phosphor::MAGNIFYING_GLASS, 15.0, theme.on_surface_variant);
                 });
             },
         );

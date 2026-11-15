@@ -1,6 +1,9 @@
 //! The document table.
 
+use rustle::flow_row_with;
 use rustle::prelude::*;
+
+use crate::extended::extended_colors;
 
 use crate::ctx::{Ctx, Doc, Overlay};
 use crate::ui::{icon_action, icon_box};
@@ -84,10 +87,9 @@ pub(super) fn document_section(ctx: &Ctx) {
         .collect();
 
     // Toolbar.
-    row_arranged(
+    flow_row_with(
         Modifier::new().fill_max_width(),
-        Arrangement::SpaceBetween,
-        Alignment::Center,
+        FlowOptions::new(8.0, 8.0).arrangement(Arrangement::SpaceBetween),
         || {
             let pick = tab.clone();
             let page = page_index.clone();
@@ -172,12 +174,14 @@ pub(super) fn document_section(ctx: &Ctx) {
     );
     spacer(Modifier::new().height(12.0));
 
-    let theme = theme();
+    let theme = color_scheme();
     card(Modifier::new().fill_max_width(), || {
         column_with(Modifier::new().fill_max_width(), || {
             // Header.
             stack_with(
-                Modifier::new().fill_max_width().background(theme.secondary),
+                Modifier::new()
+                    .fill_max_width()
+                    .background(theme.secondary_container),
                 || {
                     row_arranged(
                         Modifier::new().fill_max_width().padding_xy(12.0, 10.0),
@@ -281,7 +285,7 @@ pub(super) fn sort_header(
     column: usize,
     sort: &State<Option<(usize, bool)>>,
 ) {
-    let theme = theme();
+    let theme = color_scheme();
     let state = sort.get();
     let glyph = match state {
         Some((c, true)) if c == column => phosphor::CARET_UP,
@@ -308,7 +312,7 @@ pub(super) fn sort_header(
             Alignment::Center,
             || {
                 muted(label);
-                icon(glyph, 12.0, theme.on_surface_muted);
+                icon(glyph, 12.0, theme.on_surface_variant);
             },
         );
     });
@@ -322,7 +326,7 @@ pub(super) fn document_row(
     selected: &State<Vec<usize>>,
     chosen: bool,
 ) {
-    let theme = theme();
+    let theme = color_scheme();
     let id = doc.id;
     let shown = visible.get();
     table_row(|| {
@@ -332,7 +336,7 @@ pub(super) fn document_row(
                 Arrangement::SpacedBy(10.0),
                 Alignment::Center,
                 || {
-                    icon(phosphor::DOTS_SIX_VERTICAL, 14.0, theme.on_surface_muted);
+                    icon(phosphor::DOTS_SIX_VERTICAL, 14.0, theme.on_surface_variant);
                     let selected = selected.clone();
                     checkbox(chosen, move |value| {
                         selected.update(|ids| {
@@ -373,9 +377,9 @@ pub(super) fn document_row(
                     || {
                         spacer(Modifier::new().size(8.0, 8.0).background_rounded(
                             if doc.done {
-                                theme.success
+                                extended_colors().success
                             } else {
-                                theme.on_surface_muted
+                                theme.on_surface_variant
                             },
                             4.0,
                         ));

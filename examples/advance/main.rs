@@ -31,9 +31,11 @@ fn band(content: impl FnOnce()) {
 
 #[composable]
 fn app() {
-    let mut theme = Theme::dark();
-    theme.background = NIGHT;
-    provide_theme(theme, || {
+    let scheme = ColorScheme {
+        background: NIGHT,
+        ..dark_color_scheme()
+    };
+    theme(scheme, None, None, || {
         stack_with(Modifier::new().fill_max_size(), || {
             scene::backdrop_scene();
             let scroll = remember_scroll_state();

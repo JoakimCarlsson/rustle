@@ -6,9 +6,9 @@ use crate::ui::panel;
 
 #[composable]
 pub(super) fn callout(glyph: Icon, heading: &str, body: &str, destructive: bool) {
-    let theme = theme();
+    let theme = color_scheme();
     let color = if destructive {
-        theme.danger
+        theme.error
     } else {
         theme.on_surface
     };
@@ -18,7 +18,7 @@ pub(super) fn callout(glyph: Icon, heading: &str, body: &str, destructive: bool)
             .border(
                 1.0,
                 if destructive {
-                    theme.danger
+                    theme.error
                 } else {
                     theme.outline
                 },

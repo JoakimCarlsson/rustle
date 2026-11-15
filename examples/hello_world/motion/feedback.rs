@@ -4,20 +4,22 @@ use std::f32::consts::TAU;
 
 use rustle::prelude::*;
 
+use crate::extended::extended_colors;
+
 use super::linear;
 use crate::ui::panel;
 
 #[composable]
 pub(super) fn lift_card(glyph: Icon, heading: &str, detail: &str) {
-    let theme = theme();
+    let theme = color_scheme();
     let hovered = remember(|| false);
     let hover = hovered.clone();
     let lift = animate_float_as_state(if hovered.get() { 1.0 } else { 0.0 }, tween(200)).get();
     let fill = animate_color_as_state(
         if hovered.get() {
-            theme.accent
+            theme.surface_variant
         } else {
-            theme.secondary
+            theme.secondary_container
         },
         tween(200),
     )
@@ -46,7 +48,7 @@ pub(super) fn lift_card(glyph: Icon, heading: &str, detail: &str) {
 
 #[composable]
 pub(super) fn spring_switch() {
-    let theme = theme();
+    let theme = color_scheme();
     let on = remember(|| false);
     let toggle = on.clone();
     let x = animate_float_as_state(if on.get() { 20.0 } else { 0.0 }, spring()).get();
@@ -54,7 +56,7 @@ pub(super) fn spring_switch() {
         if on.get() {
             theme.primary
         } else {
-            theme.accent
+            theme.surface_variant
         },
         tween(180),
     )
@@ -87,7 +89,7 @@ pub(super) fn spring_switch() {
 
 #[composable]
 pub(super) fn bell_button() {
-    let theme = theme();
+    let theme = color_scheme();
     let rings = remember(|| 0_u64);
     let angle = remember_animatable(0.0_f32);
     let driven = angle.clone();
@@ -122,7 +124,7 @@ pub(super) fn bell_button() {
 
 #[composable]
 pub(super) fn pop_button() {
-    let theme = theme();
+    let theme = color_scheme();
     let done = remember(|| false);
     let scale = remember_animatable(1.0_f32);
     let driven = scale.clone();
@@ -135,9 +137,9 @@ pub(super) fn pop_button() {
     let toggle = done.clone();
     let fill = animate_color_as_state(
         if done.get() {
-            theme.success
+            extended_colors().success
         } else {
-            theme.accent
+            theme.surface_variant
         },
         tween(200),
     )

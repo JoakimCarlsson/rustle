@@ -66,7 +66,7 @@ fn commands(ctx: &Ctx) -> Vec<Command> {
 
 #[composable]
 pub(super) fn search_palette(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let query = remember_text_field_state("");
     let focus = remember_focus();
     let asked = remember(|| false);
@@ -125,7 +125,7 @@ pub(super) fn search_palette(ctx: &Ctx) {
                                                 .clickable(move || run(&go, &ctx))
                                                 .background_rounded(
                                                     if index == 0 {
-                                                        theme.accent
+                                                        theme.surface_variant
                                                     } else {
                                                         Color::TRANSPARENT
                                                     },
@@ -138,7 +138,7 @@ pub(super) fn search_palette(ctx: &Ctx) {
                                                 icon(
                                                     command.glyph.clone(),
                                                     15.0,
-                                                    theme.on_surface_muted,
+                                                    theme.on_surface_variant,
                                                 );
                                                 text(command.label.clone());
                                             },

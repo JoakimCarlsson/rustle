@@ -40,7 +40,7 @@ fn setting_row(heading: &str, detail: &str, on: State<bool>) {
 
 #[composable]
 fn revenue_card() {
-    let theme = theme();
+    let theme = color_scheme();
     let values: Vec<f32> = vec![42.0, 38.0, 44.0, 40.0, 41.0, 39.0, 45.0, 52.0, 55.0];
     let (hover, hovered) = chart_hover(values.len(), 8.0, 8.0);
     let shown = hovered.map_or(15_231.89, |i| f64::from(values[i]) * 290.0);
@@ -72,7 +72,7 @@ fn revenue_card() {
 
 #[composable]
 fn subscriptions_card() {
-    let theme = theme();
+    let theme = color_scheme();
     let values = vec![
         32.0, 40.0, 28.0, 46.0, 52.0, 44.0, 60.0, 36.0, 48.0, 30.0, 42.0, 54.0,
     ];
@@ -93,8 +93,8 @@ fn subscriptions_card() {
                 Modifier::new().fill_max_width().height(110.0).chain(hover),
                 values,
                 Vec::new(),
-                theme.on_surface_muted,
-                theme.on_surface_muted,
+                theme.on_surface_variant,
+                theme.on_surface_variant,
                 hovered.map(|i| (i, theme.primary)),
                 false,
                 chart_style(),
@@ -185,7 +185,7 @@ pub fn member_row(ctx: &Ctx, index: usize, member: &crate::ctx::Member) {
 
 #[composable]
 fn chat_card(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let epoch = remember(|| 0usize);
     card(Modifier::new().fill_max_width(), || {
         column_with(Modifier::new().fill_max_width().padding(20.0), || {
@@ -248,7 +248,7 @@ fn month_start(year: i32, month: u32) -> (usize, usize) {
 
 #[composable]
 fn calendar_card(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let month = remember(|| (2023i32, 6u32));
     let range = remember(|| (5usize, 13usize));
     let (year, number) = month.get();
@@ -305,7 +305,7 @@ fn calendar_card(ctx: &Ctx) {
 
 #[composable]
 fn goal_card(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let goal = remember(|| 350i32);
     let values = vec![
         40.0, 55.0, 35.0, 60.0, 45.0, 52.0, 38.0, 66.0, 58.0, 42.0, 70.0, 48.0, 62.0, 50.0,
@@ -342,8 +342,8 @@ fn goal_card(ctx: &Ctx) {
                 Modifier::new().fill_max_width().height(60.0).chain(hover),
                 values.clone(),
                 Vec::new(),
-                theme.on_surface_muted,
-                theme.on_surface_muted,
+                theme.on_surface_variant,
+                theme.on_surface_variant,
                 hovered.map(|i| (i, theme.primary)),
                 false,
                 chart_style(),
@@ -372,7 +372,7 @@ fn goal_card(ctx: &Ctx) {
 
 #[composable]
 fn exercise_card() {
-    let theme = theme();
+    let theme = color_scheme();
     let mine = vec![20.0, 25.0, 30.0, 90.0, 40.0, 25.0, 20.0];
     let (hover, hovered) = chart_hover(mine.len(), 8.0, 8.0);
     let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -389,7 +389,7 @@ fn exercise_card() {
                     Series::new(mine, theme.primary).thickness(2.0),
                     Series::new(
                         vec![32.0, 30.0, 34.0, 28.0, 36.0, 32.0, 30.0],
-                        theme.on_surface_muted,
+                        theme.on_surface_variant,
                     ),
                 ],
                 vec![String::new(); 7],

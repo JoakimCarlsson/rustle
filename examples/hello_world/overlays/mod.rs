@@ -8,6 +8,8 @@ use std::rc::Rc;
 
 use rustle::prelude::*;
 
+use crate::extended::extended_colors;
+
 use crate::components::ACCOUNTS;
 use crate::ctx::{Ctx, Overlay};
 use crate::ui::money;
@@ -112,7 +114,7 @@ pub fn overlays(ctx: &Ctx) {
 
 #[composable]
 fn toast(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     let Some((_, message)) = ctx.toast.get() else {
         return;
     };
@@ -129,7 +131,7 @@ fn toast(ctx: &Ctx) {
                 Arrangement::SpacedBy(10.0),
                 Alignment::Center,
                 || {
-                    icon(phosphor::CHECK, 15.0, theme.success);
+                    icon(phosphor::CHECK, 15.0, extended_colors().success);
                     text(message.clone());
                 },
             );
@@ -200,7 +202,7 @@ fn confirm(
 /// Shown instead of the app while signed out.
 #[composable]
 pub fn signed_out(ctx: &Ctx) {
-    let theme = theme();
+    let theme = color_scheme();
     stack_aligned(
         Modifier::new().fill_max_size().background(theme.background),
         BoxAlignment::Center,

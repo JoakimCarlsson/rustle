@@ -7,7 +7,7 @@ use crate::ui::{money, panel};
 
 #[composable]
 pub(super) fn counter_and_bars() {
-    let theme = theme();
+    let theme = color_scheme();
     let total = remember(|| 15_231.89_f64);
     let seed = remember(|| 7_u64);
     let shown = animate_float_as_state(total.get() as f32, linear(900, Easing::EaseOut)).get();
@@ -17,7 +17,7 @@ pub(super) fn counter_and_bars() {
         let target = 0.18 + noise(seed.get() * 31 + i) * 0.82;
         heights.push(key(i, || animate_float_as_state(target, spring()).get()));
     }
-    let (strong, faint) = (theme.primary, theme.accent);
+    let (strong, faint) = (theme.primary, theme.surface_variant);
     panel(
         "Tweened values",
         "Numbers and bars glide to their new value instead of jumping.",

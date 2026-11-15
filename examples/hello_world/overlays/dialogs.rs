@@ -123,7 +123,7 @@ pub(super) fn pending_setup(ctx: &Ctx) {
         "Connect your bank",
         "Balances over $10.00 are paid out on the 15th once a bank is connected.",
     );
-    let theme = theme();
+    let theme = color_scheme();
     for (label, detail) in [
         ("Checking account", "Ending in 8402"),
         ("Savings account", "Ending in 1192"),
@@ -137,7 +137,7 @@ pub(super) fn pending_setup(ctx: &Ctx) {
                         ctx.close();
                         ctx.say(format!("{label} connected"));
                     })
-                    .background_rounded(theme.secondary, 10.0)
+                    .background_rounded(theme.secondary_container, 10.0)
                     .padding(14.0),
                 Arrangement::SpaceBetween,
                 Alignment::Center,
@@ -146,7 +146,7 @@ pub(super) fn pending_setup(ctx: &Ctx) {
                         title(label, 14.0);
                         muted_sized(detail, 12.0);
                     });
-                    icon(phosphor::CARET_RIGHT, 14.0, theme.on_surface_muted);
+                    icon(phosphor::CARET_RIGHT, 14.0, theme.on_surface_variant);
                 },
             );
             spacer(Modifier::new().height(8.0));

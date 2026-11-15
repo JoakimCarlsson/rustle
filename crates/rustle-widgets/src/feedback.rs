@@ -8,12 +8,12 @@ use rustle_graphics::Color;
 use rustle_runtime::remember;
 
 use crate::text_button;
-use crate::theme::theme;
+use crate::theme::{color_scheme, text_style_of, typography};
 
 /// Emits `content` and, while the pointer is over it, a small label below it.
 #[track_caller]
 pub fn tooltip(label: &str, content: impl FnOnce()) {
-    let theme = theme();
+    let theme = color_scheme();
     let hovered = remember(|| false);
     let hover = hovered.clone();
     stack_with(
@@ -29,10 +29,8 @@ pub fn tooltip(label: &str, content: impl FnOnce()) {
                             .background_rounded(Color::rgb(50, 52, 66), 6.0)
                             .padding_xy(10.0, 6.0),
                         || {
-                            let style = LOCAL_TEXT_STYLE
-                                .current()
+                            let style = text_style_of(typography().body_medium)
                                 .color(Color::rgb(240, 240, 245))
-                                .font_size(14.0)
                                 .max_lines(1);
                             let _ = theme;
                             rustle_foundation::text_styled(

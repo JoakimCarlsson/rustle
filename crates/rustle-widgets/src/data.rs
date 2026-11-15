@@ -12,13 +12,14 @@ use rustle_runtime::key;
 
 use crate::icons::icon;
 use crate::muted_sized;
-use crate::theme::theme;
+use crate::shape::ShapeModifier;
+use crate::theme::{color_scheme, shapes};
 use crate::title;
 
 /// Emits a table row: its cells, with a hairline under it.
 #[track_caller]
 pub fn table_row(cells: impl FnOnce()) {
-    let theme = theme();
+    let theme = color_scheme();
     column(|| {
         row_arranged(
             Modifier::new().fill_max_width().padding_xy(12.0, 10.0),
@@ -54,7 +55,7 @@ pub fn calendar(
     on_select: impl Fn(usize) + 'static,
 ) {
     const CELL: f32 = 34.0;
-    let theme = theme();
+    let theme = color_scheme();
     let on_select = Rc::new(on_select);
     let on_navigate = Rc::new(on_navigate);
     column(|| {
@@ -70,7 +71,7 @@ pub fn calendar(
                         .semantics(Semantics::new(Role::Button).label("Previous month".to_string()))
                         .clickable(move || back(-1)),
                     BoxAlignment::Center,
-                    || icon(phosphor::CARET_LEFT, 16.0, theme.on_surface_muted),
+                    || icon(phosphor::CARET_LEFT, 16.0, theme.on_surface_variant),
                 );
                 title(heading, 14.0);
                 stack_aligned(
@@ -79,7 +80,7 @@ pub fn calendar(
                         .semantics(Semantics::new(Role::Button).label("Next month".to_string()))
                         .clickable(move || forward(1)),
                     BoxAlignment::Center,
-                    || icon(phosphor::CARET_RIGHT, 16.0, theme.on_surface_muted),
+                    || icon(phosphor::CARET_RIGHT, 16.0, theme.on_surface_variant),
                 );
             },
         );
@@ -126,7 +127,7 @@ pub fn calendar(
                                 let fill = if end {
                                     theme.primary
                                 } else if inside {
-                                    theme.accent
+                                    theme.surface_variant
                                 } else {
                                     Color::TRANSPARENT
                                 };
@@ -143,7 +144,7 @@ pub fn calendar(
                                             Semantics::new(Role::Button).label(day.to_string()),
                                         )
                                         .clickable(move || on_select(day))
-                                        .background_rounded(fill, theme.corner_radius),
+                                        .background_shape(fill, shapes().small),
                                     BoxAlignment::Center,
                                     || {
                                         let text_style = LOCAL_TEXT_STYLE.current().color(content);

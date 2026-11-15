@@ -8,7 +8,7 @@ use crate::ui::panel;
 /// A tile of `label` in the color picked by `seed`.
 #[composable]
 fn tile(label: &str, seed: usize, modifier: Modifier) {
-    let theme = theme();
+    let theme = color_scheme();
     let shade = 40 + (seed * 37 % 60) as u8;
     stack_aligned(
         modifier
@@ -236,7 +236,7 @@ fn sticky_headers() {
                         stack_with(
                             Modifier::new()
                                 .fill_max_width()
-                                .background(theme().accent)
+                                .background(color_scheme().surface_variant)
                                 .padding_xy(12.0, 8.0),
                             || title(&format!("Section {}", index / 6 + 1), 13.0),
                         );

@@ -7,7 +7,7 @@ use crate::ui::panel;
 
 #[composable]
 pub(super) fn track(label: &str, spec: AnimationSpec, end: bool) {
-    let theme = theme();
+    let theme = color_scheme();
     let progress = animate_float_as_state(if end { 1.0 } else { 0.0 }, spec).get();
     let (line, dot) = (theme.outline, theme.primary);
     row_arranged(

@@ -37,7 +37,7 @@ fn labelled(label: &str, content: impl FnOnce()) {
 
 #[composable]
 fn transition_card() {
-    let theme = theme();
+    let theme = color_scheme();
     let selected = remember(|| false);
     let transition = update_transition(selected.get());
     let color = transition.animate_color(
@@ -59,7 +59,7 @@ fn transition_card() {
 
 #[composable]
 fn keyframe_dot() {
-    let theme = theme();
+    let theme = color_scheme();
     let travel = remember_animatable(0.0_f32);
     let restart = remember(|| 0_u32);
     let driven = travel.clone();
@@ -94,7 +94,7 @@ fn keyframe_dot() {
 
 #[composable]
 fn fling() {
-    let theme = theme();
+    let theme = color_scheme();
     let position = remember_animatable(0.0_f32);
     let drag = position.clone();
     let last = remember(|| 0.0_f32);
@@ -195,7 +195,7 @@ fn expanding() {
 
 #[composable]
 fn morph() {
-    let theme = theme();
+    let theme = color_scheme();
     let flipped = remember(|| false);
     let toggle = flipped.clone();
     let from = Path::from_static(TRIANGLE, 100.0, 100.0, FillRule::NonZero);
@@ -221,7 +221,7 @@ fn morph() {
 
 #[composable]
 fn shared() {
-    let theme = theme();
+    let theme = color_scheme();
     let left = remember(|| true);
     let elements = remember_shared_elements();
     let toggle = left.clone();

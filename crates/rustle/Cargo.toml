@@ -61,6 +61,12 @@ path = "../../examples/graphics/main.rs"
 name = "embedded"
 path = "../../examples/embedded/main.rs"
 
+# The theme as Compose's MaterialTheme has it: a scheme made from a seed color, typography,
+# shapes, tonal elevation and ripples.
+[[example]]
+name = "theme"
+path = "../../examples/theme/main.rs"
+
 [features]
 # More Phosphor weights; the regular weight is always there.
 icons-thin = ["rustle-icons/thin"]

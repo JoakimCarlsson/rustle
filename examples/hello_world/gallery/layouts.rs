@@ -12,10 +12,10 @@ use crate::ui::panel;
 /// A small filled chip used as a stand-in child.
 #[composable]
 fn block(label: &str) {
-    let theme = theme();
+    let theme = color_scheme();
     stack_aligned(
         Modifier::new()
-            .background_rounded(theme.accent, 6.0)
+            .background_rounded(theme.surface_variant, 6.0)
             .padding_xy(10.0, 6.0),
         BoxAlignment::Center,
         || {
@@ -41,7 +41,7 @@ pub(super) fn layouts() {
                     Modifier::new()
                         .fill_max_width()
                         .height(1.0)
-                        .background(theme().outline),
+                        .background(color_scheme().outline),
                 );
                 block("A much longer label");
             });

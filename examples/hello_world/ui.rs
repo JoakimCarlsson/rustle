@@ -4,10 +4,10 @@ use rustle::prelude::*;
 
 /// How charts look in the current theme.
 pub fn chart_style() -> ChartStyle {
-    let theme = theme();
+    let theme = color_scheme();
     ChartStyle {
         grid: Color::rgba(theme.outline.r, theme.outline.g, theme.outline.b, 150),
-        label: theme.on_surface_muted,
+        label: theme.on_surface_variant,
         surface: theme.surface,
         ..ChartStyle::default()
     }
@@ -69,7 +69,7 @@ pub fn key_value(label: &str, value: &str, strong: bool) {
 /// A bordered square with an icon that does something when clicked.
 #[composable]
 pub fn icon_box(glyph: Icon, size: f32, label: &str, on_click: impl Fn() + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     stack_aligned(
         Modifier::new()
             .size(size, size)
@@ -84,26 +84,26 @@ pub fn icon_box(glyph: Icon, size: f32, label: &str, on_click: impl Fn() + 'stat
 /// An icon without a border that does something when clicked.
 #[composable]
 pub fn icon_action(glyph: Icon, label: &str, on_click: impl Fn() + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     stack_aligned(
         Modifier::new()
             .size(28.0, 28.0)
             .semantics(Semantics::new(Role::Button).label(label.to_string()))
             .clickable(on_click),
         BoxAlignment::Center,
-        || icon(glyph, 16.0, theme.on_surface_muted),
+        || icon(glyph, 16.0, theme.on_surface_variant),
     );
 }
 
 /// A bar `fraction` full, with the rest empty.
 #[composable]
 pub fn meter(fraction: f32) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         Modifier::new()
             .fill_max_width()
             .height(8.0)
-            .background_rounded(theme.accent, 4.0)
+            .background_rounded(theme.surface_variant, 4.0)
             .clip(),
         Arrangement::Start,
         Alignment::Start,
@@ -121,10 +121,10 @@ pub fn meter(fraction: f32) {
 
 /// A tinted box that is a button.
 pub fn tinted(modifier: Modifier, on_click: impl Fn() + 'static) -> Modifier {
-    let theme = theme();
+    let theme = color_scheme();
     modifier
         .clickable(on_click)
-        .background_rounded(theme.secondary, 10.0)
+        .background_rounded(theme.secondary_container, 10.0)
         .border(1.0, theme.outline, 10.0)
         .padding(14.0)
 }
@@ -158,7 +158,7 @@ pub fn parse_money(text: &str) -> Option<f64> {
 /// A chat: messages, a field to write in, and a reply a moment after each message.
 #[composable]
 pub fn chat(replies: &[&str], opening: &[(&str, bool)]) {
-    let theme = theme();
+    let theme = color_scheme();
     let messages = remember_state_list(|| {
         opening
             .iter()
@@ -217,7 +217,7 @@ pub fn chat(replies: &[&str], opening: &[(&str, bool)]) {
                     .size(36.0, 36.0)
                     .semantics(Semantics::new(Role::Button).label("Send".to_string()))
                     .clickable(send)
-                    .background_rounded(theme.accent, 8.0),
+                    .background_rounded(theme.surface_variant, 8.0),
                 BoxAlignment::Center,
                 || icon(phosphor::PAPER_PLANE_TILT, 15.0, theme.on_surface),
             );
@@ -227,7 +227,7 @@ pub fn chat(replies: &[&str], opening: &[(&str, bool)]) {
 
 #[composable]
 fn bubble(message: &str, mine: bool) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         Modifier::new().fill_max_width().padding_xy(0.0, 4.0),
         if mine {
@@ -240,7 +240,14 @@ fn bubble(message: &str, mine: bool) {
             stack_with(
                 Modifier::new()
                     .width_in(40.0, 220.0)
-                    .background_rounded(if mine { theme.primary } else { theme.accent }, 14.0)
+                    .background_rounded(
+                        if mine {
+                            theme.primary
+                        } else {
+                            theme.surface_variant
+                        },
+                        14.0,
+                    )
                     .padding_xy(12.0, 8.0),
                 || {
                     let style = LOCAL_TEXT_STYLE.current().color(if mine {

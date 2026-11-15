@@ -7,7 +7,8 @@ use rustle_foundation::{
 use rustle_icons::phosphor;
 
 use crate::icons::icon;
-use crate::theme::{theme, with_text_color};
+use crate::shape::ShapeModifier;
+use crate::theme::{color_scheme, provide_content_color, shapes};
 
 /// Emits an outlined single-line text field showing `placeholder` while it is empty.
 ///
@@ -27,20 +28,20 @@ pub fn text_field_focused(
     placeholder: &str,
     focus: &Focus,
 ) {
-    let theme = theme();
+    let theme = color_scheme();
     let outline = if focus.is_focused() {
-        theme.on_surface_muted
+        theme.on_surface_variant
     } else {
         theme.outline
     };
     let empty = state.text().is_empty();
     stack_with(
         modifier
-            .background_rounded(theme.secondary, theme.corner_radius)
-            .border(1.0, outline, theme.corner_radius),
+            .background_shape(theme.secondary_container, shapes().extra_small)
+            .border_shape(1.0, outline, shapes().extra_small),
         || {
             if empty {
-                let style = LOCAL_TEXT_STYLE.current().color(theme.on_surface_muted);
+                let style = LOCAL_TEXT_STYLE.current().color(theme.on_surface_variant);
                 LOCAL_TEXT_STYLE.provide(style, || {
                     text_with(
                         Modifier::new().padding_xy(12.0, 8.0),
@@ -48,7 +49,7 @@ pub fn text_field_focused(
                     );
                 });
             }
-            with_text_color(theme.on_surface, || {
+            provide_content_color(theme.on_surface, || {
                 basic_text_field_in(
                     Modifier::new(),
                     Modifier::new().padding_xy(12.0, 8.0),
@@ -65,7 +66,7 @@ pub fn text_field_focused(
 /// Enter starts a new line. Size it with `modifier`, such as `.width(420.0).height(120.0)`.
 #[track_caller]
 pub fn text_area(modifier: Modifier, state: &TextFieldState, placeholder: &str) {
-    let theme = theme();
+    let theme = color_scheme();
     let focus = remember_focus();
     let outline = if focus.is_focused() {
         theme.primary
@@ -75,12 +76,12 @@ pub fn text_area(modifier: Modifier, state: &TextFieldState, placeholder: &str) 
     let empty = state.text().is_empty();
     stack_with(
         modifier
-            .background_rounded(theme.surface, theme.corner_radius)
-            .border(1.5, outline, theme.corner_radius)
+            .background_shape(theme.surface, shapes().extra_small)
+            .border_shape(1.5, outline, shapes().extra_small)
             .clip(),
         || {
             if empty {
-                let style = LOCAL_TEXT_STYLE.current().color(theme.on_surface_muted);
+                let style = LOCAL_TEXT_STYLE.current().color(theme.on_surface_variant);
                 LOCAL_TEXT_STYLE.provide(style, || {
                     text_with(
                         Modifier::new().padding_xy(12.0, 8.0),
@@ -88,7 +89,7 @@ pub fn text_area(modifier: Modifier, state: &TextFieldState, placeholder: &str) 
                     );
                 });
             }
-            with_text_color(theme.on_surface, || {
+            provide_content_color(theme.on_surface, || {
                 let options = TextFieldOptions {
                     multiline: true,
                     ..TextFieldOptions::default()
@@ -108,7 +109,7 @@ pub fn text_area(modifier: Modifier, state: &TextFieldState, placeholder: &str) 
 /// Emits a bordered box showing `value` with a chevron, which calls `on_click` when clicked.
 #[track_caller]
 pub fn select_field(modifier: Modifier, value: &str, on_click: impl Fn() + 'static) {
-    let theme = theme();
+    let theme = color_scheme();
     row_arranged(
         modifier
             .semantics(
@@ -117,14 +118,14 @@ pub fn select_field(modifier: Modifier, value: &str, on_click: impl Fn() + 'stat
                     .merging_descendants(),
             )
             .clickable(on_click)
-            .background_rounded(theme.secondary, theme.corner_radius)
-            .border(1.0, theme.outline, theme.corner_radius)
+            .background_shape(theme.secondary_container, shapes().extra_small)
+            .border_shape(1.0, theme.outline, shapes().extra_small)
             .padding_xy(12.0, 8.0),
         Arrangement::SpaceBetween,
         Alignment::Center,
         || {
             text(value.to_string());
-            icon(phosphor::CARET_UP_DOWN, 14.0, theme.on_surface_muted);
+            icon(phosphor::CARET_UP_DOWN, 14.0, theme.on_surface_variant);
         },
     );
 }

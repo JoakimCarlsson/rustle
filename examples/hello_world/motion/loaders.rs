@@ -27,7 +27,7 @@ pub(super) fn loader_cell(label: &str, content: impl FnOnce()) {
 
 #[composable]
 pub(super) fn bouncing_dots() {
-    let theme = theme();
+    let theme = color_scheme();
     let t = clock(1.1).get();
     row_arranged(
         Modifier::new(),
@@ -49,7 +49,7 @@ pub(super) fn bouncing_dots() {
 
 #[composable]
 pub(super) fn pulse() {
-    let theme = theme();
+    let theme = color_scheme();
     let t = infinite_float(0.0, 1.0, Duration::from_millis(900), Easing::EaseInOut).get();
     stack_aligned(
         Modifier::new().size(30.0, 30.0),
@@ -73,7 +73,7 @@ pub(super) fn pulse() {
 
 #[composable]
 pub(super) fn mini_bars() {
-    let theme = theme();
+    let theme = color_scheme();
     let t = clock(1.0).get();
     row_arranged(
         Modifier::new().height(28.0),
@@ -94,9 +94,9 @@ pub(super) fn mini_bars() {
 
 #[composable]
 pub(super) fn sweep_bar() {
-    let theme = theme();
+    let theme = color_scheme();
     let t = clock(1.5).get();
-    let (track, fill) = (theme.accent, theme.primary);
+    let (track, fill) = (theme.surface_variant, theme.primary);
     canvas(
         Modifier::new().fill_max_width().height(6.0),
         move |canvas| {
@@ -113,12 +113,12 @@ pub(super) fn sweep_bar() {
 
 #[composable]
 pub(super) fn skeleton() {
-    let theme = theme();
+    let theme = color_scheme();
     let strength = infinite_float(0.35, 1.0, Duration::from_millis(900), Easing::EaseInOut).get();
     let shade = Color::rgba(
-        theme.on_surface_muted.r,
-        theme.on_surface_muted.g,
-        theme.on_surface_muted.b,
+        theme.on_surface_variant.r,
+        theme.on_surface_variant.g,
+        theme.on_surface_variant.b,
         (strength * 60.0) as u8,
     );
     row_arranged(
@@ -152,7 +152,7 @@ pub(super) fn skeleton() {
 
 #[composable]
 pub(super) fn loaders() {
-    let theme = theme();
+    let theme = color_scheme();
     let target = remember(|| 0.25_f32);
     let progress = animate_float_as_state(target.get(), linear(800, Easing::EaseInOut)).get();
     panel(
@@ -187,7 +187,7 @@ pub(super) fn loaders() {
                         BoxAlignment::Center,
                         || {
                             spacer(Modifier::new().size(84.0, 84.0).ring(
-                                theme.accent,
+                                theme.surface_variant,
                                 8.0,
                                 0.0,
                                 1.0,

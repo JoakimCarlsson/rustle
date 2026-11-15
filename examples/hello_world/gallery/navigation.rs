@@ -6,7 +6,7 @@ use crate::ui::panel;
 
 #[composable]
 pub(super) fn navigation() {
-    let theme = theme();
+    let theme = color_scheme();
     let page = remember(|| 2_usize);
     let tab = remember(|| 0_usize);
     panel(
@@ -19,9 +19,9 @@ pub(super) fn navigation() {
                 Alignment::Center,
                 || {
                     muted_sized("Home", 13.0);
-                    icon(phosphor::CARET_RIGHT, 13.0, theme.on_surface_muted);
+                    icon(phosphor::CARET_RIGHT, 13.0, theme.on_surface_variant);
                     muted_sized("Components", 13.0);
-                    icon(phosphor::CARET_RIGHT, 13.0, theme.on_surface_muted);
+                    icon(phosphor::CARET_RIGHT, 13.0, theme.on_surface_variant);
                     title("Breadcrumb", 13.0);
                 },
             );
