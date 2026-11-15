@@ -47,7 +47,7 @@ impl App {
     }
 
     /// The window in slot `index`, if it is open.
-    fn slot_window(&self, index: usize) -> Option<&WindowState> {
+    pub(crate) fn slot_window(&self, index: usize) -> Option<&WindowState> {
         if index == self.active {
             self.window.as_ref()
         } else {
@@ -301,7 +301,7 @@ impl App {
 
     /// The slot of an open modal window that blocks input to the window in slot `index`;
     /// see [`modal_over`].
-    fn blocking_modal(&self, index: usize) -> Option<usize> {
+    pub(crate) fn blocking_modal(&self, index: usize) -> Option<usize> {
         let open: Vec<Option<(u64, &WindowOptions)>> = (0..self.slots.len())
             .map(|slot| {
                 self.slot_window(slot)?;

@@ -59,6 +59,7 @@ impl App {
 
     /// Waits for the next long press that is due, or for the next event.
     pub(crate) fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.poll_file_drops();
         self.sync_windows(event_loop);
         let Some((due, _, _)) = &self.ui.long_press else {
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -78,6 +79,7 @@ impl App {
 
     /// Composes and lays out again what state changes dirtied, and keeps frames coming.
     pub(crate) fn woken(&mut self) {
+        self.poll_file_drops();
         if self.composition.recompose() {
             self.relayout_all();
         }

@@ -141,7 +141,7 @@ pub fn run_with(options: WindowOptions, root: impl FnMut() + 'static) {
             let _ = proxy.send_event(UserEvent::Wake);
             event_loop.set_control_flow(ControlFlow::Wait);
             let result = event_loop.run_app(&mut app);
-            if let Some(error) = app.error {
+            if let Some(error) = app.error.take() {
                 eprintln!("rustle: {error}");
                 process::exit(1);
             }
@@ -195,6 +195,8 @@ pub(crate) struct App {
     /// Which of `slots` is in the fields above. The main window is always slot 0.
     pub(crate) active: usize,
     pub(crate) error: Option<String>,
+    /// Wakes the event loop from any thread, as state changes do.
+    pub(crate) wake: Arc<dyn Fn() + Send + Sync>,
 }
 
 pub(crate) struct WindowState {
@@ -216,6 +218,7 @@ impl App {
         wake: impl Fn() + Clone + Send + Sync + 'static,
     ) -> Self {
         let mut composition = rustle_ui::composition(root);
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(wake.clone());
         // State changes wake the event loop instead of being polled for.
         let invalidated = wake.clone();
         composition.on_invalidate(invalidated);
@@ -234,6 +237,7 @@ impl App {
             slots: vec![crate::windows::WindowCtx::default()],
             active: 0,
             error: None,
+            wake: waker,
         }
     }
 

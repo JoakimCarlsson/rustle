@@ -217,9 +217,14 @@ impl Interface {
 
     /// A file was dropped. The platform gives no position, so it goes where the pointer last was.
     pub(crate) fn file_dropped(&mut self, path: std::path::PathBuf) {
-        if let Some(pointer) = self.pointer
-            && let Some(region) = self.display.file_drop_at(pointer)
-        {
+        if let Some(pointer) = self.pointer {
+            self.file_dropped_at(pointer, path);
+        }
+    }
+
+    /// A file was dropped at `point`; it goes to the file drop area there, if any.
+    pub(crate) fn file_dropped_at(&mut self, point: Offset, path: std::path::PathBuf) {
+        if let Some(region) = self.display.file_drop_at(point) {
             let on_drop = Rc::clone(&region.on_drop);
             on_drop(path);
         }

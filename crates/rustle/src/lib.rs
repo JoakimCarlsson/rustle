@@ -8,6 +8,7 @@ mod accessibility_tests;
 mod app;
 mod contact;
 mod embedded;
+mod file_drops;
 mod focus;
 mod frame_timing;
 mod handler;
