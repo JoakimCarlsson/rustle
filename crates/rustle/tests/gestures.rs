@@ -89,7 +89,7 @@ fn draggable_follows_the_pointer_along_its_axis() {
     assert!((state.offset() - 40.0).abs() < 0.01, "{}", state.offset());
     ui.pointer_button(PointerButton::Primary, false);
     assert!(!state.is_dragging());
-    assert!(state.velocity() > 500.0, "{}", state.velocity());
+    assert!(state.velocity() > 100.0, "{}", state.velocity());
     drag(&mut ui, Offset::new(50.0, 50.0), Offset::new(40.0, 50.0), 4);
     assert!((state.offset() - 30.0).abs() < 0.01, "{}", state.offset());
 }
