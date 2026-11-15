@@ -195,7 +195,9 @@ pub(crate) struct App {
     /// Which of `slots` is in the fields above. The main window is always slot 0.
     pub(crate) active: usize,
     pub(crate) error: Option<String>,
-    /// Wakes the event loop from any thread, as state changes do.
+    /// Wakes the event loop from any thread, as state changes do. Only the
+    /// Wayland file drop listener reads it, so it is unread elsewhere.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) wake: Arc<dyn Fn() + Send + Sync>,
 }
 

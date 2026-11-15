@@ -514,11 +514,13 @@ impl WindowHandle {
         .flatten()
     }
 
-    /// The window's X11 window id, when it is open on X11.
+    /// The window's X11 window id, when it is open on X11. Xlib's window type is as wide
+    /// as a C `unsigned long`, which is already `u32` on Windows.
+    #[cfg_attr(windows, allow(clippy::useless_conversion))]
     pub fn x11_window(self) -> Option<u32> {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         self.with_window(|w| match w.window_handle().ok()?.as_raw() {
-            RawWindowHandle::Xlib(handle) => Some(handle.window as u32),
+            RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok(),
             RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
             _ => None,
         })
