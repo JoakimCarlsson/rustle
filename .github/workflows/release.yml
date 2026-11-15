@@ -15,9 +15,9 @@ env:
 jobs:
   check:
     name: check the tag and test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: The tag matches the workspace version
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
@@ -38,9 +38,9 @@ jobs:
   release:
     name: publish the release
     needs: check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
