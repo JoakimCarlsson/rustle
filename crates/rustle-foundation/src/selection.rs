@@ -13,8 +13,28 @@ use rustle_ui::{
 
 use crate::linear::column_with;
 
-/// The color a selection is highlighted in.
-pub(crate) const SELECTION_COLOR: Color = Color::rgba(74, 96, 214, 140);
+/// The colors of selected text, as Compose's `TextSelectionColors`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextSelectionColors {
+    /// The color of the handles that drag a selection on a touch screen.
+    pub handle_color: Color,
+    /// The color selected text is highlighted in.
+    pub background_color: Color,
+}
+
+impl Default for TextSelectionColors {
+    fn default() -> Self {
+        Self {
+            handle_color: Color::rgb(74, 96, 214),
+            background_color: Color::rgba(74, 96, 214, 140),
+        }
+    }
+}
+
+/// The colors of selected text in effect. Provide another value to recolor the selection of
+/// every text field and selectable text below.
+pub static LOCAL_TEXT_SELECTION_COLORS: CompositionLocal<TextSelectionColors> =
+    CompositionLocal::new(TextSelectionColors::default);
 
 /// A place in a selectable document: a block (in the order the blocks were composed)
 /// and a character offset within its text.
@@ -78,7 +98,7 @@ impl BlockHandle {
             underline: None,
             ime_caret: None,
             caret_color: Color::TRANSPARENT,
-            selection_color: SELECTION_COLOR,
+            selection_color: LOCAL_TEXT_SELECTION_COLORS.current().background_color,
             caret_affinity: Affinity::Downstream,
             boundaries: Rc::default(),
             layout: Rc::clone(&self.layout),

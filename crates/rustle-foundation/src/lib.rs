@@ -25,7 +25,7 @@ pub use constraint::{
     GuidePosition, Ref, constraint_layout,
 };
 pub use flow::{FlowOptions, flow_column, flow_column_with, flow_row, flow_row_with};
-pub use layouts::{backdrop, floating, reveal, with_constraints};
+pub use layouts::{backdrop, floating, floating_above, reveal, with_constraints};
 pub use lazy::{
     ItemAlign, LazyContent, LazyListState, lazy_column, lazy_horizontal_list,
     lazy_horizontal_list_keyed, lazy_horizontal_list_with, lazy_horizontal_staggered_grid,
@@ -66,8 +66,8 @@ pub use rustle_ui::{
     IntrinsicSize, Measurable, Placement, SubcomposeResult, SubcomposeScope, subcompose_layout,
 };
 pub use selection::{
-    SelectionPoint, SelectionState, remember_selection_state, selection_container,
-    selection_container_with,
+    LOCAL_TEXT_SELECTION_COLORS, SelectionPoint, SelectionState, TextSelectionColors,
+    remember_selection_state, selection_container, selection_container_with,
 };
 pub use text_field::{
     TextFieldOptions, TextFieldState, TextFieldValue, basic_text_area, basic_text_area_no_wrap,

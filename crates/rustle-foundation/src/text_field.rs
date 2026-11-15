@@ -13,7 +13,7 @@ use rustle_ui::{
 };
 
 use crate::LOCAL_TEXT_STYLE;
-use crate::selection::{LOCAL_SELECTION, SELECTION_COLOR, emit_block};
+use crate::selection::{LOCAL_SELECTION, LOCAL_TEXT_SELECTION_COLORS, emit_block};
 
 /// The text of a field with its caret and selection, counted in characters.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -223,6 +223,25 @@ impl TextFieldState {
             text,
             cursor: end,
             anchor: end,
+        });
+    }
+
+    /// Replaces the text, caret and selection with `value`.
+    pub fn set_value(&self, value: TextFieldValue) {
+        self.value.set(value);
+    }
+
+    /// Puts `text` in place of the selection, or at the caret when nothing is
+    /// selected, keeping line breaks, and leaves the caret after it.
+    pub fn replace_selection(&self, text: &str) {
+        self.edit(|value| value.insert(text, true));
+    }
+
+    /// Selects all of the text.
+    pub fn select_all(&self) {
+        self.edit(|value| {
+            value.anchor = 0;
+            value.cursor = value.length();
         });
     }
 
@@ -646,7 +665,7 @@ pub fn basic_text_field_in(
                     underline,
                     ime_caret: (focused && !read_only).then_some(shown_caret),
                     caret_color: style.color,
-                    selection_color: SELECTION_COLOR,
+                    selection_color: LOCAL_TEXT_SELECTION_COLORS.current().background_color,
                     caret_affinity: state.affinity.get(),
                     boundaries,
                     layout,

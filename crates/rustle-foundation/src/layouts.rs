@@ -97,6 +97,39 @@ pub fn floating(modifier: Modifier, content: impl FnOnce()) {
     layout(modifier.z_index_unclipped(1), Floating, content);
 }
 
+/// Emits `content` in a layer above everything else, like [`floating`], but
+/// with its bottom-left corner where it would have started, so it opens
+/// upward: for menus over a field near the bottom of the window.
+#[track_caller]
+pub fn floating_above(modifier: Modifier, content: impl FnOnce()) {
+    layout(modifier.z_index_unclipped(1), FloatingAbove, content);
+}
+
+/// Measures children without limits, takes no space itself and puts each
+/// child's bottom where it starts.
+struct FloatingAbove;
+
+impl Layout for FloatingAbove {
+    fn measure(&self, children: &mut Children, _: Constraints) -> LayoutResult {
+        let unbounded = Constraints {
+            min_width: 0.0,
+            max_width: f32::INFINITY,
+            min_height: 0.0,
+            max_height: f32::INFINITY,
+        };
+        let positions = (0..children.len())
+            .map(|index| {
+                let size = children.measure(index, unbounded);
+                Offset::new(0.0, -size.height)
+            })
+            .collect();
+        LayoutResult {
+            size: Size::default(),
+            positions,
+        }
+    }
+}
+
 /// Measures children without limits and takes no space itself.
 struct Floating;
 

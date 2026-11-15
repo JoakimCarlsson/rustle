@@ -42,9 +42,10 @@ pub use rustle_charts::{
     qr_code, sparkline,
 };
 pub use rustle_foundation::{
-    Alignment, Arrangement, BoxAlignment, Canvas, ContentScale, ItemAlign, LOCAL_TEXT_STYLE,
-    LazyContent, LazyListState, Modifier, ScrollState, ScrollbarStyle, ScrollbarVisibility,
-    backdrop, canvas, column, column_arranged, column_with, floating, flow_row, image, lazy_column,
+    Alignment, Arrangement, BoxAlignment, Canvas, ContentScale, ItemAlign,
+    LOCAL_TEXT_SELECTION_COLORS, LOCAL_TEXT_STYLE, LazyContent, LazyListState, Modifier,
+    ScrollState, ScrollbarStyle, ScrollbarVisibility, TextSelectionColors, backdrop, canvas,
+    column, column_arranged, column_with, floating, floating_above, flow_row, image, lazy_column,
     lazy_list, lazy_list_keyed, lazy_row, lazy_vertical_grid, remember_lazy_list_state, reveal,
     rich_text, rich_text_with, row, row_arranged, row_with, spacer, stack, stack_aligned,
     stack_with, text, text_styled, text_with, viewport, viewport_with,
