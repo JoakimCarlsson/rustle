@@ -162,7 +162,7 @@ impl Embedded {
         self.ui.clear();
         self.started = Instant::now();
         self.lay_out();
-        self.ui.apply_focus_request();
+        self.ui.after_input();
     }
 
     /// Tells the interface its area is `size` physical pixels with `scale_factor` physical
@@ -174,7 +174,7 @@ impl Embedded {
         self.scale_factor = scale_factor;
         self.size = Size::new(size.0 as f32 / scale_factor, size.1 as f32 / scale_factor);
         self.lay_out();
-        self.ui.apply_focus_request();
+        self.ui.after_input();
     }
 
     /// Composes the interface again on the next [`update`](Embedded::update), for a change the
@@ -233,7 +233,7 @@ impl Embedded {
         if changed {
             self.lay_out();
         }
-        self.ui.apply_focus_request();
+        self.ui.after_input();
         let redraw = self.ui.take_redraw();
         changed || redraw || self.composition.has_pending_frame()
     }
@@ -291,13 +291,14 @@ impl Embedded {
     /// area that blocks it (see [`Modifier::blocks_pointer`](crate::Modifier::blocks_pointer)).
     pub fn pointer_moved(&mut self, position: Offset) -> bool {
         self.ui.pointer_moved(position);
-        self.ui.apply_focus_request();
+        self.ui.after_input();
         self.ui.display.interactive_at(position)
     }
 
     /// The pointer left the area.
     pub fn pointer_left(&mut self) {
         self.ui.pointer_left();
+        self.ui.after_input();
     }
 
     /// A pointer button went down or up where the pointer is.
@@ -307,7 +308,7 @@ impl Embedded {
     pub fn pointer_button(&mut self, button: PointerButton, pressed: bool) -> bool {
         let over = self.ui.pointer_over_interface();
         self.ui.button_input(button, pressed);
-        self.ui.apply_focus_request();
+        self.ui.after_input();
         over
     }
 
@@ -338,7 +339,7 @@ impl Embedded {
                 .any(|pointer| pointer.id == PointerId(id));
         self.ui
             .contact(PointerId(id), kind, phase, position, pressure);
-        self.ui.apply_focus_request();
+        self.ui.after_input();
         over
     }
 
@@ -362,7 +363,7 @@ impl Embedded {
     pub fn key_event(&mut self, event: KeyEvent) -> bool {
         let typed = event.text.is_some();
         let used = self.ui.keyboard(event);
-        self.ui.apply_focus_request();
+        self.ui.after_input();
         used || (self.ui.focused.is_some() && typed)
     }
 
@@ -379,7 +380,7 @@ impl Embedded {
     /// Returns whether the interface took it, which it does while something has focus.
     pub fn commit(&mut self, text: &str) -> bool {
         let used = self.ui.commit(text.to_string());
-        self.ui.apply_focus_request();
+        self.ui.after_input();
         used
     }
 
@@ -445,7 +446,12 @@ impl Embedded {
                 rounding: self.pixel_rounding,
                 scale: self.scale_factor,
             };
-            self.ui.display = rustle_ui::display_list_with(&tree, constraints, measure, options);
+            self.ui.show(rustle_ui::LaidOut::new(
+                &tree,
+                constraints,
+                measure,
+                options,
+            ));
             if !self.composition.recompose() {
                 break;
             }

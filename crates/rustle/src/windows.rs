@@ -355,6 +355,7 @@ impl App {
     /// Does what input asked of the window: redraws, shows the cursor, and allows or forbids
     /// the input method as focus moves.
     pub(crate) fn apply_effects(&mut self) {
+        self.ui.refresh_interactions();
         if self.ui.take_focus_changed() {
             // An input method only gets keys while something wants text, so it
             // cannot take keys from the rest of the application.

@@ -10,12 +10,13 @@ use super::measure::measure_node;
 use super::measured::{Measured, Paint};
 use super::regions::{
     ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
-    FileDropRegion, FocusRegion, HitRegion, HoverRegion, ImeCaretRegion, KeyRegion,
-    LongPressRegion, PinchRegion, PointerInputRegion, PointerMoveRegion, PressRegion, ScrollRegion,
-    SemanticsNode, intersect,
+    FileDropRegion, FocusRegion, HitRegion, HoverRegion, ImeCaretRegion, InteractionRegion,
+    KeyRegion, LongPressRegion, PinchRegion, PointerInputRegion, PointerMoveRegion, PressRegion,
+    ScrollRegion, SemanticsNode, intersect,
 };
 use crate::input::Focus;
-use crate::modifier::Fill;
+use crate::interaction::{Interaction, PointerState, resolve};
+use crate::modifier::{Fill, FocusedFn};
 use crate::scroll::{ScrollState, ScrollbarVisibility, thumb};
 use crate::semantics::{Role, Semantics};
 use crate::{Node, TextEditing};
@@ -85,38 +86,94 @@ pub fn display_list_with(
     text: &mut dyn TextMeasurer,
     options: DisplayOptions,
 ) -> DisplayList {
-    let measured = measure_node(root, constraints, text);
-    let window = Size::new(
-        if constraints.max_width.is_finite() {
-            constraints.max_width
-        } else {
-            measured.size.width
-        },
-        if constraints.max_height.is_finite() {
-            constraints.max_height
-        } else {
-            measured.size.height
-        },
-    );
-    let mut painter = Painter {
-        pending_end: None,
-        deferred: Vec::new(),
-        alpha: 1.0,
-        merging: 0,
-        clearing: 0,
-        parents: Vec::new(),
-        merged_text: Vec::new(),
-        merged_labels: Vec::new(),
-        list: DisplayList::default(),
-        clips: Vec::new(),
-        clip_radii: Vec::new(),
-        window,
-        grid: options.grid(),
-        focus: None,
-    };
-    painter.paint(&measured, Offset::default());
-    painter.paint_deferred();
-    painter.list
+    LaidOut::new(root, constraints, text, options).paint(PointerState::default())
+}
+
+/// A tree measured once and kept, so it can be painted again when only the
+/// [`Interaction`] state of its areas changed, without composing or measuring.
+///
+/// [`display_list_with`] measures and paints in one go; a host that resolves interaction
+/// state (see [`Modifier::draw_behind_interactive`](crate::Modifier::draw_behind_interactive))
+/// keeps this and calls [`paint`](Self::paint) when
+/// [`DisplayList::interactions_changed`] says so.
+pub struct LaidOut {
+    measured: Measured,
+    /// The size of the window, which `on_placed` handlers are told.
+    window: Size,
+    /// How many grid steps make a logical pixel when edges are rounded to them.
+    grid: Option<f32>,
+}
+
+impl LaidOut {
+    /// Measures `root` within `constraints`, measuring text with `text`, to be painted as
+    /// `options` says.
+    pub fn new(
+        root: &Node,
+        constraints: Constraints,
+        text: &mut dyn TextMeasurer,
+        options: DisplayOptions,
+    ) -> Self {
+        let measured = measure_node(root, constraints, text);
+        let window = Size::new(
+            if constraints.max_width.is_finite() {
+                constraints.max_width
+            } else {
+                measured.size.width
+            },
+            if constraints.max_height.is_finite() {
+                constraints.max_height
+            } else {
+                measured.size.height
+            },
+        );
+        Self {
+            measured,
+            window,
+            grid: options.grid(),
+        }
+    }
+
+    /// Paints the measured tree into a display list, drawing each interactive area in the
+    /// state `pointer` and the focus held now put it in.
+    ///
+    /// Whether something painted later covers an area is only known once everything is
+    /// painted, so an area that turns out to be covered where the pointer is gets painted a
+    /// second time; with no interactive area, or none covered, the tree is painted once.
+    pub fn paint(&self, pointer: PointerState) -> DisplayList {
+        let list = self.paint_in(pointer, None);
+        if list.interactions.is_empty() || !list.interactions_changed(pointer) {
+            return list;
+        }
+        let resolved = list.resolve_interactions(pointer);
+        self.paint_in(pointer, Some(resolved))
+    }
+
+    /// Paints the tree once, with the interactive areas in the states `resolved` gives, in
+    /// paint order, or in the state worked out as they are painted when it is `None`.
+    fn paint_in(&self, pointer: PointerState, resolved: Option<Vec<Interaction>>) -> DisplayList {
+        let mut painter = Painter {
+            pending_end: None,
+            deferred: Vec::new(),
+            alpha: 1.0,
+            merging: 0,
+            clearing: 0,
+            parents: Vec::new(),
+            merged_text: Vec::new(),
+            merged_labels: Vec::new(),
+            list: DisplayList::default(),
+            clips: Vec::new(),
+            clip_radii: Vec::new(),
+            window: self.window,
+            grid: self.grid,
+            focus: None,
+            focused_flag: None,
+            pointer,
+            resolved,
+        };
+        painter.paint(&self.measured, Offset::default());
+        painter.paint_deferred();
+        painter.list
+    }
 }
 
 /// Something to paint after the rest of the tree, because it has a z-index.
@@ -134,6 +191,8 @@ struct Deferred<'a> {
     clearing: usize,
     /// The focus of the nearest focusable around it where it was declared.
     focus: Option<Focus>,
+    /// The focused flag given from outside around it where it was declared.
+    focused_flag: Option<FocusedFn>,
     measured: &'a Measured,
 }
 
@@ -166,6 +225,12 @@ struct Painter<'a> {
     grid: Option<f32>,
     /// The focus of the nearest focusable around what is being painted.
     focus: Option<Focus>,
+    /// The focused flag given from outside around what is being painted.
+    focused_flag: Option<FocusedFn>,
+    /// Where the pointer is and where it went down, for interactive areas.
+    pointer: PointerState,
+    /// The state of each interactive area in paint order, when already resolved.
+    resolved: Option<Vec<Interaction>>,
 }
 
 impl<'a> Painter<'a> {
@@ -199,6 +264,7 @@ impl<'a> Painter<'a> {
                 self.parents = raised.parents;
                 self.clearing = raised.clearing;
                 self.focus = raised.focus;
+                self.focused_flag = raised.focused_flag;
                 let merging = self.merging_node();
                 if merging.is_some() {
                     self.merging += 1;
@@ -858,6 +924,50 @@ impl<'a> Painter<'a> {
                     self.paint(inner, exact);
                 }
             }
+            Paint::Interactive { draw, inner } => {
+                let index = self.list.interactions.len();
+                let focus = self.focus.clone().or_else(|| chain_focus(inner));
+                let visible = self.visible(rect);
+                let interaction = self
+                    .resolved
+                    .as_ref()
+                    .and_then(|resolved| resolved.get(index).copied())
+                    .unwrap_or_else(|| {
+                        resolve(
+                            visible,
+                            focus.as_ref(),
+                            self.focused_flag.as_ref().map(|focused| focused()),
+                            self.pointer,
+                            false,
+                        )
+                    });
+                self.list.interactions.push(InteractionRegion {
+                    rect: visible,
+                    focus,
+                    focused: self.focused_flag.clone(),
+                    covered_after: 0,
+                    interaction,
+                });
+                let (commands, content) = draw(size, interaction);
+                let count = commands.len();
+                for (at, command) in commands.into_iter().enumerate() {
+                    if content == Some(at) {
+                        self.paint(inner, exact);
+                    }
+                    self.list
+                        .commands
+                        .push(command.translated(origin.x, origin.y));
+                }
+                if content == Some(count) {
+                    self.paint(inner, exact);
+                }
+                self.list.interactions[index].covered_after = self.list.regions.len();
+            }
+            Paint::InteractionFocused { focused, inner } => {
+                let around = self.focused_flag.replace(Rc::clone(focused));
+                self.paint(inner, exact);
+                self.focused_flag = around;
+            }
             Paint::Fill { fill, inner } => {
                 self.paint_fill(fill, rect);
                 self.paint(inner, exact);
@@ -1051,6 +1161,7 @@ impl<'a> Painter<'a> {
                     parents: self.parents.clone(),
                     clearing: self.clearing,
                     focus: self.focus.clone(),
+                    focused_flag: self.focused_flag.clone(),
                     measured: inner,
                 });
             }
@@ -1282,6 +1393,54 @@ impl<'a> Painter<'a> {
                 self.paint(inner, exact);
             }
         }
+    }
+}
+
+/// The focus of the first focusable in the chain of modifiers `measured` starts, looking
+/// through the wrappers of one node but not into its children.
+fn chain_focus(measured: &Measured) -> Option<Focus> {
+    let mut at = measured;
+    loop {
+        at = match &at.paint {
+            Paint::Focusable { focus, .. } => return Some(focus.clone()),
+            Paint::Shared(shared) => shared,
+            Paint::Background { inner, .. }
+            | Paint::Draw { inner, .. }
+            | Paint::Interactive { inner, .. }
+            | Paint::InteractionFocused { inner, .. }
+            | Paint::Fill { inner, .. }
+            | Paint::Effect { inner, .. }
+            | Paint::Gradient { inner, .. }
+            | Paint::Ring { inner, .. }
+            | Paint::Cursor { inner, .. }
+            | Paint::ImeCaret { inner, .. }
+            | Paint::Hover { inner, .. }
+            | Paint::Placed { inner, .. }
+            | Paint::LongPress { inner, .. }
+            | Paint::PointerMove { inner, .. }
+            | Paint::FileDrop { inner, .. }
+            | Paint::DragEnd { inner, .. }
+            | Paint::DragSource { inner, .. }
+            | Paint::DropTarget { inner, .. }
+            | Paint::PointerInput { inner, .. }
+            | Paint::Pinch { inner, .. }
+            | Paint::BlocksPointer(inner)
+            | Paint::Alpha { inner, .. }
+            | Paint::GraphicsLayer { inner, .. }
+            | Paint::BorderBottom { inner, .. }
+            | Paint::BorderSide { inner, .. }
+            | Paint::Border { inner, .. }
+            | Paint::Shadow { inner, .. }
+            | Paint::Clip(inner)
+            | Paint::ClipRounded { inner, .. }
+            | Paint::Clickable { inner, .. }
+            | Paint::Semantics { inner, .. }
+            | Paint::Press { inner, .. }
+            | Paint::Button { inner, .. }
+            | Paint::KeyEvent { inner, .. }
+            | Paint::Drag { inner, .. } => inner,
+            _ => return None,
+        };
     }
 }
 

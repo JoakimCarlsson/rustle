@@ -269,12 +269,12 @@ impl App {
             size.width as f32 / scale_factor,
             size.height as f32 / scale_factor,
         ));
-        self.ui.display = rustle_ui::display_list_with(
+        self.ui.show(rustle_ui::LaidOut::new(
             tree,
             constraints,
             &mut state.renderer,
             display_options(scale_factor),
-        );
+        ));
         self.ui.redraw = false;
         state.window.request_redraw();
         self.ui.update_hover();

@@ -102,9 +102,9 @@ pub use rustle_text::{
     font_families, layout_spans, layout_text, register_font,
 };
 pub use rustle_ui::{
-    Clipboard, ClipboardImage, CursorIcon, DisplayOptions, IntrinsicSize, Measurable,
-    PixelRounding, Placement, SubcomposeResult, SubcomposeScope, clipboard, restartable, skippable,
-    subcompose_layout,
+    Clipboard, ClipboardImage, CursorIcon, DisplayOptions, Interaction, InteractionColors,
+    IntrinsicSize, Measurable, PixelRounding, Placement, SubcomposeResult, SubcomposeScope,
+    clipboard, restartable, skippable, subcompose_layout,
 };
 pub use rustle_unit::{Dp, dp};
 pub use rustle_widgets::{

@@ -22,6 +22,14 @@ use crate::semantics::Semantics;
 /// Draws into a canvas of the given size: the commands, and where in them the content goes.
 pub(crate) type DrawFn = Rc<dyn Fn(Size) -> (Vec<DrawCommand>, Option<usize>)>;
 
+/// Says, when painting, whether interactive drawing counts as focused.
+pub(crate) type FocusedFn = Rc<dyn Fn() -> bool>;
+
+/// Draws into a canvas of the given size in an interaction state: the commands, and where in
+/// them the content goes.
+pub(crate) type InteractiveDrawFn =
+    Rc<dyn Fn(Size, crate::Interaction) -> (Vec<DrawCommand>, Option<usize>)>;
+
 /// A custom layout: measures the content through a [`Measurable`] and says where it goes.
 pub(crate) type LayoutFn = dyn Fn(&mut Measurable<'_>, Constraints) -> Placement;
 
@@ -62,6 +70,10 @@ pub(crate) enum Fill {
 #[derive(Clone)]
 pub(crate) enum Element {
     Draw(DrawFn),
+    /// Drawn according to the interaction state, resolved when painting.
+    InteractiveDraw(InteractiveDrawFn),
+    /// A focused flag for the interactive drawing inside.
+    InteractionFocused(FocusedFn),
     Fill(Fill),
     Effect(LayerEffect),
     Padding {

@@ -24,11 +24,11 @@ pub use children::Children;
 pub use custom::{
     IntrinsicSize, Measurable, Placement, SubcomposeResult, SubcomposeScope, subcompose_layout,
 };
-pub use paint::{DisplayOptions, PixelRounding, display_list, display_list_with};
+pub use paint::{DisplayOptions, LaidOut, PixelRounding, display_list, display_list_with};
 pub use regions::{
     ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
-    FileDropRegion, FocusRegion, HitRegion, HoverRegion, ImeCaretRegion, KeyRegion,
-    PointerInputRegion, PressRegion, ScrollRegion, SemanticsNode,
+    FileDropRegion, FocusRegion, HitRegion, HoverRegion, ImeCaretRegion, InteractionRegion,
+    KeyRegion, PointerInputRegion, PressRegion, ScrollRegion, SemanticsNode,
 };
 
 /// Decides how a node sizes and places its children.

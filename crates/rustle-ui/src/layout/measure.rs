@@ -145,6 +145,16 @@ pub(super) fn measure_modified(
             corner_radius: *corner_radius,
             inner,
         }),
+        Element::InteractiveDraw(draw) => wrap(next(constraints), |inner| Paint::Interactive {
+            draw: Rc::clone(draw),
+            inner,
+        }),
+        Element::InteractionFocused(focused) => {
+            wrap(next(constraints), |inner| Paint::InteractionFocused {
+                focused: Rc::clone(focused),
+                inner,
+            })
+        }
         Element::Draw(draw) => wrap(next(constraints), |inner| Paint::Draw {
             draw: Rc::clone(draw),
             inner,

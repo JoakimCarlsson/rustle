@@ -132,6 +132,95 @@ impl Modifier {
         })))
     }
 
+    /// Like [`draw_behind`](Self::draw_behind), with `draw` also given the area's
+    /// [`Interaction`](crate::Interaction) state: whether the pointer is over it, presses it,
+    /// and whether it has focus.
+    ///
+    /// The state is resolved when the interface is painted, not when it is composed, so
+    /// hovering, pressing or focusing the area paints the laid-out tree again without
+    /// composing or measuring anything: a hover style on every row of a long list costs a
+    /// repaint, not a recomposition of whatever reads the list's state.
+    pub fn draw_behind_interactive(
+        self,
+        draw: impl Fn(&mut Canvas, crate::Interaction) + 'static,
+    ) -> Self {
+        self.then(Element::InteractiveDraw(Rc::new(
+            move |size, interaction| {
+                let mut canvas = Canvas::new(size);
+                draw(&mut canvas, interaction);
+                let (commands, _) = canvas.finish_with_content();
+                let end = commands.len();
+                (commands, Some(end))
+            },
+        )))
+    }
+
+    /// Like [`draw_behind_interactive`](Self::draw_behind_interactive), drawing over the
+    /// content instead of behind it, such as a focus ring.
+    pub fn draw_over_interactive(
+        self,
+        draw: impl Fn(&mut Canvas, crate::Interaction) + 'static,
+    ) -> Self {
+        self.then(Element::InteractiveDraw(Rc::new(
+            move |size, interaction| {
+                let mut canvas = Canvas::new(size);
+                draw(&mut canvas, interaction);
+                let (commands, _) = canvas.finish_with_content();
+                (commands, Some(0))
+            },
+        )))
+    }
+
+    /// Like [`draw_with_content`](Self::draw_with_content), with `draw` also given the
+    /// area's [`Interaction`](crate::Interaction) state, resolved when painting as for
+    /// [`draw_behind_interactive`](Self::draw_behind_interactive).
+    pub fn draw_with_content_interactive(
+        self,
+        draw: impl Fn(&mut Canvas, crate::Interaction) + 'static,
+    ) -> Self {
+        self.then(Element::InteractiveDraw(Rc::new(
+            move |size, interaction| {
+                let mut canvas = Canvas::new(size);
+                draw(&mut canvas, interaction);
+                canvas.finish_with_content()
+            },
+        )))
+    }
+
+    /// Fills the area behind its content with the color of `colors` for its
+    /// [`Interaction`](crate::Interaction) state: pressed, hovered, focused or idle. The state
+    /// is resolved when painting, as for
+    /// [`draw_behind_interactive`](Self::draw_behind_interactive), so a change repaints
+    /// without composing.
+    pub fn interaction_background(self, colors: crate::InteractionColors) -> Self {
+        self.draw_behind_interactive(move |canvas, interaction| {
+            let color = colors.color(interaction);
+            if color.a == 0 {
+                return;
+            }
+            let (width, height) = (canvas.width(), canvas.height());
+            canvas.rounded_rect(0.0, 0.0, width, height, colors.corner_radius, color);
+        })
+    }
+
+    /// Gives the interactive drawing inside this modifier (see
+    /// [`draw_behind_interactive`](Self::draw_behind_interactive)) its focused state from
+    /// outside, for an application that keeps its own notion of focus. It wins over the
+    /// focus of any [`focusable`](Self::focusable). Changing it composes again, as any value
+    /// given in composition does.
+    pub fn interaction_focused(self, focused: bool) -> Self {
+        self.then(Element::InteractionFocused(Rc::new(move || focused)))
+    }
+
+    /// Like [`interaction_focused`](Self::interaction_focused), with the focused state read by
+    /// calling `focused` each time the interface is painted or checks whether its interaction
+    /// state changed, not when it is composed. An application that keeps its own focus in a
+    /// `Cell` changes it and calls `Embedded::update`, which paints again without composing
+    /// and returns true when the drawing depends on it.
+    pub fn interaction_focused_with(self, focused: impl Fn() -> bool + 'static) -> Self {
+        self.then(Element::InteractionFocused(Rc::new(focused)))
+    }
+
     /// Draws on a [`Canvas`] the size of the area, with the content drawn where `draw`
     /// calls [`Canvas::draw_content`]: what it draws before is behind the content and
     /// what it draws after is over it. If it never calls it, the content is not drawn

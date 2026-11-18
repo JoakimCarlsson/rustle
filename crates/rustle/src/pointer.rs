@@ -302,6 +302,7 @@ impl Interface {
             .map(|region| region.rect);
         self.redraw = true;
         if !pressed {
+            self.pressed_at = None;
             // Something carried over a drop target is dropped on it.
             if self.finish_carrying(PointerButton::Primary) {
                 self.pressed = None;
@@ -324,6 +325,7 @@ impl Interface {
             return;
         }
         self.pressed = target;
+        self.pressed_at = self.pointer;
         self.carrying = self.begin_carrying(PointerButton::Primary);
         self.long_press = self.pointer.and_then(|pointer| {
             let region = self.display.long_press_at(pointer)?;

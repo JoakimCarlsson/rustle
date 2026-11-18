@@ -8,7 +8,7 @@ use super::ContentScale;
 use crate::cursor::CursorIcon;
 use crate::gesture::PointerInputHandler;
 use crate::input::{DropHandler, Focus, KeyHandler, PointerButton, PointerEvent, PressEvent};
-use crate::modifier::{DrawFn, Fill};
+use crate::modifier::{DrawFn, Fill, FocusedFn, InteractiveDrawFn};
 use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
 use crate::{CharPosition, TextEditing};
@@ -50,6 +50,14 @@ pub(super) enum Paint {
     },
     Draw {
         draw: DrawFn,
+        inner: Box<Measured>,
+    },
+    Interactive {
+        draw: InteractiveDrawFn,
+        inner: Box<Measured>,
+    },
+    InteractionFocused {
+        focused: FocusedFn,
         inner: Box<Measured>,
     },
     Fill {

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use rustle_foundation::{Focus, KeyEvent, Modifiers};
 use rustle_geometry::{Offset, Rect};
 use rustle_graphics::DrawCommand;
-use rustle_ui::{CursorIcon, DisplayList, PointerButton, PointerId};
+use rustle_ui::{CursorIcon, DisplayList, LaidOut, PointerButton, PointerId, PointerState};
 
 use crate::contact::ActivePointer;
 use crate::overlay::{carrying_overlay, feedback};
@@ -49,6 +49,11 @@ pub(crate) type Drag = (Rc<dyn Fn(Offset)>, Offset, Option<Rc<dyn Fn()>>);
 #[derive(Default)]
 pub(crate) struct Interface {
     pub(crate) display: DisplayList,
+    /// The measured tree `display` was painted from, kept to paint it again when only the
+    /// interaction state of its areas changed.
+    pub(crate) laid_out: Option<LaidOut>,
+    /// Where the primary button (or the first finger) went down, while it is held.
+    pub(crate) pressed_at: Option<Offset>,
     /// Where the pointer is, in logical pixels, while it is over the area.
     pub(crate) pointer: Option<Offset>,
     /// What has keyboard focus.
@@ -101,6 +106,8 @@ impl Interface {
     /// windows (the modifier keys, the buttons held and the caret area last reported).
     pub(crate) fn exchange(&mut self, other: &mut Self) {
         mem::swap(&mut self.display, &mut other.display);
+        mem::swap(&mut self.laid_out, &mut other.laid_out);
+        mem::swap(&mut self.pressed_at, &mut other.pressed_at);
         mem::swap(&mut self.pointer, &mut other.pointer);
         mem::swap(&mut self.focused, &mut other.focused);
         mem::swap(&mut self.typed, &mut other.typed);
@@ -127,6 +134,41 @@ impl Interface {
             redraw: true,
             ..Self::default()
         };
+    }
+
+    /// Shows `laid_out`, a tree just measured, painting its interactive areas in the state
+    /// the pointer and focus put them in now.
+    pub(crate) fn show(&mut self, laid_out: LaidOut) {
+        self.display = laid_out.paint(self.pointer_state());
+        self.laid_out = Some(laid_out);
+    }
+
+    /// Where the pointer is and where the primary button went down, for interactive areas.
+    pub(crate) fn pointer_state(&self) -> PointerState {
+        PointerState {
+            position: self.pointer,
+            pressed_at: self.pressed_at,
+        }
+    }
+
+    /// Paints the shown tree again, without composing or measuring it, when the hover,
+    /// press or focus state of one of its interactive areas changed, and asks for a redraw.
+    /// Does nothing when no area is drawn by its interaction state.
+    pub(crate) fn refresh_interactions(&mut self) {
+        let pointer = self.pointer_state();
+        if let Some(laid_out) = &self.laid_out
+            && self.display.interactions_changed(pointer)
+        {
+            self.display = laid_out.paint(pointer);
+            self.redraw = true;
+        }
+    }
+
+    /// Settles what input may have changed: moves focus to what the application asked for,
+    /// then paints interactive areas again if their state changed.
+    pub(crate) fn after_input(&mut self) {
+        self.apply_focus_request();
+        self.refresh_interactions();
     }
 
     /// Takes whether the owner should draw again.

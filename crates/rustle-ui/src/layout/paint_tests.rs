@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use rustle_text::{Cluster, LineLayout, StyledSpan, TextLayout, TextStyle};
 
 use super::*;
-use crate::{Content, Modifier, TextEditing};
+use crate::{Content, Interaction, Modifier, TextEditing};
 
 /// A deterministic single-line measurer with eight logical pixels per character.
 struct FixedText;
@@ -69,6 +69,9 @@ fn paint_once(measured: &Measured) -> DisplayList {
         window: measured.size,
         grid: None,
         focus: None,
+        focused_flag: None,
+        pointer: PointerState::default(),
+        resolved: None,
     };
     painter.paint(measured, Offset::default());
     painter.paint_deferred();
@@ -448,4 +451,169 @@ fn an_ime_caret_outside_its_focusable_uses_the_one_inside() {
         focused_canvas(move |focus| Modifier::new().ime_caret(caret).focusable(focus, |_| false));
     focus.set_focused(true);
     assert_eq!(list.focused_ime_area(), Some(caret));
+}
+
+/// A 40 by 40 canvas at `(x, y)` with `modifier`.
+fn square_at(x: f32, y: f32, modifier: Modifier) -> Node {
+    Node {
+        modifier: Modifier::new()
+            .absolute_offset(x, y)
+            .chain(modifier)
+            .size(40.0, 40.0),
+        content: Content::Canvas {
+            draw: Rc::new(|_| Vec::new()),
+        },
+    }
+}
+
+/// An area at the origin drawn by its interaction state, recording each state it is drawn
+/// in, and a clickable area painted after it over its right half.
+fn covered_area(seen: Rc<RefCell<Vec<Interaction>>>) -> Node {
+    let base = square_at(
+        0.0,
+        0.0,
+        Modifier::new().draw_behind_interactive(move |canvas, interaction| {
+            seen.borrow_mut().push(interaction);
+            canvas.rect(0.0, 0.0, 1.0, 1.0, Color::rgba(0, 0, 0, 255));
+        }),
+    );
+    let cover = square_at(20.0, 0.0, Modifier::new().clickable(|| {}));
+    Node {
+        modifier: Modifier::new(),
+        content: Content::Layout {
+            policy: Rc::new(crate::Overlay::default()),
+            children: Rc::new(vec![base, cover]),
+        },
+    }
+}
+
+/// Lays `root` out in a 100 by 100 window.
+fn laid_out(root: &Node) -> LaidOut {
+    LaidOut::new(
+        root,
+        Constraints::loose(Size::new(100.0, 100.0)),
+        &mut FixedText,
+        DisplayOptions::default(),
+    )
+}
+
+/// An area is idle without a pointer, and hovered with the pointer over its open part.
+#[test]
+fn interactive_drawing_sees_the_pointer() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let tree = laid_out(&covered_area(Rc::clone(&seen)));
+    let idle = tree.paint(PointerState::default());
+    assert_eq!(seen.borrow().as_slice(), &[Interaction::default()]);
+    assert_eq!(idle.interactions.len(), 1);
+    let pointer = PointerState {
+        position: Some(Offset::new(5.0, 5.0)),
+        pressed_at: None,
+    };
+    assert!(idle.interactions_changed(pointer));
+    seen.borrow_mut().clear();
+    let hovered = tree.paint(pointer);
+    let expected = Interaction {
+        hovered: true,
+        pointer_inside: true,
+        ..Interaction::default()
+    };
+    assert_eq!(seen.borrow().as_slice(), &[expected]);
+    assert_eq!(hovered.interactions[0].interaction, expected);
+    assert!(!hovered.interactions_changed(pointer));
+}
+
+/// Under something painted later that takes clicks, the pointer is inside the area but does
+/// not hover it, so it is not pressed either, and a press only counts when it began inside.
+#[test]
+fn covered_areas_are_inside_but_not_hovered() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let tree = laid_out(&covered_area(Rc::clone(&seen)));
+    let pointer = PointerState {
+        position: Some(Offset::new(30.0, 5.0)),
+        pressed_at: Some(Offset::new(30.0, 6.0)),
+    };
+    let list = tree.paint(pointer);
+    let expected = Interaction {
+        hovered: false,
+        pointer_inside: true,
+        pressed: false,
+        focused: false,
+    };
+    assert_eq!(list.interactions[0].interaction, expected);
+    assert_eq!(seen.borrow().last(), Some(&expected));
+    let outside_press = PointerState {
+        position: Some(Offset::new(5.0, 5.0)),
+        pressed_at: Some(Offset::new(60.0, 60.0)),
+    };
+    assert!(
+        !tree.paint(outside_press).interactions[0]
+            .interaction
+            .pressed
+    );
+}
+
+/// The focus of a focusable in the area's own chain counts, and a flag given from outside
+/// wins over it.
+#[test]
+fn interactive_drawing_sees_focus_and_an_outside_flag() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let recorded = Rc::clone(&seen);
+    let (focus, _) = focused_canvas(move |focus| {
+        let recorded = Rc::clone(&recorded);
+        Modifier::new()
+            .draw_behind_interactive(move |_, interaction| {
+                recorded.borrow_mut().push(interaction.focused);
+            })
+            .focusable(focus, |_| false)
+    });
+    assert_eq!(seen.borrow().as_slice(), &[false]);
+    focus.set_focused(true);
+    let flagged = Rc::new(RefCell::new(Vec::new()));
+    let recorded = Rc::clone(&flagged);
+    let root = square_at(
+        0.0,
+        0.0,
+        Modifier::new()
+            .interaction_focused(true)
+            .draw_over_interactive(move |_, interaction| {
+                recorded.borrow_mut().push(interaction.focused);
+            }),
+    );
+    let list = laid_out(&root).paint(PointerState::default());
+    assert_eq!(flagged.borrow().as_slice(), &[true]);
+    assert!(list.interactions[0].interaction.focused);
+}
+
+/// Without interactive areas nothing changes with the pointer, so nothing is painted again.
+#[test]
+fn lists_without_interactive_areas_never_change() {
+    let root = square_at(0.0, 0.0, Modifier::new().clickable(|| {}));
+    let list = laid_out(&root).paint(PointerState::default());
+    assert!(list.interactions.is_empty());
+    assert!(!list.interactions_changed(PointerState {
+        position: Some(Offset::new(5.0, 5.0)),
+        pressed_at: Some(Offset::new(5.0, 5.0)),
+    }));
+}
+
+/// The colors of an interaction background follow its state, pressed first.
+#[test]
+fn interaction_colors_pick_the_strongest_state() {
+    let colors = crate::InteractionColors {
+        idle: Color::rgba(1, 0, 0, 255),
+        hovered: Color::rgba(2, 0, 0, 255),
+        pressed: Color::rgba(3, 0, 0, 255),
+        focused: Color::rgba(4, 0, 0, 255),
+        corner_radius: 2.0,
+    };
+    let state = |hovered, pressed, focused| Interaction {
+        hovered,
+        pointer_inside: hovered,
+        pressed,
+        focused,
+    };
+    assert_eq!(colors.color(state(false, false, false)), colors.idle);
+    assert_eq!(colors.color(state(true, false, true)), colors.hovered);
+    assert_eq!(colors.color(state(true, true, true)), colors.pressed);
+    assert_eq!(colors.color(state(false, false, true)), colors.focused);
 }

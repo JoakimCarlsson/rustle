@@ -6,6 +6,7 @@ use rustle_graphics::DrawCommand;
 use crate::cursor::CursorIcon;
 use crate::gesture::PointerInputHandler;
 use crate::input::{DropHandler, Focus, KeyHandler, PointerButton, PointerEvent, PressEvent};
+use crate::interaction::{Interaction, PointerState, resolve};
 use crate::scroll::ScrollState;
 use crate::semantics::Semantics;
 
@@ -55,8 +56,29 @@ pub struct DisplayList {
     /// Where areas that draw their own text take text input, in paint order. See
     /// [`Modifier::ime_caret`](crate::Modifier::ime_caret).
     pub ime_carets: Vec<ImeCaretRegion>,
+    /// Areas drawn according to their interaction state, in paint order. See
+    /// [`Modifier::draw_behind_interactive`](crate::Modifier::draw_behind_interactive).
+    pub interactions: Vec<InteractionRegion>,
     /// What the areas mean, in paint order, for assistive technology.
     pub semantics: Vec<SemanticsNode>,
+}
+
+/// An area drawn according to its interaction state, cut to what is visible, with what
+/// decides that state and the state it was painted in.
+pub struct InteractionRegion {
+    /// The part of the area that is visible, in the window.
+    pub rect: Rect,
+    /// The focus whose holder counts as focused, unless `focused` is given.
+    pub focus: Option<Focus>,
+    /// Says whether the area counts as focused, given from outside with
+    /// [`Modifier::interaction_focused`](crate::Modifier::interaction_focused) or
+    /// [`Modifier::interaction_focused_with`](crate::Modifier::interaction_focused_with); it
+    /// wins over `focus`.
+    pub focused: Option<Rc<dyn Fn() -> bool>>,
+    /// How many clickable regions were painted when this area and what is inside it had been.
+    pub covered_after: usize,
+    /// The state the area was painted in.
+    pub interaction: Interaction,
 }
 
 /// Where an area that draws its own text takes text input, cut to what is visible, and the
@@ -244,8 +266,8 @@ impl DisplayList {
     }
 
     /// Whether any area that reacts to the pointer or blocks it contains `point`: clickable,
-    /// pressable, draggable, scrollable, focusable, hoverable, a drag source, a drop target,
-    /// one that listens to a pointer button, or one marked
+    /// pressable, draggable, scrollable, focusable, hoverable, drawn by its interaction state,
+    /// a drag source, a drop target, one that listens to a pointer button, or one marked
     /// [`blocks_pointer`](crate::Modifier::blocks_pointer). A host that shares the window
     /// with the interface uses it to tell whether the pointer is over the interface or over
     /// what lies beneath.
@@ -259,6 +281,7 @@ impl DisplayList {
             || self.buttons.iter().any(|region| over(region.rect))
             || self.drags.iter().any(|region| over(region.rect))
             || self.hovers.iter().any(|region| over(region.rect))
+            || self.interactions.iter().any(|region| over(region.rect))
             || self.long_presses.iter().any(|region| over(region.rect))
             || self.pointer_moves.iter().any(|region| over(region.rect))
             || self.drag_sources.iter().any(|region| over(region.rect))
@@ -337,6 +360,41 @@ impl DisplayList {
             .iter()
             .rev()
             .find(|region| contains(region.rect, point))
+    }
+
+    /// The interaction state each of [`interactions`](Self::interactions) is in for
+    /// `pointer` and the focus held now, in the same order.
+    pub fn resolve_interactions(&self, pointer: PointerState) -> Vec<Interaction> {
+        self.interactions
+            .iter()
+            .map(|region| self.resolve_interaction(region, pointer))
+            .collect()
+    }
+
+    /// Whether any of [`interactions`](Self::interactions) would be painted differently for
+    /// `pointer` and the focus held now than it was, so the list should be painted again.
+    pub fn interactions_changed(&self, pointer: PointerState) -> bool {
+        self.interactions
+            .iter()
+            .any(|region| self.resolve_interaction(region, pointer) != region.interaction)
+    }
+
+    /// The interaction state `region` is in for `pointer` and the focus held now.
+    fn resolve_interaction(
+        &self,
+        region: &InteractionRegion,
+        pointer: PointerState,
+    ) -> Interaction {
+        let covered = pointer
+            .position
+            .is_some_and(|point| self.covered_at(region.covered_after, point));
+        resolve(
+            region.rect,
+            region.focus.as_ref(),
+            region.focused.as_ref().map(|focused| focused()),
+            pointer,
+            covered,
+        )
     }
 
     /// Every hover region containing `point` that nothing painted later covers.
