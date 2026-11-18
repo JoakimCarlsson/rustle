@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustle_foundation::{KeyEvent, Modifiers};
 use rustle_geometry::{Offset, Rect, Size};
@@ -30,6 +30,10 @@ enum Backend {
 
 /// What wakes the host.
 type Waker = Arc<dyn Fn() + Send + Sync>;
+
+/// A clock the host sets: the time of the frame [`Embedded::update`] runs, since a start the
+/// host chooses.
+type Clock = Box<dyn Fn() -> Duration>;
 
 /// A rustle application inside a host that owns the window, the GPU device and the frame.
 ///
@@ -68,6 +72,7 @@ pub struct Embedded {
     size: Size,
     scale_factor: f32,
     started: Instant,
+    clock: Option<Clock>,
     dark: Rc<Cell<bool>>,
     wake: Waker,
 }
@@ -133,6 +138,7 @@ impl Embedded {
             size: Size::new(0.0, 0.0),
             scale_factor: 1.0,
             started: Instant::now(),
+            clock: None,
             dark,
             wake,
         }
@@ -199,7 +205,7 @@ impl Embedded {
     /// looks, or an animation wants another frame.
     pub fn update(&mut self) -> bool {
         if self.composition.has_pending_frame() {
-            self.composition.run_frame(self.started.elapsed());
+            self.composition.run_frame(self.frame_time());
         }
         let changed = self.composition.recompose();
         if changed {
@@ -208,6 +214,43 @@ impl Embedded {
         self.ui.apply_focus_request();
         let redraw = self.ui.take_redraw();
         changed || redraw || self.composition.has_pending_frame()
+    }
+
+    /// Sets the clock that gives the time of each frame [`update`](Embedded::update) runs,
+    /// which is what animations and the delays of tasks started with
+    /// [`launched_effect`](crate::launched_effect) measure.
+    ///
+    /// By default frames are timed with the real clock, from when the interface (or its latest
+    /// root) was made. A host that draws frames of its own timing, such as an offscreen
+    /// snapshot "500 ms after opening", gives a clock here so the result does not depend on how
+    /// long the work took. `clock` must never go backwards.
+    pub fn set_clock(&mut self, clock: impl Fn() -> Duration + 'static) {
+        self.clock = Some(Box::new(clock));
+    }
+
+    /// Times frames with the real clock again, from now, undoing
+    /// [`set_clock`](Embedded::set_clock) and [`advance_to`](Embedded::advance_to).
+    pub fn use_real_clock(&mut self) {
+        self.clock = None;
+        self.started = Instant::now();
+    }
+
+    /// Stops the clock at `time` and runs [`update`](Embedded::update) at it.
+    ///
+    /// The clock stays at `time` until it is set again, so calling this with growing times
+    /// steps the interface through frames deterministically, as tests and snapshots need.
+    /// `time` must not be earlier than the frame before. Returns what `update` returns.
+    pub fn advance_to(&mut self, time: Duration) -> bool {
+        self.set_clock(move || time);
+        self.update()
+    }
+
+    /// The time the next frame [`update`](Embedded::update) runs would be given: the host's
+    /// clock if it set one, else the real time since the interface (or its latest root) was made.
+    pub fn frame_time(&self) -> Duration {
+        self.clock
+            .as_ref()
+            .map_or_else(|| self.started.elapsed(), |clock| clock())
     }
 
     /// Whether an animation or a task wants another frame.
