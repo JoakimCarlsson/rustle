@@ -242,6 +242,16 @@ pub enum DrawCommand {
         /// From 0 (invisible) to 1 (as is).
         opacity: f32,
     },
+    /// A coverage mask stretched over `rect` and filled with `color`: each pixel of `mask`
+    /// covers as much as its alpha says, and its color channels are ignored. This is how a
+    /// host draws icons it rasterised itself, tinted by state. A renderer draws a mask whose
+    /// pixel size is `rect`'s size at the scale factor texel for texel, from a whole physical
+    /// pixel, so it stays sharp.
+    Mask {
+        rect: Rect,
+        mask: ImageData,
+        color: Color,
+    },
     /// Draws everything until the matching `PopLayer` as one picture, then puts
     /// it on what is below turned `rotation` radians clockwise and scaled by
     /// `scale` about the center of `rect`, and faded to `alpha`.
@@ -299,6 +309,7 @@ impl DrawCommand {
             | Self::Arc { rect, .. }
             | Self::Shadow { rect, .. }
             | Self::Image { rect, .. }
+            | Self::Mask { rect, .. }
             | Self::Path { rect, .. }
             | Self::PushClip { rect }
             | Self::PushRoundedClip { rect, .. }

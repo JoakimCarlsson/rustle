@@ -52,8 +52,8 @@ pub use rustle_foundation::{
     LOCAL_TEXT_SELECTION_COLORS, LOCAL_TEXT_STYLE, LazyContent, LazyListState, Modifier,
     ScrollState, ScrollbarStyle, ScrollbarVisibility, TextSelectionColors, backdrop, canvas,
     column, column_arranged, column_with, floating, floating_above, flow_row, image, lazy_column,
-    lazy_list, lazy_list_keyed, lazy_row, lazy_vertical_grid, remember_lazy_list_state, reveal,
-    rich_text, rich_text_with, row, row_arranged, row_with, spacer, stack, stack_aligned,
+    lazy_list, lazy_list_keyed, lazy_row, lazy_vertical_grid, mask_image, remember_lazy_list_state,
+    reveal, rich_text, rich_text_with, row, row_arranged, row_with, spacer, stack, stack_aligned,
     stack_with, text, text_styled, text_with, viewport, viewport_with,
 };
 pub use rustle_foundation::{
@@ -152,8 +152,8 @@ pub mod prelude {
         horizontal_pager, icon, icon_button, image, infinite_float, infinite_float_repeating,
         infinite_repeatable, is_rtl, is_system_in_dark_theme, key, keyframes, launched_effect,
         lazy_column, lazy_list, lazy_row, lazy_vertical_grid, light_color_scheme, line_chart,
-        linear_progress_indicator, list_item, menu, muted, muted_sized, nav_host, navigation_bar,
-        outlined_button, page_indicator, phosphor, pill, popup, produce_state,
+        linear_progress_indicator, list_item, mask_image, menu, muted, muted_sized, nav_host,
+        navigation_bar, outlined_button, page_indicator, phosphor, pill, popup, produce_state,
         provide_content_color, provide_ripple_configuration, qr_code, radio_button, range_slider,
         remember, remember_anchored_draggable_state, remember_animatable, remember_draggable_state,
         remember_focus, remember_lazy_list_state, remember_nav_controller, remember_pager_state,

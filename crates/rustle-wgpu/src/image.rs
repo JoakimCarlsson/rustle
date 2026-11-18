@@ -1,9 +1,11 @@
 //! Pictures drawn as instanced quads by the image shader in `rustle-shaders`.
 
 use crate::quad::Viewport;
+use crate::srgb_to_linear;
 use std::collections::HashMap;
 
-use rustle_graphics::{DrawCommand, ImageData, ImageKey};
+use rustle_geometry::Rect;
+use rustle_graphics::{Color, DrawCommand, ImageData, ImageKey};
 use wgpu::util::DeviceExt;
 
 /// One picture as the shader reads it, in physical pixels.
@@ -14,17 +16,37 @@ pub(crate) struct Instance {
     size: [f32; 2],
     /// Left, top, right and bottom in texture coordinates.
     uv: [f32; 4],
-    /// The corner radius in physical pixels, then unused channels.
+    /// The corner radius in physical pixels, the opacity, then 1 for a coverage mask and 0
+    /// for a picture, then an unused channel.
     color: [f32; 4],
+    /// The color a coverage mask is filled with, as the target takes it, straight alpha.
+    tint: [f32; 4],
 }
 
 impl Instance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+    const ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
         0 => Float32x2,
         1 => Float32x2,
         2 => Float32x4,
         3 => Float32x4,
+        4 => Float32x4,
     ];
+}
+
+/// Where `image` stretched over `rect` lands, in physical pixels at `scale`: its origin and
+/// size. When `rect` is the image's own pixel size at `scale` (within half a pixel), it is
+/// placed from the nearest whole physical pixel at exactly that size, so each texel covers one
+/// pixel and nothing is blurred by sampling between them.
+fn placement(rect: Rect, image: &ImageData, scale: f32) -> ([f32; 2], [f32; 2]) {
+    let origin = [rect.origin.x * scale, rect.origin.y * scale];
+    let size = [rect.size.width * scale, rect.size.height * scale];
+    let pixels = [image.width() as f32, image.height() as f32];
+    let matches = (size[0] - pixels[0]).abs() <= 0.5 && (size[1] - pixels[1]).abs() <= 0.5;
+    if matches {
+        ([origin[0].round(), origin[1].round()], pixels)
+    } else {
+        (origin, size)
+    }
 }
 
 /// The pictures of one layer: their instances and which texture each uses.
@@ -157,7 +179,8 @@ impl Images {
             .retain(|_, cached| frame - cached.last_used < 120);
     }
 
-    /// The instance that draws `command` if it is a picture, uploading the texture if new.
+    /// The instance that draws `command` if it is a picture or a coverage mask, uploading the
+    /// texture if new.
     pub(crate) fn instance(
         &mut self,
         device: &wgpu::Device,
@@ -165,25 +188,54 @@ impl Images {
         command: &DrawCommand,
         scale: f32,
     ) -> Option<(u64, Instance)> {
-        let DrawCommand::Image {
-            rect,
-            image,
-            corner_radius,
-            opacity,
-        } = command
-        else {
-            return None;
+        let (rect, image, color, tint) = match command {
+            DrawCommand::Image {
+                rect,
+                image,
+                corner_radius,
+                opacity,
+            } => (
+                *rect,
+                image,
+                [corner_radius * scale, *opacity, 0.0, 0.0],
+                [0.0; 4],
+            ),
+            DrawCommand::Mask { rect, mask, color } => {
+                (*rect, mask, [0.0, 1.0, 1.0, 0.0], self.channels(*color))
+            }
+            _ => return None,
         };
         self.ensure(device, queue, image);
+        let (origin, size) = placement(rect, image, scale);
         Some((
             slot(image),
             Instance {
-                origin: [rect.origin.x * scale, rect.origin.y * scale],
-                size: [rect.size.width * scale, rect.size.height * scale],
+                origin,
+                size,
                 uv: [0.0, 0.0, 1.0, 1.0],
-                color: [corner_radius * scale, *opacity, 0.0, 0.0],
+                color,
+                tint,
             },
         ))
+    }
+
+    /// `color` as the shader takes it: decoded to linear for an sRGB target, which encodes
+    /// what the shader writes.
+    fn channels(&self, color: Color) -> [f32; 4] {
+        let channel = |value: u8| {
+            let value = f32::from(value) / 255.0;
+            if self.srgb_target {
+                srgb_to_linear(value)
+            } else {
+                value
+            }
+        };
+        [
+            channel(color.r),
+            channel(color.g),
+            channel(color.b),
+            f32::from(color.a) / 255.0,
+        ]
     }
 
     /// Makes sure the texture cached for `image` holds it: uploads a new picture, writes a new

@@ -818,3 +818,115 @@ fn a_keyed_picture_keeps_one_texture_and_shows_its_newest_generation() {
         "a still picture has its own"
     );
 }
+
+/// A coverage mask of `size` pixels square: full coverage, except the left half at `edge`.
+fn coverage(size: u32, edge: u8) -> ImageData {
+    let bytes: Vec<u8> = (0..size * size)
+        .map(|index| if index % size < size / 2 { edge } else { 255 })
+        .collect();
+    ImageData::from_alpha(size, size, &bytes).unwrap()
+}
+
+#[test]
+fn a_mask_is_filled_with_its_color_by_coverage() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    let commands = [DrawCommand::Mask {
+        rect: area(8.0, 8.0, 16.0, 16.0),
+        mask: coverage(16, 0),
+        color: GREEN,
+    }];
+    let picture = draw(&mut renderer, &commands);
+    picture.expect(20, 16, [0, 255, 0, 255], 2);
+    picture.expect(10, 16, BACKGROUND, 2);
+    picture.expect(40, 40, BACKGROUND, 2);
+
+    let half = [DrawCommand::Mask {
+        rect: area(8.0, 8.0, 16.0, 16.0),
+        mask: coverage(16, 255),
+        color: Color::rgba(255, 0, 0, 128),
+    }];
+    let picture = draw(&mut renderer, &half);
+    let [r, g, b, _] = picture.at(16, 16);
+    assert!(
+        r > 120 && g < BACKGROUND[1] && b < BACKGROUND[2],
+        "the color's alpha fades the mask: {:?}",
+        [r, g, b]
+    );
+}
+
+/// A coverage mask of `size` pixels square in stripes: every even column covered, every odd
+/// one not, so sampling between texels shows as grey.
+fn stripes(size: u32) -> ImageData {
+    let bytes: Vec<u8> = (0..size * size)
+        .map(|index| {
+            if (index % size).is_multiple_of(2) {
+                255
+            } else {
+                0
+            }
+        })
+        .collect();
+    ImageData::from_alpha(size, size, &bytes).unwrap()
+}
+
+/// The stripes expected from `start` on one row of `picture`, one per pixel.
+#[track_caller]
+fn expect_stripes(picture: &Picture, start: u32, count: u32, y: u32) {
+    for column in 0..count {
+        let expected = if column.is_multiple_of(2) {
+            [255, 0, 0, 255]
+        } else {
+            BACKGROUND
+        };
+        picture.expect(start + column, y, expected, 2);
+    }
+}
+
+#[test]
+fn a_mask_at_its_pixel_size_lands_on_whole_pixels() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    let commands = [DrawCommand::Mask {
+        rect: area(10.4, 10.4, 4.0, 4.0),
+        mask: stripes(4),
+        color: RED,
+    }];
+    let picture = draw(&mut renderer, &commands);
+    expect_stripes(&picture, 10, 4, 12);
+    picture.expect(14, 12, BACKGROUND, 2);
+
+    let sharp = [DrawCommand::Mask {
+        rect: area(10.3, 10.3, 4.0, 4.0),
+        mask: stripes(8),
+        color: RED,
+    }];
+    let (width, _, pixels) = renderer.snapshot(&sharp, 2.0).unwrap();
+    let picture = Picture { width, pixels };
+    expect_stripes(&picture, 21, 8, 24);
+    picture.expect(20, 24, BACKGROUND, 2);
+}
+
+#[test]
+fn a_picture_at_its_pixel_size_lands_on_whole_pixels() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    let commands = [DrawCommand::Image {
+        rect: area(10.6, 10.6, 4.0, 4.0),
+        image: stripes(4),
+        corner_radius: 0.0,
+        opacity: 1.0,
+    }];
+    let picture = draw(&mut renderer, &commands);
+    for column in 0..4_u32 {
+        let expected = if column.is_multiple_of(2) {
+            [255, 255, 255, 255]
+        } else {
+            BACKGROUND
+        };
+        picture.expect(11 + column, 12, expected, 2);
+    }
+}

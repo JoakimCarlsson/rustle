@@ -1,4 +1,5 @@
-// Pictures: one instanced quad each, sampling a full-colour texture with rounded corners.
+// Pictures: one instanced quad each, sampling a full-colour texture with rounded corners,
+// or a coverage mask whose alpha is filled with a tint.
 
 struct Viewport {
     size: vec2<f32>,
@@ -16,6 +17,7 @@ struct Instance {
     @location(1) size: vec2<f32>,
     @location(2) uv: vec4<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) tint: vec4<f32>,
 }
 
 struct Fragment {
@@ -25,6 +27,8 @@ struct Fragment {
     @location(2) half_size: vec2<f32>,
     @location(3) radius: f32,
     @location(4) opacity: f32,
+    @location(5) mask: f32,
+    @location(6) tint: vec4<f32>,
 }
 
 fn unit_corner(index: u32) -> vec2<f32> {
@@ -56,6 +60,8 @@ fn vertex(@builtin(vertex_index) index: u32, instance: Instance) -> Fragment {
     out.local = (corner - vec2<f32>(0.5, 0.5)) * instance.size;
     out.radius = instance.color.x;
     out.opacity = instance.color.y;
+    out.mask = instance.color.z;
+    out.tint = instance.tint;
     return out;
 }
 
@@ -67,5 +73,9 @@ fn fragment(in: Fragment) -> @location(0) vec4<f32> {
     let distance = length(max(offset, vec2<f32>(0.0, 0.0))) + min(max(offset.x, offset.y), 0.0) - in.radius;
     let coverage = clamp(0.5 - distance, 0.0, 1.0);
     let alpha = pixel.a * coverage * in.opacity;
+    if in.mask > 0.5 {
+        let tinted = alpha * in.tint.a;
+        return vec4<f32>(in.tint.rgb * tinted, tinted);
+    }
     return vec4<f32>(pixel.rgb * alpha, alpha);
 }

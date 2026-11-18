@@ -43,8 +43,8 @@ pub use locale::{
 };
 pub use sized::sized_box;
 pub use text::{
-    LOCAL_SYSTEM_DARK, LOCAL_TEXT_STYLE, image, is_system_in_dark_theme, rich_text, rich_text_with,
-    text, text_styled, text_with,
+    LOCAL_SYSTEM_DARK, LOCAL_TEXT_STYLE, image, is_system_in_dark_theme, mask_image, rich_text,
+    rich_text_with, text, text_styled, text_with,
 };
 pub use viewport::{viewport, viewport_with};
 

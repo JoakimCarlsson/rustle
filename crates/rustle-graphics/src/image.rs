@@ -83,6 +83,25 @@ impl ImageData {
         })
     }
 
+    /// A coverage mask from one byte per pixel, or `None` if `coverage` is not
+    /// `width * height` bytes: white pixels whose alpha is the coverage, for
+    /// [`DrawCommand::Mask`](crate::DrawCommand::Mask), which takes only the alpha.
+    pub fn from_alpha(width: u32, height: u32, coverage: &[u8]) -> Option<Self> {
+        (coverage.len() == width as usize * height as usize).then(|| {
+            let pixels = coverage
+                .iter()
+                .flat_map(|&alpha| [255, 255, 255, alpha])
+                .collect::<Vec<u8>>();
+            Self {
+                id: next_id(),
+                key: None,
+                width,
+                height,
+                pixels: pixels.into(),
+            }
+        })
+    }
+
     /// Decodes a PNG or JPEG file's bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         let decoded = image::load_from_memory(bytes)
@@ -175,5 +194,13 @@ mod tests {
         assert_ne!(ImageKey::new(), key);
         assert!(ImageData::keyed(key, 2, 1, vec![0; 4]).is_none());
         assert_eq!(ImageData::from_rgba(1, 1, vec![0; 4]).unwrap().key(), None);
+    }
+
+    /// A mask from coverage bytes is white with that alpha, and its size is checked.
+    #[test]
+    fn a_mask_from_coverage_keeps_the_coverage_as_alpha() {
+        let mask = ImageData::from_alpha(2, 1, &[0, 200]).unwrap();
+        assert_eq!(mask.pixels(), &[255, 255, 255, 0, 255, 255, 255, 200]);
+        assert!(ImageData::from_alpha(2, 2, &[0; 3]).is_none());
     }
 }

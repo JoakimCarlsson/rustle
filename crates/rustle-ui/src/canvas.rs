@@ -4,7 +4,8 @@
 
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::{
-    Border, Color, DrawCommand, FontFamily, LayerEffect, Path, ShaderBrush, StyledSpan, TextAlign,
+    Border, Color, DrawCommand, FontFamily, ImageData, LayerEffect, Path, ShaderBrush, StyledSpan,
+    TextAlign,
 };
 use rustle_text::{Affinity, TextLayout, TextSpan, TextStyle};
 
@@ -71,6 +72,26 @@ impl Canvas {
         self.commands.push(DrawCommand::Path {
             path: path.clone(),
             rect: Self::rect_at(x, y, width, height),
+            color,
+        });
+    }
+
+    /// A coverage mask, such as an icon the program rasterised itself, stretched over a
+    /// rectangle and filled with `color`. Only the alpha of `mask`'s pixels is used (see
+    /// [`ImageData::from_alpha`]). Drawn at the size of its pixels at the scale factor, it is
+    /// placed on whole physical pixels and stays sharp.
+    pub fn mask(
+        &mut self,
+        mask: &ImageData,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: Color,
+    ) {
+        self.commands.push(DrawCommand::Mask {
+            rect: Self::rect_at(x, y, width, height),
+            mask: mask.clone(),
             color,
         });
     }

@@ -1,7 +1,7 @@
-use rustle_graphics::ImageData;
+use rustle_graphics::{Color, ImageData};
 use rustle_runtime::CompositionLocal;
 use rustle_text::{TextSpan, TextStyle};
-use rustle_ui::{Content, ContentScale, Modifier, Node, emit};
+use rustle_ui::{Content, ContentScale, Modifier, Node, canvas, emit};
 
 use crate::selection::{LOCAL_SELECTION, emit_block};
 
@@ -50,6 +50,22 @@ pub fn image(modifier: Modifier, image: &ImageData, scale: ContentScale) {
             image: image.clone(),
             scale,
         },
+    });
+}
+
+/// Emits a coverage mask, such as an icon the program rasterised itself, filled with `color`.
+/// Only the alpha of `mask`'s pixels is used (see [`ImageData::from_alpha`]).
+///
+/// It is as many logical pixels as `mask` has pixels unless `modifier` sizes it, and the mask
+/// is stretched over the area. A mask rasterised at the area's size times the scale factor is
+/// drawn texel for texel from a whole physical pixel, so icons stay sharp.
+#[track_caller]
+pub fn mask_image(modifier: Modifier, mask: &ImageData, color: Color) {
+    let natural = (mask.width() as f32, mask.height() as f32);
+    let mask = mask.clone();
+    canvas(modifier.size(natural.0, natural.1), move |canvas| {
+        let (width, height) = (canvas.width(), canvas.height());
+        canvas.mask(&mask, 0.0, 0.0, width, height, color);
     });
 }
 
