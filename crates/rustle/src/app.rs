@@ -33,6 +33,27 @@ thread_local! {
     static EXTERNAL_HANDLER: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
     /// What the loop's thread asks before the main window closes, set with [`set_close_handler`].
     static CLOSE_HANDLER: RefCell<Option<Rc<dyn Fn() -> bool>>> = const { RefCell::new(None) };
+    /// How the windows of this thread's loop round edges, set with [`set_pixel_rounding`].
+    static PIXEL_ROUNDING: std::cell::Cell<rustle_ui::PixelRounding> =
+        const { std::cell::Cell::new(rustle_ui::PixelRounding::None) };
+}
+
+/// Sets how the windows that [`run`] and [`run_with`] open, and the snapshots of
+/// [`preview`](crate::preview), place the edges of laid-out areas on the pixel grid. The
+/// default, [`PixelRounding::None`](rustle_ui::PixelRounding::None), draws areas where layout
+/// put them; `Logical` rounds every edge to a whole logical pixel and `Physical` to a whole
+/// physical pixel at each window's scale. Call it from the loop's thread, before `run` or from
+/// a composable; it applies from the next layout.
+pub fn set_pixel_rounding(rounding: rustle_ui::PixelRounding) {
+    PIXEL_ROUNDING.with(|slot| slot.set(rounding));
+}
+
+/// The options to paint a window's display list with at `scale`, from [`set_pixel_rounding`].
+pub(crate) fn display_options(scale: f32) -> rustle_ui::DisplayOptions {
+    rustle_ui::DisplayOptions {
+        rounding: PIXEL_ROUNDING.with(std::cell::Cell::get),
+        scale,
+    }
 }
 
 /// Sets what is asked when the main window is about to close, by the desktop or by
@@ -248,7 +269,12 @@ impl App {
             size.width as f32 / scale_factor,
             size.height as f32 / scale_factor,
         ));
-        self.ui.display = rustle_ui::display_list(tree, constraints, &mut state.renderer);
+        self.ui.display = rustle_ui::display_list_with(
+            tree,
+            constraints,
+            &mut state.renderer,
+            display_options(scale_factor),
+        );
         self.ui.redraw = false;
         state.window.request_redraw();
         self.ui.update_hover();

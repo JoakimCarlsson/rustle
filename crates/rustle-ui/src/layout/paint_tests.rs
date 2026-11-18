@@ -67,6 +67,7 @@ fn paint_once(measured: &Measured) -> DisplayList {
         clips: Vec::new(),
         clip_radii: Vec::new(),
         window: measured.size,
+        grid: None,
     };
     painter.paint(measured, Offset::default());
     painter.paint_deferred();
@@ -220,4 +221,101 @@ fn selected_rich_text_can_be_laid_out_again() {
     }
     assert_eq!(callbacks.get(), 2);
     assert_eq!(boundaries.borrow().len(), 4);
+}
+
+/// The rectangle of the background drawn for an area offset to (10.4, 0.6) and sized 5.3 by
+/// 5.3, painted with `options`.
+fn offset_background(options: DisplayOptions) -> Rect {
+    let root = Node {
+        modifier: Modifier::new()
+            .absolute_offset(10.4, 0.6)
+            .size(5.3, 5.3)
+            .background(Color::rgba(10, 20, 30, 255)),
+        content: Content::Canvas {
+            draw: Rc::new(|_| Vec::new()),
+        },
+    };
+    let list = display_list_with(
+        &root,
+        Constraints::loose(Size::new(100.0, 100.0)),
+        &mut FixedText,
+        options,
+    );
+    list.commands
+        .iter()
+        .find_map(|command| match command {
+            DrawCommand::Rect { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .expect("the background is drawn")
+}
+
+/// Leaves areas at their fractional places unless rounding is asked for.
+#[test]
+fn pixel_rounding_is_off_by_default() {
+    let rect = offset_background(DisplayOptions::default());
+    assert_eq!(rect.origin, Offset::new(10.4, 0.6));
+    assert_eq!(rect.size, Size::new(5.3, 5.3));
+}
+
+/// Rounds an area's edges to whole logical pixels, its size being the distance between them.
+#[test]
+fn logical_rounding_places_edges_on_whole_pixels() {
+    let rect = offset_background(DisplayOptions {
+        rounding: PixelRounding::Logical,
+        scale: 2.0,
+    });
+    assert_eq!(rect.origin, Offset::new(10.0, 1.0));
+    assert_eq!(rect.size, Size::new(6.0, 5.0));
+}
+
+/// Rounds an area's edges to whole physical pixels at the scale given.
+#[test]
+fn physical_rounding_places_edges_on_device_pixels() {
+    let rect = offset_background(DisplayOptions {
+        rounding: PixelRounding::Physical,
+        scale: 2.0,
+    });
+    assert_eq!(rect.origin, Offset::new(10.5, 0.5));
+    assert_eq!(rect.size, Size::new(5.0, 5.5));
+}
+
+/// Places children from their parent's unrounded place, so rounding does not add up.
+#[test]
+fn rounding_does_not_accumulate_down_the_tree() {
+    let mut node = Node {
+        modifier: Modifier::new()
+            .size(1.0, 1.0)
+            .background(Color::rgba(1, 2, 3, 255)),
+        content: Content::Canvas {
+            draw: Rc::new(|_| Vec::new()),
+        },
+    };
+    for _ in 0..5 {
+        node = Node {
+            modifier: Modifier::new().absolute_offset(0.4, 0.0),
+            content: Content::Layout {
+                policy: Rc::new(crate::Overlay::default()),
+                children: Rc::new(vec![node]),
+            },
+        };
+    }
+    let list = display_list_with(
+        &node,
+        Constraints::loose(Size::new(100.0, 100.0)),
+        &mut FixedText,
+        DisplayOptions {
+            rounding: PixelRounding::Logical,
+            scale: 1.0,
+        },
+    );
+    let rect = list
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            DrawCommand::Rect { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .expect("the background is drawn");
+    assert_eq!(rect.origin.x, 2.0);
 }

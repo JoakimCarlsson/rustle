@@ -38,11 +38,11 @@ pub use input::{
 };
 pub use layout::ContentScale;
 pub use layout::{
-    BoxAlignment, ButtonRegion, Children, CursorRegion, DisplayList, DragRegion, DragSourceRegion,
-    DropTargetRegion, FileDropRegion, FocusRegion, HitRegion, HoverRegion, IntrinsicSize,
-    KeyRegion, Layout, LayoutResult, Measurable, Overlay, Placement, PointerInputRegion,
-    PressRegion, ScrollRegion, SemanticsNode, SubcomposeResult, SubcomposeScope, display_list,
-    subcompose_layout,
+    BoxAlignment, ButtonRegion, Children, CursorRegion, DisplayList, DisplayOptions, DragRegion,
+    DragSourceRegion, DropTargetRegion, FileDropRegion, FocusRegion, HitRegion, HoverRegion,
+    IntrinsicSize, KeyRegion, Layout, LayoutResult, Measurable, Overlay, PixelRounding, Placement,
+    PointerInputRegion, PressRegion, ScrollRegion, SemanticsNode, SubcomposeResult,
+    SubcomposeScope, display_list, display_list_with, subcompose_layout,
 };
 pub use modifier::Modifier;
 pub use scroll::{ScrollState, ScrollbarStyle, ScrollbarVisibility, remember_scroll_state};

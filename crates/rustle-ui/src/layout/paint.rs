@@ -18,11 +18,70 @@ use crate::modifier::Fill;
 use crate::scroll::{ScrollState, ScrollbarVisibility, thumb};
 use crate::semantics::{Role, Semantics};
 
+/// How the edges of laid-out areas are placed on the pixel grid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PixelRounding {
+    /// Areas are drawn where layout put them, at fractional positions if need be.
+    #[default]
+    None,
+    /// Every area's edges are rounded to whole logical pixels: its origin is rounded, and its
+    /// size becomes the distance between its rounded edges, so neighbours still meet. The
+    /// rounding is of each area's unrounded place in the window, so it never adds up down
+    /// the tree. Text keeps its measured width, so it wraps as it was measured.
+    Logical,
+    /// As `Logical`, to whole physical pixels at [`DisplayOptions::scale`].
+    Physical,
+}
+
+/// How [`display_list_with`] paints what it laid out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayOptions {
+    /// Whether and to what edges are rounded.
+    pub rounding: PixelRounding,
+    /// Physical pixels per logical pixel, for [`PixelRounding::Physical`].
+    pub scale: f32,
+}
+
+impl Default for DisplayOptions {
+    /// No rounding, at a scale of one.
+    fn default() -> Self {
+        Self {
+            rounding: PixelRounding::None,
+            scale: 1.0,
+        }
+    }
+}
+
+impl DisplayOptions {
+    /// How many grid steps make a logical pixel, or `None` when nothing is rounded.
+    fn grid(self) -> Option<f32> {
+        match self.rounding {
+            PixelRounding::None => None,
+            PixelRounding::Logical => Some(1.0),
+            PixelRounding::Physical if self.scale.is_finite() && self.scale > 0.0 => {
+                Some(self.scale)
+            }
+            PixelRounding::Physical => Some(1.0),
+        }
+    }
+}
+
 /// Lays out `root` within `constraints`.
 pub fn display_list(
     root: &Node,
     constraints: Constraints,
     text: &mut dyn TextMeasurer,
+) -> DisplayList {
+    display_list_with(root, constraints, text, DisplayOptions::default())
+}
+
+/// Lays out `root` within `constraints` like [`display_list`], painting as `options` says,
+/// such as with edges rounded to whole pixels.
+pub fn display_list_with(
+    root: &Node,
+    constraints: Constraints,
+    text: &mut dyn TextMeasurer,
+    options: DisplayOptions,
 ) -> DisplayList {
     let measured = measure_node(root, constraints, text);
     let window = Size::new(
@@ -50,6 +109,7 @@ pub fn display_list(
         clips: Vec::new(),
         clip_radii: Vec::new(),
         window,
+        grid: options.grid(),
     };
     painter.paint(&measured, Offset::default());
     painter.paint_deferred();
@@ -97,9 +157,23 @@ struct Painter<'a> {
     clip_radii: Vec<Option<[f32; 4]>>,
     /// How large the window is.
     window: Size,
+    /// How many grid steps make a logical pixel when edges are rounded to them.
+    grid: Option<f32>,
 }
 
 impl<'a> Painter<'a> {
+    /// Where an area whose unrounded place is `exact` and size is `size` is drawn: as it is,
+    /// or with its edges rounded to the grid, the size being the distance between them.
+    fn snap(&self, exact: Offset, size: Size) -> (Offset, Size) {
+        let Some(grid) = self.grid else {
+            return (exact, size);
+        };
+        let round = |value: f32| (value * grid).round() / grid;
+        let origin = Offset::new(round(exact.x), round(exact.y));
+        let far = Offset::new(round(exact.x + size.width), round(exact.y + size.height));
+        (origin, Size::new(far.x - origin.x, far.y - origin.y))
+    }
+
     /// Paints what was raised with a z-index, lowest first, over what is already painted.
     fn paint_deferred(&mut self) {
         while !self.deferred.is_empty() {
@@ -409,9 +483,12 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// Paints `measured` once at `origin`, deferring raised descendants and consuming rich spans.
-    fn paint(&mut self, measured: &'a Measured, origin: Offset) {
-        let rect = Rect::new(origin, measured.size);
+    /// Paints `measured` once at `exact`, its unrounded place, deferring raised descendants
+    /// and consuming rich spans. With pixel rounding on, the area is drawn at its rounded
+    /// place while its children are placed from the unrounded one, so rounding never adds up.
+    fn paint(&mut self, measured: &'a Measured, exact: Offset) {
+        let (origin, size) = self.snap(exact, measured.size);
+        let rect = Rect::new(origin, size);
         match &measured.paint {
             Paint::Text {
                 content,
@@ -643,7 +720,7 @@ impl<'a> Painter<'a> {
                 }
             }
             Paint::Canvas { draw } => {
-                for command in draw(measured.size) {
+                for command in draw(size) {
                     self.list
                         .commands
                         .push(command.translated(origin.x, origin.y));
@@ -654,16 +731,16 @@ impl<'a> Painter<'a> {
                     self.push_semantics(rect, Semantics::new(Role::Image));
                 }
                 let (width, height) = (image.width() as f32, image.height() as f32);
-                let fit = (measured.size.width / width).min(measured.size.height / height);
-                let cover = (measured.size.width / width).max(measured.size.height / height);
+                let fit = (size.width / width).min(size.height / height);
+                let cover = (size.width / width).max(size.height / height);
                 let drawn = match scale {
-                    ContentScale::Stretch => measured.size,
+                    ContentScale::Stretch => size,
                     ContentScale::Fit => Size::new(width * fit, height * fit),
                     ContentScale::Crop => Size::new(width * cover, height * cover),
                 };
                 let at = Offset::new(
-                    origin.x + (measured.size.width - drawn.width) / 2.0,
-                    origin.y + (measured.size.height - drawn.height) / 2.0,
+                    origin.x + (size.width - drawn.width) / 2.0,
+                    origin.y + (size.height - drawn.height) / 2.0,
                 );
                 let crop = *scale == ContentScale::Crop;
                 if crop {
@@ -679,10 +756,10 @@ impl<'a> Painter<'a> {
                     self.pop_clip();
                 }
             }
-            Paint::Shared(shared) => self.paint(shared, origin),
+            Paint::Shared(shared) => self.paint(shared, exact),
             Paint::Children(children) => {
                 for (offset, child) in children {
-                    self.paint(child, Offset::new(origin.x + offset.x, origin.y + offset.y));
+                    self.paint(child, Offset::new(exact.x + offset.x, exact.y + offset.y));
                 }
             }
             Paint::Background {
@@ -696,26 +773,26 @@ impl<'a> Painter<'a> {
                     corner_radius: *corner_radius,
                     border: None,
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Draw { draw, inner } => {
-                let (commands, content) = draw(measured.size);
+                let (commands, content) = draw(size);
                 let count = commands.len();
                 for (index, command) in commands.into_iter().enumerate() {
                     if content == Some(index) {
-                        self.paint(inner, origin);
+                        self.paint(inner, exact);
                     }
                     self.list
                         .commands
                         .push(command.translated(origin.x, origin.y));
                 }
                 if content == Some(count) {
-                    self.paint(inner, origin);
+                    self.paint(inner, exact);
                 }
             }
             Paint::Fill { fill, inner } => {
                 self.paint_fill(fill, rect);
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Effect { effect, inner } => {
                 let faded = LayerEffect {
@@ -726,7 +803,7 @@ impl<'a> Painter<'a> {
                     rect,
                     effect: faded,
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.commands.push(DrawCommand::PopEffect);
             }
             Paint::Gradient {
@@ -743,7 +820,7 @@ impl<'a> Painter<'a> {
                     angle: *angle,
                     corner_radius: *corner_radius,
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Ring {
                 color,
@@ -752,13 +829,13 @@ impl<'a> Painter<'a> {
                 sweep,
                 inner,
             } => {
-                self.paint(inner, origin);
-                let side = measured.size.width.min(measured.size.height);
+                self.paint(inner, exact);
+                let side = size.width.min(size.height);
                 self.list.commands.push(DrawCommand::Arc {
                     rect: Rect::new(
                         Offset::new(
-                            origin.x + (measured.size.width - side) / 2.0,
-                            origin.y + (measured.size.height - side) / 2.0,
+                            origin.x + (size.width - side) / 2.0,
+                            origin.y + (size.height - side) / 2.0,
                         ),
                         Size::new(side, side),
                     ),
@@ -771,7 +848,7 @@ impl<'a> Painter<'a> {
             Paint::DragEnd { on_end, inner } => {
                 // Applies to the drag handler declared next, inside this.
                 self.pending_end = Some(Rc::clone(on_end));
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.pending_end = None;
             }
             Paint::DragSource {
@@ -787,7 +864,7 @@ impl<'a> Painter<'a> {
                     payload: Rc::clone(payload),
                     commands: start..start,
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.drag_sources[index].commands.end = self.list.commands.len();
             }
             Paint::DropTarget { on_drop, inner } => {
@@ -795,14 +872,14 @@ impl<'a> Painter<'a> {
                     rect: self.visible(rect),
                     on_drop: Rc::clone(on_drop),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::FileDrop { on_drop, inner } => {
                 self.list.file_drops.push(FileDropRegion {
                     rect: self.visible(rect),
                     on_drop: Rc::clone(on_drop),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::PointerInput { on_event, inner } => {
                 self.list.pointer_inputs.push(PointerInputRegion {
@@ -810,18 +887,18 @@ impl<'a> Painter<'a> {
                     origin,
                     on_event: Rc::clone(on_event),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Pinch { on_pinch, inner } => {
                 self.list.pinches.push(PinchRegion {
                     rect: self.visible(rect),
                     on_pinch: Rc::clone(on_pinch),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::BlocksPointer(inner) => {
                 self.list.blockers.push(self.visible(rect));
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::PointerMove { on_move, inner } => {
                 let index = self.list.pointer_moves.len();
@@ -831,7 +908,7 @@ impl<'a> Painter<'a> {
                     on_move: Rc::clone(on_move),
                     covered_after: 0,
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.pointer_moves[index].covered_after = self.list.regions.len();
             }
             Paint::LongPress {
@@ -842,14 +919,14 @@ impl<'a> Painter<'a> {
                     rect: self.visible(rect),
                     on_long_press: Rc::clone(on_long_press),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Cursor { icon, inner } => {
                 self.list.cursors.push(CursorRegion {
                     rect: self.visible(rect),
                     icon: *icon,
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Hover { on_hover, inner } => {
                 let index = self.list.hovers.len();
@@ -858,12 +935,12 @@ impl<'a> Painter<'a> {
                     on_hover: Rc::clone(on_hover),
                     covered_after: 0,
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.hovers[index].covered_after = self.list.regions.len();
             }
             Paint::Placed { on_placed, inner } => {
                 on_placed(rect, self.window);
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::ZIndex {
                 z_index,
@@ -881,7 +958,7 @@ impl<'a> Painter<'a> {
                 };
                 self.deferred.push(Deferred {
                     z_index: *z_index,
-                    origin,
+                    origin: exact,
                     alpha: self.alpha,
                     clips,
                     parents: self.parents.clone(),
@@ -894,11 +971,11 @@ impl<'a> Painter<'a> {
                 color,
                 inner,
             } => {
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.commands.push(DrawCommand::Rect {
                     rect: Rect::new(
-                        Offset::new(origin.x + measured.size.width - width, origin.y),
-                        Size::new(*width, measured.size.height),
+                        Offset::new(origin.x + size.width - width, origin.y),
+                        Size::new(*width, size.height),
                     ),
                     color: self.faded(*color),
                     corner_radius: 0.0,
@@ -910,11 +987,11 @@ impl<'a> Painter<'a> {
                 color,
                 inner,
             } => {
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.commands.push(DrawCommand::Rect {
                     rect: Rect::new(
-                        Offset::new(origin.x, origin.y + measured.size.height - width),
-                        Size::new(measured.size.width, *width),
+                        Offset::new(origin.x, origin.y + size.height - width),
+                        Size::new(size.width, *width),
                     ),
                     color: self.faded(*color),
                     corner_radius: 0.0,
@@ -933,13 +1010,13 @@ impl<'a> Painter<'a> {
                     rotation: *rotation,
                     scale: *scale,
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.commands.push(DrawCommand::PopLayer);
             }
             Paint::Alpha { alpha, inner } => {
                 let before = self.alpha;
                 self.alpha *= alpha;
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.alpha = before;
             }
             Paint::Border {
@@ -948,7 +1025,7 @@ impl<'a> Painter<'a> {
                 corner_radius,
                 inner,
             } => {
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.commands.push(DrawCommand::Rect {
                     rect,
                     color: Color::TRANSPARENT,
@@ -965,24 +1042,21 @@ impl<'a> Painter<'a> {
                 inner,
             } => {
                 self.list.commands.push(DrawCommand::Shadow {
-                    rect: Rect::new(
-                        Offset::new(origin.x, origin.y + elevation / 2.0),
-                        measured.size,
-                    ),
+                    rect: Rect::new(Offset::new(origin.x, origin.y + elevation / 2.0), size),
                     corner_radius: *corner_radius,
                     blur: *elevation,
                     color: self.faded(Color::rgba(0, 0, 0, 110)),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Clip(inner) => {
                 self.push_clip(rect);
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.pop_clip();
             }
             Paint::ClipRounded { radii, inner } => {
                 self.push_rounded_clip(rect, *radii);
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.pop_clip();
             }
             Paint::Scroll {
@@ -997,12 +1071,12 @@ impl<'a> Painter<'a> {
                     state: state.clone(),
                     vertical: *vertical,
                 });
-                let origin = if *vertical {
-                    Offset::new(origin.x, origin.y - offset)
+                let inside = if *vertical {
+                    Offset::new(exact.x, exact.y - offset)
                 } else {
-                    Offset::new(origin.x - offset, origin.y)
+                    Offset::new(exact.x - offset, exact.y)
                 };
-                self.paint(inner, origin);
+                self.paint(inner, inside);
                 self.paint_scrollbar(rect, state, *vertical, *offset);
                 self.pop_clip();
             }
@@ -1013,7 +1087,7 @@ impl<'a> Painter<'a> {
                     origin,
                     on_drag: Rc::clone(on_drag),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Semantics { semantics, inner } => {
                 let regions = self.list.regions.len();
@@ -1030,7 +1104,7 @@ impl<'a> Painter<'a> {
                 if semantics.clear_descendants {
                     self.clearing += 1;
                 }
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 if semantics.clear_descendants {
                     self.clearing -= 1;
                 }
@@ -1057,7 +1131,7 @@ impl<'a> Painter<'a> {
                     origin,
                     on_press: Rc::clone(on_press),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Button {
                 button,
@@ -1070,7 +1144,7 @@ impl<'a> Painter<'a> {
                     button: *button,
                     on_event: Rc::clone(on_event),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::KeyEvent {
                 on_key,
@@ -1085,7 +1159,7 @@ impl<'a> Painter<'a> {
                     preview: *preview,
                     on_key: Rc::clone(on_key),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
                 self.list.key_handlers[index].focusables.end = self.list.focusables.len();
             }
             Paint::Focusable {
@@ -1098,7 +1172,7 @@ impl<'a> Painter<'a> {
                     focus: focus.clone(),
                     on_key: Rc::clone(on_key),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
             Paint::Clickable {
                 on_click,
@@ -1115,7 +1189,7 @@ impl<'a> Painter<'a> {
                     feedback: *feedback,
                     on_click: Rc::clone(on_click),
                 });
-                self.paint(inner, origin);
+                self.paint(inner, exact);
             }
         }
     }

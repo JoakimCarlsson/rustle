@@ -27,7 +27,9 @@ mod window;
 mod window_tests;
 mod windows;
 
-pub use app::{external_waker, run, run_with, set_close_handler, set_external_handler};
+pub use app::{
+    external_waker, run, run_with, set_close_handler, set_external_handler, set_pixel_rounding,
+};
 pub use embedded::Embedded;
 pub use frame_timing::{FrameTiming, set_frame_observer};
 pub use host::Host;
@@ -100,8 +102,9 @@ pub use rustle_text::{
     font_families, layout_spans, layout_text, register_font,
 };
 pub use rustle_ui::{
-    Clipboard, ClipboardImage, CursorIcon, IntrinsicSize, Measurable, Placement, SubcomposeResult,
-    SubcomposeScope, clipboard, restartable, skippable, subcompose_layout,
+    Clipboard, ClipboardImage, CursorIcon, DisplayOptions, IntrinsicSize, Measurable,
+    PixelRounding, Placement, SubcomposeResult, SubcomposeScope, clipboard, restartable, skippable,
+    subcompose_layout,
 };
 pub use rustle_unit::{Dp, dp};
 pub use rustle_widgets::{

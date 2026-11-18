@@ -24,7 +24,7 @@ pub use children::Children;
 pub use custom::{
     IntrinsicSize, Measurable, Placement, SubcomposeResult, SubcomposeScope, subcompose_layout,
 };
-pub use paint::display_list;
+pub use paint::{DisplayOptions, PixelRounding, display_list, display_list_with};
 pub use regions::{
     ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
     FileDropRegion, FocusRegion, HitRegion, HoverRegion, KeyRegion, PointerInputRegion,

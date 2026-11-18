@@ -10,7 +10,8 @@ use rustle_foundation::{KeyEvent, Modifiers};
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::DrawCommand;
 use rustle_ui::{
-    Composition, CursorIcon, PointerButton, PointerId, PointerInputPhase, PointerKind,
+    Composition, CursorIcon, DisplayOptions, PixelRounding, PointerButton, PointerId,
+    PointerInputPhase, PointerKind,
 };
 use rustle_unit::Constraints;
 use rustle_wgpu::{Renderer, TextMetrics};
@@ -71,6 +72,7 @@ pub struct Embedded {
     backend: Backend,
     size: Size,
     scale_factor: f32,
+    pixel_rounding: PixelRounding,
     started: Instant,
     clock: Option<Clock>,
     dark: Rc<Cell<bool>>,
@@ -137,6 +139,7 @@ impl Embedded {
             backend,
             size: Size::new(0.0, 0.0),
             scale_factor: 1.0,
+            pixel_rounding: PixelRounding::None,
             started: Instant::now(),
             clock: None,
             dark,
@@ -188,6 +191,25 @@ impl Embedded {
     /// The physical pixels to a logical one, as given to [`resize`](Embedded::resize).
     pub fn scale_factor(&self) -> f32 {
         self.scale_factor
+    }
+
+    /// Sets how the edges of laid-out areas are placed on the pixel grid, and lays the
+    /// interface out again if that changed. The default, [`PixelRounding::None`], draws areas
+    /// where layout put them; [`PixelRounding::Logical`] rounds every edge to a whole logical
+    /// pixel and [`PixelRounding::Physical`] to a whole physical pixel at the scale given to
+    /// [`resize`](Embedded::resize), so thin borders and separators stay sharp.
+    pub fn set_pixel_rounding(&mut self, rounding: PixelRounding) {
+        if self.pixel_rounding != rounding {
+            self.pixel_rounding = rounding;
+            self.lay_out();
+            self.ui.redraw = true;
+        }
+    }
+
+    /// How the edges of laid-out areas are placed on the pixel grid, as set with
+    /// [`set_pixel_rounding`](Embedded::set_pixel_rounding).
+    pub fn pixel_rounding(&self) -> PixelRounding {
+        self.pixel_rounding
     }
 
     /// Sets whether the interface looks dark, and composes it again if that changed.
@@ -419,7 +441,11 @@ impl Embedded {
                 Backend::Drawing(renderer) => renderer.as_mut(),
                 Backend::Metrics(metrics) => metrics,
             };
-            self.ui.display = rustle_ui::display_list(&tree, constraints, measure);
+            let options = DisplayOptions {
+                rounding: self.pixel_rounding,
+                scale: self.scale_factor,
+            };
+            self.ui.display = rustle_ui::display_list_with(&tree, constraints, measure, options);
             if !self.composition.recompose() {
                 break;
             }

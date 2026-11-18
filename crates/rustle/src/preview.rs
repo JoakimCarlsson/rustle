@@ -113,7 +113,12 @@ pub(crate) fn snapshot(
                     .cloned()
                     .ok_or("nothing was composed")?,
             };
-            display = Some(rustle_ui::display_list(&tree, constraints, renderer));
+            display = Some(rustle_ui::display_list_with(
+                &tree,
+                constraints,
+                renderer,
+                crate::app::display_options(scale),
+            ));
             if !composition.recompose() {
                 break;
             }
