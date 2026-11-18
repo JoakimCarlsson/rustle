@@ -4,7 +4,7 @@
 
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::{
-    BlendMode, Color, ColorFilter, DrawCommand, FontFamily, ImageData, LayerEffect, Path,
+    BlendMode, Color, ColorFilter, DrawCommand, FontFamily, ImageData, ImageKey, LayerEffect, Path,
     PathCommand, ShaderBrush, TextAlign, TextWrap,
 };
 
@@ -770,4 +770,51 @@ fn a_blurred_effect_inside_a_clip_is_cut_by_the_clip() {
     picture.expect(48, 32, BACKGROUND, 2);
     let inside = picture.at(24, 32);
     assert!(inside[0] > 240, "{inside:?}");
+}
+
+/// A picture of one color, `size` pixels square, as a generation of `key`.
+fn live_frame(key: ImageKey, size: u32, color: [u8; 4]) -> ImageData {
+    let pixels: Vec<u8> = (0..size * size).flat_map(|_| color).collect();
+    ImageData::keyed(key, size, size, pixels).unwrap()
+}
+
+/// `image` drawn over the square from (8, 8) to (40, 40).
+fn picture_at_8(image: ImageData) -> DrawCommand {
+    DrawCommand::Image {
+        rect: area(8.0, 8.0, 32.0, 32.0),
+        image,
+        corner_radius: 0.0,
+        opacity: 1.0,
+    }
+}
+
+#[test]
+fn a_keyed_picture_keeps_one_texture_and_shows_its_newest_generation() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    let key = ImageKey::new();
+    let frames = [
+        (4, [255, 0, 0, 255]),
+        (4, [0, 255, 0, 255]),
+        (8, [0, 0, 255, 255]),
+        (8, [255, 255, 255, 255]),
+    ];
+    for (size, color) in frames {
+        let picture = draw(&mut renderer, &[picture_at_8(live_frame(key, size, color))]);
+        picture.expect(24, 24, color, 2);
+        picture.expect(50, 50, BACKGROUND, 2);
+        assert_eq!(
+            renderer.images.texture_count(),
+            1,
+            "one texture for the key"
+        );
+    }
+    let still = ImageData::from_rgba(2, 2, vec![255; 16]).unwrap();
+    draw(&mut renderer, &[picture_at_8(still)]);
+    assert_eq!(
+        renderer.images.texture_count(),
+        2,
+        "a still picture has its own"
+    );
 }

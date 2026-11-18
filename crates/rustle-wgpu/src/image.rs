@@ -3,7 +3,7 @@
 use crate::quad::Viewport;
 use std::collections::HashMap;
 
-use rustle_graphics::{DrawCommand, ImageData};
+use rustle_graphics::{DrawCommand, ImageData, ImageKey};
 use wgpu::util::DeviceExt;
 
 /// One picture as the shader reads it, in physical pixels.
@@ -33,9 +33,19 @@ pub(crate) struct Batch {
     ids: Vec<u64>,
 }
 
+/// A picture's texture, kept between frames.
 struct Cached {
+    texture: wgpu::Texture,
     group: wgpu::BindGroup,
+    /// The generation of the picture the texture holds.
+    generation: u64,
     last_used: u64,
+}
+
+/// Where `image`'s texture is cached: under its key for a live picture, so every generation
+/// shares one texture, else under its id. Keys and ids are never the same number.
+fn slot(image: &ImageData) -> u64 {
+    image.key().map_or(image.id(), ImageKey::get)
 }
 
 pub(crate) struct Images {
@@ -166,7 +176,7 @@ impl Images {
         };
         self.ensure(device, queue, image);
         Some((
-            image.id(),
+            slot(image),
             Instance {
                 origin: [rect.origin.x * scale, rect.origin.y * scale],
                 size: [rect.size.width * scale, rect.size.height * scale],
@@ -176,35 +186,43 @@ impl Images {
         ))
     }
 
+    /// Makes sure the texture cached for `image` holds it: uploads a new picture, writes a new
+    /// generation of a live picture into its texture when the size is unchanged, and makes the
+    /// texture again when it is not.
     fn ensure(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &ImageData) {
-        if let Some(cached) = self.textures.get_mut(&image.id()) {
+        let slot = slot(image);
+        if let Some(cached) = self.textures.get_mut(&slot) {
             cached.last_used = self.frame;
-            return;
+            if cached.generation == image.generation() {
+                return;
+            }
+            let size = cached.texture.size();
+            if (size.width, size.height) == (image.width(), image.height()) {
+                write_pixels(queue, &cached.texture, image);
+                cached.generation = image.generation();
+                return;
+            }
         }
         let format = if self.srgb_target {
             wgpu::TextureFormat::Rgba8UnormSrgb
         } else {
             wgpu::TextureFormat::Rgba8Unorm
         };
-        let texture = device.create_texture_with_data(
-            queue,
-            &wgpu::TextureDescriptor {
-                label: Some("picture"),
-                size: wgpu::Extent3d {
-                    width: image.width(),
-                    height: image.height(),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("picture"),
+            size: wgpu::Extent3d {
+                width: image.width(),
+                height: image.height(),
+                depth_or_array_layers: 1,
             },
-            wgpu::util::TextureDataOrder::LayerMajor,
-            image.pixels(),
-        );
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        write_pixels(queue, &texture, image);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("picture"),
@@ -221,12 +239,20 @@ impl Images {
             ],
         });
         self.textures.insert(
-            image.id(),
+            slot,
             Cached {
+                texture,
                 group,
+                generation: image.generation(),
                 last_used: self.frame,
             },
         );
+    }
+
+    /// How many picture textures are kept.
+    #[cfg(test)]
+    pub(crate) fn texture_count(&self) -> usize {
+        self.textures.len()
     }
 
     /// Uploads `instances`, or returns `None` if there are none.
@@ -249,6 +275,7 @@ impl Images {
         })
     }
 
+    /// Draws `batch`, each picture with its own texture.
     pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, viewport: &Viewport, batch: &Batch) {
         pass.set_pipeline(&self.pipeline);
         viewport.set(pass);
@@ -260,4 +287,27 @@ impl Images {
             }
         }
     }
+}
+
+/// Writes `image`'s pixels into `texture`, which is its size.
+fn write_pixels(queue: &wgpu::Queue, texture: &wgpu::Texture, image: &ImageData) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        image.pixels(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(image.width() * 4),
+            rows_per_image: Some(image.height()),
+        },
+        wgpu::Extent3d {
+            width: image.width(),
+            height: image.height(),
+            depth_or_array_layers: 1,
+        },
+    );
 }

@@ -86,7 +86,7 @@ pub use rustle_foundation::{
 pub use rustle_geometry::{Offset, Rect, Size};
 pub use rustle_graphics::TextWrap;
 pub use rustle_graphics::{
-    BlendMode, Color, ColorFilter, ImageData, LayerEffect, ShaderBrush, TextAlign,
+    BlendMode, Color, ColorFilter, ImageData, ImageKey, LayerEffect, ShaderBrush, TextAlign,
 };
 pub use rustle_graphics::{FillRule, Path, PathCommand};
 pub use rustle_macros::composable;
@@ -133,7 +133,7 @@ pub mod prelude {
         BadgeStyle, BoxAlignment, ButtonColors, ButtonDefaults, ButtonStyle, Canvas, ChartStyle,
         Color, ColorScheme, CompositionLocal, ContentScale, ContentTransform, CornerSizes,
         CursorIcon, DecaySpec, Dp, DraggableState, Easing, EnterTransition, ExitTransition, Focus,
-        FontFamily, FontWeight, Icon, ImageData, Keyframe, LOCAL_LAYOUT_DIRECTION,
+        FontFamily, FontWeight, Icon, ImageData, ImageKey, Keyframe, LOCAL_LAYOUT_DIRECTION,
         LOCAL_TEXT_SELECTION_COLORS, LOCAL_TEXT_STYLE, LayoutDirection, LazyListState, MenuItem,
         Modifier, NavController, NestedScrollConnection, PagerState, PointerInput,
         PointerInputPhase, PointerKind, RepeatMode, RippleConfiguration, RippleModifier, Role,

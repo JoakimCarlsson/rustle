@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use rustle::prelude::*;
 use rustle::{
-    Embedded, Key, KeyEvent, Modifiers, Offset, PointerButton, Rect, Saver, TextFieldState,
-    basic_text_field, set_saver,
+    Embedded, ImageData, ImageKey, Key, KeyEvent, Modifiers, Offset, PointerButton, Rect, Saver,
+    TextFieldState, basic_text_field, set_saver,
 };
 use rustle_wgpu::Renderer;
 
@@ -228,6 +228,23 @@ fn is_host_blue(pixel: [u8; 4]) -> bool {
     pixel == [0, 0, 255, 255]
 }
 
+/// A picture of one color, `size` pixels square, as a new generation of `key`.
+fn live_frame(key: ImageKey, size: u32, color: [u8; 4]) -> Result<ImageData> {
+    let pixels: Vec<u8> = (0..size * size).flat_map(|_| color).collect();
+    Ok(ImageData::keyed(key, size, size, pixels).ok_or("the pixels fit the size")?)
+}
+
+/// A root that shows whichever picture `frame` holds, 64 logical pixels square at the top-left.
+fn live_picture(frame: Rc<RefCell<ImageData>>) -> impl FnMut() {
+    move || {
+        image(
+            Modifier::new().size(64.0, 64.0),
+            &frame.borrow(),
+            ContentScale::Stretch,
+        )
+    }
+}
+
 fn main() -> Result {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
@@ -431,6 +448,29 @@ fn main() -> Result {
             .is_err()
     );
     println!("an interface without a renderer lays out and hands over commands");
+
+    // A live picture changes every frame under one key and is drawn with what it holds now.
+    let key = ImageKey::new();
+    let frame = Rc::new(RefCell::new(live_frame(key, 8, [255, 0, 0, 255])?));
+    let mut live = Embedded::new(live_picture(Rc::clone(&frame)), renderer(), || {});
+    live.resize(SIZE, 1.0);
+    live.update();
+    for (size, color) in [
+        (8, [255, 0, 0, 255]),
+        (8, [0, 255, 0, 255]),
+        (16, [255, 255, 255, 255]),
+    ] {
+        *frame.borrow_mut() = live_frame(key, size, color)?;
+        live.invalidate();
+        live.update();
+        let pixels = draw(&device, &queue, &mut live, SIZE)?;
+        assert_eq!(
+            pixel(&pixels, SIZE.0, 1.0, Offset::new(32.0, 32.0)),
+            color,
+            "the newest generation of the key is drawn"
+        );
+    }
+    println!("a keyed picture showed three generations, one of a new size");
 
     // The root is replaced, keeping the renderer, and the new one starts from the host's storage.
     let again = Rc::new(Cell::new(0));
