@@ -40,9 +40,9 @@ pub use layout::ContentScale;
 pub use layout::{
     BoxAlignment, ButtonRegion, Children, CursorRegion, DisplayList, DisplayOptions, DragRegion,
     DragSourceRegion, DropTargetRegion, FileDropRegion, FocusRegion, HitRegion, HoverRegion,
-    IntrinsicSize, KeyRegion, Layout, LayoutResult, Measurable, Overlay, PixelRounding, Placement,
-    PointerInputRegion, PressRegion, ScrollRegion, SemanticsNode, SubcomposeResult,
-    SubcomposeScope, display_list, display_list_with, subcompose_layout,
+    ImeCaretRegion, IntrinsicSize, KeyRegion, Layout, LayoutResult, Measurable, Overlay,
+    PixelRounding, Placement, PointerInputRegion, PressRegion, ScrollRegion, SemanticsNode,
+    SubcomposeResult, SubcomposeScope, display_list, display_list_with, subcompose_layout,
 };
 pub use modifier::Modifier;
 pub use scroll::{ScrollState, ScrollbarStyle, ScrollbarVisibility, remember_scroll_state};
@@ -126,7 +126,8 @@ pub enum Content {
     RichText {
         spans: Vec<TextSpan>,
         style: TextStyle,
-        /// Set to show a selection over the text and to learn its layout; the caret is not drawn.
+        /// Set to learn the text's layout and to show a selection, a caret and an input
+        /// method's composition over it, and to report where text input goes, as for `Text`.
         editing: Option<TextEditing>,
     },
     /// Whatever `draw` paints, given the size the node is laid out at.

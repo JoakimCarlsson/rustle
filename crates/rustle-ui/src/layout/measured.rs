@@ -84,6 +84,10 @@ pub(super) enum Paint {
         icon: CursorIcon,
         inner: Box<Measured>,
     },
+    ImeCaret {
+        rect: Rect,
+        inner: Box<Measured>,
+    },
     Hover {
         on_hover: Rc<dyn Fn(bool)>,
         inner: Box<Measured>,

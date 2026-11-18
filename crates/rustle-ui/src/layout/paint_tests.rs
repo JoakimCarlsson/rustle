@@ -68,6 +68,7 @@ fn paint_once(measured: &Measured) -> DisplayList {
         clip_radii: Vec::new(),
         window: measured.size,
         grid: None,
+        focus: None,
     };
     painter.paint(measured, Offset::default());
     painter.paint_deferred();
@@ -318,4 +319,133 @@ fn rounding_does_not_accumulate_down_the_tree() {
         })
         .expect("the background is drawn");
     assert_eq!(rect.origin.x, 2.0);
+}
+
+/// Editing details for rich text with only the caret, composition and input place given.
+fn composing(
+    caret: Option<usize>,
+    underline: Option<(usize, usize)>,
+    ime_caret: Option<usize>,
+) -> TextEditing {
+    TextEditing {
+        caret,
+        selection: None,
+        underline,
+        ime_caret,
+        caret_color: Color::rgba(1, 2, 3, 255),
+        selection_color: Color::TRANSPARENT,
+        caret_affinity: rustle_text::Affinity::Downstream,
+        boundaries: Rc::new(RefCell::new(Vec::new())),
+        layout: Rc::new(RefCell::new(None)),
+        on_layout: None,
+    }
+}
+
+/// Lays out rich text "abcd" edited as `editing`.
+fn edited_rich_text(editing: TextEditing) -> DisplayList {
+    let root = Node {
+        modifier: Modifier::new(),
+        content: Content::RichText {
+            spans: vec![TextSpan::new("ab"), TextSpan::new("cd")],
+            style: TextStyle::default(),
+            editing: Some(editing),
+        },
+    };
+    display_list(
+        &root,
+        Constraints::loose(Size::new(100.0, 100.0)),
+        &mut FixedText,
+    )
+}
+
+/// Draws the caret of edited rich text as the same thin bar plain text gets.
+#[test]
+fn rich_text_draws_its_caret() {
+    let list = edited_rich_text(composing(Some(2), None, None));
+    let [
+        DrawCommand::RichText { .. },
+        DrawCommand::Rect { rect, color, .. },
+    ] = list.commands.as_slice()
+    else {
+        panic!("expected rich text followed by its caret");
+    };
+    assert_eq!(
+        *rect,
+        Rect::new(Offset::new(15.25, 0.0), Size::new(1.5, 16.0))
+    );
+    assert_eq!(*color, Color::rgba(1, 2, 3, 255));
+    assert_eq!(list.ime_area, None);
+}
+
+/// Underlines an input method's composition in rich text and reports where input goes.
+#[test]
+fn rich_text_underlines_a_composition_and_reports_the_input_area() {
+    let list = edited_rich_text(composing(None, Some((1, 3)), Some(3)));
+    let [DrawCommand::RichText { .. }, DrawCommand::Rect { rect, .. }] = list.commands.as_slice()
+    else {
+        panic!("expected rich text followed by the composition's underline");
+    };
+    assert_eq!(
+        *rect,
+        Rect::new(Offset::new(8.0, 14.0), Size::new(16.0, 1.0))
+    );
+    assert_eq!(
+        list.ime_area,
+        Some(Rect::new(Offset::new(8.0, 0.0), Size::new(16.0, 16.0)))
+    );
+    assert_eq!(list.focused_ime_area(), list.ime_area);
+}
+
+/// Composes a 50 by 20 canvas with `modifier`, given the focus remembered for it, and
+/// returns the focus and the laid-out list.
+fn focused_canvas(
+    modifier: impl Fn(&crate::Focus) -> Modifier + 'static,
+) -> (crate::Focus, DisplayList) {
+    let slot = Rc::new(RefCell::new(None));
+    let kept = Rc::clone(&slot);
+    let mut composition = crate::composition(move || {
+        let focus = crate::remember_focus();
+        *kept.borrow_mut() = Some(focus.clone());
+        crate::canvas(modifier(&focus).size(50.0, 20.0), |_| {});
+    });
+    composition.compose();
+    let tree = composition.output().cloned().expect("the root composed");
+    let list = display_list(
+        &tree,
+        Constraints::loose(Size::new(100.0, 100.0)),
+        &mut FixedText,
+    );
+    let focus = slot.borrow().clone().expect("a focus was remembered");
+    (focus, list)
+}
+
+/// Reports an area's own input place only while the focusable around it holds focus.
+#[test]
+fn an_ime_caret_counts_while_its_focus_is_held() {
+    let caret = Rect::new(Offset::new(4.0, 2.0), Size::new(1.0, 12.0));
+    let (focus, list) = focused_canvas(move |focus| {
+        Modifier::new()
+            .padding(10.0)
+            .focusable(focus, |_| false)
+            .ime_caret(caret)
+    });
+    assert_eq!(list.ime_area, None);
+    assert_eq!(list.focused_ime_area(), None);
+    focus.set_focused(true);
+    assert_eq!(
+        list.focused_ime_area(),
+        Some(Rect::new(Offset::new(14.0, 12.0), Size::new(1.0, 12.0)))
+    );
+    focus.set_focused(false);
+    assert_eq!(list.focused_ime_area(), None);
+}
+
+/// Takes the focus of the first focusable inside the area when none is around it.
+#[test]
+fn an_ime_caret_outside_its_focusable_uses_the_one_inside() {
+    let caret = Rect::new(Offset::new(4.0, 2.0), Size::new(1.0, 12.0));
+    let (focus, list) =
+        focused_canvas(move |focus| Modifier::new().ime_caret(caret).focusable(focus, |_| false));
+    focus.set_focused(true);
+    assert_eq!(list.focused_ime_area(), Some(caret));
 }

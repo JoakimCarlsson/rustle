@@ -447,5 +447,44 @@ fn main() -> Result {
             .any(|p| !is_host_blue([p[0], p[1], p[2], p[3]]))
     );
     println!("root replaced; clicked the new button at {at:?}");
+
+    // An area that draws its own text says where input goes while it has focus.
+    let mut terminal = Embedded::without_renderer(terminal, || {});
+    terminal.resize(SIZE, 1.0);
+    terminal.update();
+    assert_eq!(terminal.ime_area(), None, "nothing has focus yet");
+    assert!(click(&mut terminal, Offset::new(30.0, 30.0)));
+    assert!(terminal.has_focus(), "a press focuses the terminal");
+    assert_eq!(
+        terminal.ime_area(),
+        Some(TERMINAL_CARET),
+        "the focused terminal reports its own caret"
+    );
+    println!("a custom text area reports its caret at {TERMINAL_CARET:?}");
     Ok(())
+}
+
+/// Where the terminal of [`terminal`] draws its caret, in the interface.
+const TERMINAL_CARET: Rect = Rect {
+    origin: Offset { x: 48.0, y: 32.0 },
+    size: rustle::Size {
+        width: 1.0,
+        height: 16.0,
+    },
+};
+
+/// A root with one area that draws its own text, as a terminal does, and takes focus.
+fn terminal() {
+    let focus = remember_focus();
+    canvas(
+        Modifier::new()
+            .padding(16.0)
+            .size(200.0, 100.0)
+            .focusable(&focus, |_| false)
+            .ime_caret(Rect::new(
+                Offset::new(32.0, 16.0),
+                rustle::Size::new(1.0, 16.0),
+            )),
+        |_| {},
+    );
 }

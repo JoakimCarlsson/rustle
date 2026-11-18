@@ -52,8 +52,20 @@ pub struct DisplayList {
     pub blockers: Vec<Rect>,
     /// Areas that choose the mouse cursor, in paint order, so later ones are on top.
     pub cursors: Vec<CursorRegion>,
+    /// Where areas that draw their own text take text input, in paint order. See
+    /// [`Modifier::ime_caret`](crate::Modifier::ime_caret).
+    pub ime_carets: Vec<ImeCaretRegion>,
     /// What the areas mean, in paint order, for assistive technology.
     pub semantics: Vec<SemanticsNode>,
+}
+
+/// Where an area that draws its own text takes text input, cut to what is visible, and the
+/// focus that must be held for it to count.
+pub struct ImeCaretRegion {
+    pub rect: Rect,
+    /// The focus of the nearest focusable around the area, or the first inside it; `None`
+    /// when there is neither, and then the region never counts.
+    pub focus: Option<Focus>,
 }
 
 /// An area that chooses the mouse cursor, cut to what is visible.
@@ -217,6 +229,20 @@ pub(super) fn intersect(a: Rect, b: Rect) -> Rect {
 }
 
 impl DisplayList {
+    /// Where text input goes now, in the window, for placing an input method's candidate
+    /// popup: the caret of the text being edited ([`ime_area`](Self::ime_area)), or else the
+    /// last [`ime_caret`](crate::Modifier::ime_caret) area whose focus is held. `None` when
+    /// neither applies.
+    pub fn focused_ime_area(&self) -> Option<Rect> {
+        self.ime_area.or_else(|| {
+            self.ime_carets
+                .iter()
+                .rev()
+                .find(|caret| caret.focus.as_ref().is_some_and(Focus::is_focused))
+                .map(|caret| caret.rect)
+        })
+    }
+
     /// Whether any area that reacts to the pointer or blocks it contains `point`: clickable,
     /// pressable, draggable, scrollable, focusable, hoverable, a drag source, a drop target,
     /// one that listens to a pointer button, or one marked

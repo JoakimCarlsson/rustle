@@ -133,6 +133,8 @@ pub(crate) enum Element {
     },
     Hover(Rc<dyn Fn(bool)>),
     Cursor(CursorIcon),
+    /// Where text input goes, in the area's coordinates, while its focus is held.
+    ImeCaret(Rect),
     Placed(Rc<dyn Fn(Rect, Size)>),
     SizeChanged(Rc<dyn Fn(Size)>),
     LongPress(Rc<dyn Fn()>),

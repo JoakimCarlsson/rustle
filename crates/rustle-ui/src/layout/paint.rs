@@ -10,13 +10,15 @@ use super::measure::measure_node;
 use super::measured::{Measured, Paint};
 use super::regions::{
     ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
-    FileDropRegion, FocusRegion, HitRegion, HoverRegion, KeyRegion, LongPressRegion, PinchRegion,
-    PointerInputRegion, PointerMoveRegion, PressRegion, ScrollRegion, SemanticsNode, intersect,
+    FileDropRegion, FocusRegion, HitRegion, HoverRegion, ImeCaretRegion, KeyRegion,
+    LongPressRegion, PinchRegion, PointerInputRegion, PointerMoveRegion, PressRegion, ScrollRegion,
+    SemanticsNode, intersect,
 };
-use crate::Node;
+use crate::input::Focus;
 use crate::modifier::Fill;
 use crate::scroll::{ScrollState, ScrollbarVisibility, thumb};
 use crate::semantics::{Role, Semantics};
+use crate::{Node, TextEditing};
 
 /// How the edges of laid-out areas are placed on the pixel grid.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -110,6 +112,7 @@ pub fn display_list_with(
         clip_radii: Vec::new(),
         window,
         grid: options.grid(),
+        focus: None,
     };
     painter.paint(&measured, Offset::default());
     painter.paint_deferred();
@@ -129,6 +132,8 @@ struct Deferred<'a> {
     parents: Vec<usize>,
     /// How many enclosing semantics drop every description inside them.
     clearing: usize,
+    /// The focus of the nearest focusable around it where it was declared.
+    focus: Option<Focus>,
     measured: &'a Measured,
 }
 
@@ -159,6 +164,8 @@ struct Painter<'a> {
     window: Size,
     /// How many grid steps make a logical pixel when edges are rounded to them.
     grid: Option<f32>,
+    /// The focus of the nearest focusable around what is being painted.
+    focus: Option<Focus>,
 }
 
 impl<'a> Painter<'a> {
@@ -191,6 +198,7 @@ impl<'a> Painter<'a> {
                 }
                 self.parents = raised.parents;
                 self.clearing = raised.clearing;
+                self.focus = raised.focus;
                 let merging = self.merging_node();
                 if merging.is_some() {
                     self.merging += 1;
@@ -469,6 +477,64 @@ impl<'a> Painter<'a> {
         index
     }
 
+    /// Draws what editing shows over rich text laid out as `layout` at `origin`: the input
+    /// method's composition underlined in `color`, then the caret, and reports where text
+    /// input goes when `editing` has an `ime_caret`. `text` is the joined text of the spans,
+    /// since `editing` counts characters and `layout` bytes.
+    fn paint_rich_editing(
+        &mut self,
+        editing: &TextEditing,
+        layout: &rustle_text::TextLayout,
+        text: &str,
+        origin: Offset,
+        color: Color,
+    ) {
+        let byte_of = |index: usize| byte_at(text, index);
+        if let Some((start, end)) = editing.underline
+            && start < end
+        {
+            for rect in layout.selection_rects(byte_of(start), byte_of(end)) {
+                self.list.commands.push(DrawCommand::Rect {
+                    rect: Rect::new(
+                        Offset::new(
+                            origin.x + rect.origin.x,
+                            origin.y + rect.origin.y + rect.size.height - 2.0,
+                        ),
+                        Size::new(rect.size.width, 1.0),
+                    ),
+                    color: self.faded(color),
+                    corner_radius: 0.0,
+                    border: None,
+                });
+            }
+        }
+        if let Some(caret) = editing.ime_caret {
+            let from = editing
+                .underline
+                .map_or(caret, |(start, _)| start)
+                .min(caret);
+            let start = layout.caret(byte_of(from), editing.caret_affinity);
+            let at = layout.caret(byte_of(caret), editing.caret_affinity);
+            let left = if start.y == at.y { start.x } else { 0.0 };
+            self.list.ime_area = Some(self.visible(Rect::new(
+                Offset::new(origin.x + left, origin.y + at.y),
+                Size::new((at.x - left).max(1.0), at.height),
+            )));
+        }
+        if let Some(caret) = editing.caret {
+            let at = layout.caret(byte_of(caret), editing.caret_affinity);
+            self.list.commands.push(DrawCommand::Rect {
+                rect: Rect::new(
+                    Offset::new(origin.x + at.x - 0.75, origin.y + at.y),
+                    Size::new(1.5, at.height),
+                ),
+                color: self.faded(editing.caret_color),
+                corner_radius: 0.0,
+                border: None,
+            });
+        }
+    }
+
     /// Describes text as a label of its own, or gives it to the merging semantics around
     /// it, or drops it when they clear what is inside.
     fn describe_text(&mut self, rect: Rect, text: String) {
@@ -660,19 +726,15 @@ impl<'a> Painter<'a> {
             } => {
                 let mut spans = spans.clone();
                 let label: String = spans.iter().map(|span| span.text.as_str()).collect();
-                self.describe_text(rect, label);
+                let edit_layout = editing
+                    .as_ref()
+                    .and_then(|editing| editing.layout.borrow().clone());
+                let byte_of = |index: usize| byte_at(&label, index);
                 if let Some(editing) = editing
-                    && let Some(layout) = editing.layout.borrow().clone()
+                    && let Some(layout) = &edit_layout
                     && let Some((start, end)) = editing.selection
                     && start != end
                 {
-                    let joined: String = spans.iter().map(|span| span.text.as_str()).collect();
-                    let byte_of = |index: usize| {
-                        joined
-                            .char_indices()
-                            .nth(index)
-                            .map_or(joined.len(), |(byte, _)| byte)
-                    };
                     for rect in layout.selection_rects(byte_of(start), byte_of(end)) {
                         self.list.commands.push(DrawCommand::Rect {
                             rect: Rect::new(
@@ -718,6 +780,12 @@ impl<'a> Painter<'a> {
                     let lines = layout.decoration_commands(origin, false, false, &faded);
                     self.list.commands.extend(lines);
                 }
+                if let Some(editing) = editing
+                    && let Some(layout) = &edit_layout
+                {
+                    self.paint_rich_editing(editing, layout, &label, origin, style.color);
+                }
+                self.describe_text(rect, label);
             }
             Paint::Canvas { draw } => {
                 for command in draw(size) {
@@ -928,6 +996,25 @@ impl<'a> Painter<'a> {
                 });
                 self.paint(inner, exact);
             }
+            Paint::ImeCaret { rect: caret, inner } => {
+                let index = self.list.ime_carets.len();
+                let first = self.list.focusables.len();
+                self.list.ime_carets.push(ImeCaretRegion {
+                    rect: self.visible(Rect::new(
+                        Offset::new(origin.x + caret.origin.x, origin.y + caret.origin.y),
+                        caret.size,
+                    )),
+                    focus: self.focus.clone(),
+                });
+                self.paint(inner, exact);
+                if self.list.ime_carets[index].focus.is_none() {
+                    self.list.ime_carets[index].focus = self
+                        .list
+                        .focusables
+                        .get(first)
+                        .map(|region| region.focus.clone());
+                }
+            }
             Paint::Hover { on_hover, inner } => {
                 let index = self.list.hovers.len();
                 self.list.hovers.push(HoverRegion {
@@ -963,6 +1050,7 @@ impl<'a> Painter<'a> {
                     clips,
                     parents: self.parents.clone(),
                     clearing: self.clearing,
+                    focus: self.focus.clone(),
                     measured: inner,
                 });
             }
@@ -1172,7 +1260,9 @@ impl<'a> Painter<'a> {
                     focus: focus.clone(),
                     on_key: Rc::clone(on_key),
                 });
+                let around = self.focus.replace(focus.clone());
                 self.paint(inner, exact);
+                self.focus = around;
             }
             Paint::Clickable {
                 on_click,
@@ -1193,6 +1283,13 @@ impl<'a> Painter<'a> {
             }
         }
     }
+}
+
+/// The byte offset in `text` of the character at `index`, or the end of `text` past its last.
+fn byte_at(text: &str, index: usize) -> usize {
+    text.char_indices()
+        .nth(index)
+        .map_or(text.len(), |(byte, _)| byte)
 }
 
 #[cfg(test)]

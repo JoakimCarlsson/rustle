@@ -366,6 +366,7 @@ impl App {
                     let _ = state.window.request_ime_update(ime_enable());
                 }
             }
+            self.sync_ime_area();
         }
         if self.ui.take_redraw()
             && let Some(state) = &self.window

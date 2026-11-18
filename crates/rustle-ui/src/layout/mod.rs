@@ -27,8 +27,8 @@ pub use custom::{
 pub use paint::{DisplayOptions, PixelRounding, display_list, display_list_with};
 pub use regions::{
     ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
-    FileDropRegion, FocusRegion, HitRegion, HoverRegion, KeyRegion, PointerInputRegion,
-    PressRegion, ScrollRegion, SemanticsNode,
+    FileDropRegion, FocusRegion, HitRegion, HoverRegion, ImeCaretRegion, KeyRegion,
+    PointerInputRegion, PressRegion, ScrollRegion, SemanticsNode,
 };
 
 /// Decides how a node sizes and places its children.

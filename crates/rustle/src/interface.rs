@@ -270,9 +270,13 @@ impl Interface {
         self.key_event(event) || self.focused.is_some()
     }
 
-    /// The caret rectangle of the focused field, in logical pixels from the area's top-left
-    /// corner, for placing an input method's candidate popup. `None` when no field is edited.
+    /// Where text input goes, in logical pixels from the area's top-left corner, for placing
+    /// an input method's candidate popup: the caret of the focused field, or the
+    /// [`ime_caret`](rustle_ui::Modifier::ime_caret) of the focused area that draws its own
+    /// text. `None` when nothing that takes text has focus.
     pub(crate) fn caret_area(&self) -> Option<Rect> {
-        self.display.ime_area.filter(|_| self.focused.is_some())
+        self.display
+            .focused_ime_area()
+            .filter(|_| self.focused.is_some())
     }
 }

@@ -278,6 +278,19 @@ impl Modifier {
         self.then(Element::Clickable(Rc::new(on_click), true))
     }
 
+    /// Reports `rect`, in the area's own coordinates, as where text input goes while the
+    /// area has keyboard focus, for an area that draws its own text, such as a terminal or
+    /// an editor drawn on a canvas.
+    ///
+    /// The focus is that of the nearest [`focusable`](Self::focusable) around this modifier,
+    /// or, when there is none, of the first one inside the area. While it holds focus,
+    /// [`DisplayList::focused_ime_area`](crate::DisplayList::focused_ime_area) gives `rect`
+    /// in the window, cut to what is visible, so the host can place an input method's
+    /// candidate popup there.
+    pub fn ime_caret(self, rect: Rect) -> Self {
+        self.then(Element::ImeCaret(rect))
+    }
+
     /// Like [`clickable`](Self::clickable), without the hover and press tint.
     ///
     /// For areas that only take clicks so they do not reach what is behind,

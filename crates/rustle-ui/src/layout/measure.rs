@@ -226,6 +226,10 @@ pub(super) fn measure_modified(
             icon: *icon,
             inner,
         }),
+        Element::ImeCaret(rect) => wrap(next(constraints), |inner| Paint::ImeCaret {
+            rect: *rect,
+            inner,
+        }),
         Element::Hover(on_hover) => wrap(next(constraints), |inner| Paint::Hover {
             on_hover: Rc::clone(on_hover),
             inner,
