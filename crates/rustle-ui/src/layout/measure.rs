@@ -227,6 +227,7 @@ pub(super) fn measure_modified(
             on_long_press: Rc::clone(on_long_press),
             inner,
         }),
+        Element::TextLayout(_) => next(constraints),
         Element::SizeChanged(on_size_changed) => {
             let inner = next(constraints);
             on_size_changed(inner.size);
@@ -453,6 +454,31 @@ fn character_boundaries(
     (layout, boundaries)
 }
 
+/// Gives the text layout `layout` makes to every
+/// [`on_text_layout`](crate::Modifier::on_text_layout) handler of `node`, making it only when
+/// there is one, and keeps the block being measured from being cached so they are told each
+/// time.
+fn tell_text_layout(node: &Node, layout: impl FnOnce() -> Option<Rc<TextLayout>>) {
+    let mut handlers = node
+        .modifier
+        .elements
+        .iter()
+        .filter_map(|element| match element {
+            Element::TextLayout(handler) => Some(handler),
+            _ => None,
+        })
+        .peekable();
+    if handlers.peek().is_none() {
+        return;
+    }
+    mark_unskippable();
+    if let Some(layout) = layout() {
+        for handler in handlers {
+            handler(Rc::clone(&layout));
+        }
+    }
+}
+
 /// What a scope keeps of its last measurement, to reuse it when nothing it depends on changed.
 struct LayoutCache {
     constraints: Constraints,
@@ -530,6 +556,10 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
                 }
                 (editing.clone(), boundaries)
             });
+            tell_text_layout(node, || match &editing {
+                Some((editing, _)) => editing.layout.borrow().clone(),
+                None => Some(character_boundaries(content, style, constraints.max_width, text).0),
+            });
             Measured {
                 size: constraints.constrain(text.measure(content, style, constraints.max_width)),
                 paint: Paint::Text {
@@ -566,6 +596,16 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
                     on_layout();
                 }
                 editing.clone()
+            });
+            tell_text_layout(node, || match &editing {
+                Some(editing) => editing.layout.borrow().clone(),
+                None => {
+                    let flow = TextStyle {
+                        align: TextAlign::Start,
+                        ..*style
+                    };
+                    Some(Rc::new(text.layout(&spans, &flow, constraints.max_width)))
+                }
             });
             Measured {
                 size: constraints.constrain(text.measure_spans(

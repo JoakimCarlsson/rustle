@@ -149,6 +149,8 @@ pub(crate) enum Element {
     ImeCaret(Rect),
     Placed(Rc<dyn Fn(Rect, Size)>),
     SizeChanged(Rc<dyn Fn(Size)>),
+    /// Told the shaped text of the node's own text content after layout.
+    TextLayout(Rc<dyn Fn(Rc<rustle_text::TextLayout>)>),
     LongPress(Rc<dyn Fn()>),
     PointerMove(Rc<dyn Fn(Option<Offset>)>),
     FileDrop(Rc<dyn Fn(PathBuf)>),

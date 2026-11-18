@@ -84,6 +84,19 @@ impl Modifier {
         self.then(Element::SizeChanged(Rc::new(on_size_changed)))
     }
 
+    /// Calls `on_text_layout` with the shaped text of this node's own text or rich text, each
+    /// time layout measures it, at the width the text was given: its lines, glyph positions
+    /// and hit testing ([`TextLayout::hit_test`](rustle_text::TextLayout::hit_test)), for
+    /// links and selection in text that is not edited. Offsets in it are bytes. Nothing is
+    /// called for a node whose content is not text. The layout of a block holding such text
+    /// is not cached, as for edited text. Not a place to change state; write to a cell instead.
+    pub fn on_text_layout(
+        self,
+        on_text_layout: impl Fn(Rc<rustle_text::TextLayout>) + 'static,
+    ) -> Self {
+        self.then(Element::TextLayout(Rc::new(on_text_layout)))
+    }
+
     /// Calls `on_placed` with where the area is in the window and how large the
     /// window is, each time the display is built. For popups that have to stay
     /// on screen. Not a place to change state; write to a cell instead.
