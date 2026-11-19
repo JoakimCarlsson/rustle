@@ -712,3 +712,175 @@ fn a_spanned_grid_packs_rows_by_span_and_sizes_columns_by_weight() {
         stage.y(4)
     );
 }
+
+/// A list state made outside composition, as a state holder owns it, starts where it was
+/// told, follows scrolling done from outside, and is the same state in every pass.
+#[test]
+fn a_list_state_made_outside_composition_drives_the_list() {
+    let found = Found::default();
+    let state = LazyListState::new(10, 0.0);
+    let (probes, shown) = (Rc::clone(&found), state.clone());
+    let mut stage = Stage::new(100.0, 200.0, &found, move || {
+        let probes = Rc::clone(&probes);
+        lazy_list_with(
+            Modifier::new().size(100.0, 200.0),
+            &shown,
+            LazyContent::new(),
+            100,
+            |index| index,
+            move |index| {
+                probe(
+                    &probes,
+                    index,
+                    Modifier::new().fill_max_width().height(40.0),
+                )
+            },
+        );
+    });
+    stage.settle();
+    near(stage.y(10).unwrap(), 0.0);
+    state.scroll().scroll_to(800.0);
+    stage.settle();
+    near(stage.y(20).unwrap(), 0.0);
+    assert_eq!(state.clone(), state);
+    assert_ne!(state, LazyListState::new(0, 0.0));
+}
+
+/// The layout info lists the items in view with their places along the viewport.
+#[test]
+fn layout_info_lists_the_items_in_view() {
+    let heights = Rc::new(RefCell::new(vec![40.0; 50]));
+    let (mut stage, state) = vertical(heights, LazyContent::new());
+    state.scroll_to_item_offset(10, 20.0);
+    stage.settle();
+    let info = state.layout_info();
+    assert_eq!(info.total_items_count, 50);
+    near(info.viewport_end_offset, 200.0);
+    let indices: Vec<usize> = info
+        .visible_items_info
+        .iter()
+        .map(|item| item.index)
+        .collect();
+    assert_eq!(indices, (10..=15).collect::<Vec<_>>());
+    near(info.visible_items_info[0].offset, -20.0);
+    near(info.visible_items_info[1].offset, 20.0);
+    near(info.visible_items_info[0].size, 40.0);
+}
+
+/// A list of 100 items 40 tall in a 100 by 200 window whose item 2 pins itself while
+/// `pin` holds true.
+fn pinning(pin: Rc<std::cell::Cell<bool>>) -> (Stage, LazyListState) {
+    let found = Found::default();
+    let kept: Rc<RefCell<Option<LazyListState>>> = Rc::default();
+    let (probes, state_slot) = (Rc::clone(&found), Rc::clone(&kept));
+    let stage = Stage::new(100.0, 200.0, &found, move || {
+        let state = remember_lazy_list_state();
+        *state_slot.borrow_mut() = Some(state.clone());
+        let probes = Rc::clone(&probes);
+        let pinned = pin.get();
+        lazy_list_keyed(
+            Modifier::new().size(100.0, 200.0),
+            &state,
+            100,
+            |index| index,
+            move |index| {
+                if index == 2 {
+                    let container = LOCAL_PINNABLE_CONTAINER.current().expect("inside an item");
+                    rustle_runtime::disposable_effect(pinned, move || {
+                        let handle = pinned.then(|| container.pin());
+                        move || drop(handle)
+                    });
+                }
+                probe(
+                    &probes,
+                    index,
+                    Modifier::new().fill_max_width().height(40.0),
+                )
+            },
+        );
+    });
+    let state = kept.borrow().clone().expect("state");
+    (stage, state)
+}
+
+#[test]
+fn a_pinned_item_stays_composed_at_its_place_while_scrolled_away() {
+    let pin = Rc::new(std::cell::Cell::new(true));
+    let (mut stage, state) = pinning(Rc::clone(&pin));
+    state.scroll().scroll_to(2000.0);
+    stage.touch();
+    near(stage.y(2).expect("item 2 is pinned"), 80.0 - 2000.0);
+    near(stage.y(50).expect("item 50 is in view"), 0.0);
+    near(state.scroll().content_length(), 4000.0);
+    pin.set(false);
+    stage.touch();
+    assert_eq!(stage.y(2), None, "{:?}", stage.items());
+    near(stage.y(50).expect("item 50 is in view"), 0.0);
+}
+
+#[test]
+fn a_reversed_list_places_its_first_item_at_the_bottom() {
+    let heights = Rc::new(RefCell::new(vec![40.0; 20]));
+    let content = LazyContent::new()
+        .padding_each(10.0, 6.0)
+        .spacing(5.0)
+        .reverse_layout(true);
+    let (stage, state) = vertical(heights, content);
+    near(stage.y(0).unwrap(), 150.0);
+    near(stage.y(1).unwrap(), 105.0);
+    near(stage.y(2).unwrap(), 60.0);
+    assert_eq!(state.scroll().offset(), 0.0);
+    assert_eq!(state.first_visible_item(), Some(0));
+    near(
+        state.scroll().content_length(),
+        10.0 + 20.0 * 45.0 - 5.0 + 6.0,
+    );
+}
+
+#[test]
+fn a_reversed_list_keeps_its_first_item_at_the_bottom_as_it_grows_and_items_arrive() {
+    let heights = Rc::new(RefCell::new(vec![40.0; 20]));
+    let content = LazyContent::new().reverse_layout(true);
+    let (mut stage, state) = vertical(Rc::clone(&heights), content);
+    near(stage.y(0).unwrap(), 160.0);
+    heights.borrow_mut()[0] = 90.0;
+    stage.touch();
+    near(stage.y(0).unwrap(), 110.0);
+    heights.borrow_mut().extend([40.0; 5]);
+    stage.touch();
+    near(stage.y(0).unwrap(), 110.0);
+    assert_eq!(state.scroll().offset(), 0.0);
+}
+
+#[test]
+fn a_reversed_list_scrolled_back_keeps_what_is_in_view_as_its_first_item_grows() {
+    let heights = Rc::new(RefCell::new(vec![40.0; 30]));
+    let content = LazyContent::new().reverse_layout(true);
+    let (mut stage, state) = vertical(Rc::clone(&heights), content);
+    state.scroll().scroll_to(400.0);
+    stage.settle();
+    let shown = stage.y(12).expect("item 12 is in view");
+    assert!(stage.y(0).is_none());
+    heights.borrow_mut()[0] = 140.0;
+    stage.touch();
+    near(stage.y(12).unwrap(), shown);
+    state.scroll().scroll_to(0.0);
+    stage.settle();
+    near(stage.y(0).unwrap(), 60.0);
+}
+
+/// A reversed list scrolled as far as it goes keeps the padding after its last item in view,
+/// and its offset within the room it measured.
+#[test]
+fn a_reversed_list_scrolled_to_its_end_shows_the_padding_after_its_last_item() {
+    let heights = Rc::new(RefCell::new(vec![40.0; 20]));
+    let content = LazyContent::new()
+        .padding_each(10.0, 6.0)
+        .spacing(5.0)
+        .reverse_layout(true);
+    let (mut stage, state) = vertical(heights, content);
+    state.scroll().scroll_to(f32::MAX);
+    stage.settle();
+    near(stage.y(19).expect("the last item is in view"), 6.0);
+    near(state.scroll().offset(), state.scroll().max_offset());
+}

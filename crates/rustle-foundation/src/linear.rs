@@ -1,5 +1,6 @@
 use rustle_geometry::{Offset, Size};
 use rustle_ui::{BoxAlignment, Children, Layout, LayoutResult, Modifier, Overlay, is_rtl, layout};
+
 use rustle_unit::Constraints;
 
 /// Emits a column that places the children of `content` top to bottom.
@@ -50,6 +51,23 @@ pub fn stack_aligned(modifier: Modifier, alignment: BoxAlignment, content: impl 
         Overlay {
             alignment,
             rtl: is_rtl(),
+            propagate_min_constraints: false,
+        },
+        content,
+    );
+}
+
+/// Emits a stack whose children get its minimum size as theirs, as Compose's
+/// `Box(modifier, contentAlignment, propagateMinConstraints = true)`: a child of a stack
+/// given a fixed or least size fills it, as the content of a `Surface` does.
+#[track_caller]
+pub fn stack_propagating(modifier: Modifier, alignment: BoxAlignment, content: impl FnOnce()) {
+    layout(
+        modifier,
+        Overlay {
+            alignment,
+            rtl: is_rtl(),
+            propagate_min_constraints: true,
         },
         content,
     );
@@ -79,11 +97,17 @@ pub enum Arrangement {
     SpaceAround,
     /// Equal gaps between children and at both ends.
     SpaceEvenly,
-    /// A fixed gap between children, starting at the start.
+    /// A fixed gap between children, starting at the start: Compose's `Arrangement.spacedBy(space)`.
     SpacedBy(f32),
+    /// A fixed gap between children, the group placed by the alignment in the room left over:
+    /// Compose's `Arrangement.spacedBy(space, alignment)`.
+    SpacedByAligned(f32, Alignment),
 }
 
 /// Where a row or column puts each child across its main axis.
+///
+/// A child placed with [`Modifier::align`] goes where the cross part of its alignment says
+/// instead (the vertical part in a row, the horizontal part in a column).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Alignment {
     Start,
@@ -136,6 +160,14 @@ pub(crate) fn arrange(arrangement: Arrangement, free: f32, count: usize) -> (f32
             (gap, gap)
         }
         Arrangement::SpacedBy(spacing) => (0.0, spacing),
+        Arrangement::SpacedByAligned(spacing, alignment) => {
+            let start = match alignment {
+                Alignment::Start => 0.0,
+                Alignment::Center => free / 2.0,
+                Alignment::End => free,
+            };
+            (start, spacing)
+        }
     }
 }
 
@@ -156,6 +188,34 @@ impl Linear {
             alignment,
             rtl: is_rtl(),
         }
+    }
+
+    /// The fixed gap between neighbours that the arrangement asks for.
+    fn gap(&self) -> f32 {
+        match self.arrangement {
+            Arrangement::SpacedBy(spacing) | Arrangement::SpacedByAligned(spacing, _) => spacing,
+            _ => 0.0,
+        }
+    }
+
+    /// Where child `index` goes across the main axis: its own `align` modifier, else the
+    /// layout's alignment.
+    fn alignment_of(&self, children: &Children, index: usize) -> Alignment {
+        let Some(own) = children.alignment(index) else {
+            return self.alignment;
+        };
+        let (horizontal, vertical) = match own {
+            BoxAlignment::TopStart => (Alignment::Start, Alignment::Start),
+            BoxAlignment::TopCenter => (Alignment::Center, Alignment::Start),
+            BoxAlignment::TopEnd => (Alignment::End, Alignment::Start),
+            BoxAlignment::CenterStart => (Alignment::Start, Alignment::Center),
+            BoxAlignment::Center => (Alignment::Center, Alignment::Center),
+            BoxAlignment::CenterEnd => (Alignment::End, Alignment::Center),
+            BoxAlignment::BottomStart => (Alignment::Start, Alignment::End),
+            BoxAlignment::BottomCenter => (Alignment::Center, Alignment::End),
+            BoxAlignment::BottomEnd => (Alignment::End, Alignment::End),
+        };
+        if self.vertical { horizontal } else { vertical }
     }
 
     /// Splits a size into (main, cross) lengths.
@@ -201,10 +261,7 @@ impl Linear {
         minimum: bool,
         extent: f32,
     ) -> f32 {
-        let spacing = match self.arrangement {
-            Arrangement::SpacedBy(spacing) => spacing,
-            _ => 0.0,
-        };
+        let spacing = self.gap();
         let along = width_query != self.vertical;
         let count = children.len();
         let lengths = (0..count).map(|index| match (width_query, minimum) {
@@ -238,21 +295,21 @@ impl Layout for Linear {
         self.intrinsic(children, false, false, width)
     }
 
+    /// Measures the children without a weight first, in order, each within what is left of the
+    /// bound; then the weighted children share what is left of the bound, or of the least length
+    /// when there is no bound, as Compose's rows and columns share it, each exactly as long as
+    /// its share when it fills and at most that long otherwise.
     fn measure(&self, children: &mut Children, constraints: Constraints) -> LayoutResult {
         let (main_min, cross_min) =
             self.split(Size::new(constraints.min_width, constraints.min_height));
         let (main_max, cross_max) =
             self.split(Size::new(constraints.max_width, constraints.max_height));
         let count = children.len();
-        let spacing = match self.arrangement {
-            Arrangement::SpacedBy(spacing) => spacing,
-            _ => 0.0,
-        };
+        let spacing = self.gap();
         let mut mains = vec![0.0_f32; count];
         let mut crosses = vec![0.0_f32; count];
         let mut used = spacing * count.saturating_sub(1) as f32;
 
-        // Children without a weight take what they ask for, in order.
         let mut total_weight = 0.0;
         for index in 0..count {
             if let Some(weight) = children.weight(index) {
@@ -265,19 +322,24 @@ impl Layout for Linear {
             used += mains[index];
         }
 
-        // Weighted children split what is left, when there is a bound to leave it.
         if total_weight > 0.0 {
-            let space = if main_max.is_finite() {
-                (main_max - used).max(0.0)
+            let target = if main_max.is_finite() {
+                main_max
             } else {
-                0.0
+                main_min
             };
+            let space = (target - used).max(0.0);
             for index in 0..count {
                 let Some(weight) = children.weight(index) else {
                     continue;
                 };
                 let share = space * weight.max(0.0) / total_weight;
-                let size = children.measure(index, self.constraints((share, share), cross_max));
+                let least = if children.weight_fills(index) {
+                    share
+                } else {
+                    0.0
+                };
+                let size = children.measure(index, self.constraints((least, share), cross_max));
                 (mains[index], crosses[index]) = self.split(size);
                 used += mains[index];
             }
@@ -296,7 +358,10 @@ impl Layout for Linear {
         let mut positions = Vec::with_capacity(count);
         for index in 0..count {
             // In a column the cross axis is horizontal, so start and end swap when mirrored.
-            let alignment = match (self.alignment, self.vertical && self.rtl) {
+            let alignment = match (
+                self.alignment_of(children, index),
+                self.vertical && self.rtl,
+            ) {
                 (Alignment::Start, true) => Alignment::End,
                 (Alignment::End, true) => Alignment::Start,
                 (other, _) => other,

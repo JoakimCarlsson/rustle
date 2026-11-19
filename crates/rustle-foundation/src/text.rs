@@ -3,7 +3,8 @@ use rustle_runtime::CompositionLocal;
 use rustle_text::{TextSpan, TextStyle};
 use rustle_ui::{Content, ContentScale, Modifier, Node, canvas, emit};
 
-use crate::selection::{LOCAL_SELECTION, emit_block};
+use crate::ellipsized::text_ellipsized;
+use crate::selection::{in_selection_container, selectable_modifier};
 
 /// The style `text` is set in. Provide another value to restyle everything below.
 pub static LOCAL_TEXT_STYLE: CompositionLocal<TextStyle> =
@@ -28,16 +29,52 @@ pub fn text_with(modifier: Modifier, content: impl Into<String>) {
     text_styled(modifier, content, LOCAL_TEXT_STYLE.current());
 }
 
-/// Emits a line of text with `modifier`, set in `style`.
+/// Emits a line of text with `modifier`, set in `style`. Inside a
+/// [`selection_container`](crate::selection_container) it takes part in the selection.
 pub fn text_styled(modifier: Modifier, content: impl Into<String>, style: TextStyle) {
+    let content: String = content.into();
+    let modifier = selectable_modifier(modifier, content.as_str());
     emit(Node {
         modifier,
         content: Content::Text {
-            content: content.into(),
+            content,
             style,
             editing: None,
         },
     });
+}
+
+/// How text that does not fit its box shows, as Compose's `TextOverflow`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextOverflow {
+    /// What does not fit is cut off at the box.
+    #[default]
+    Clip,
+    /// A single line that does not fit ends early with an ellipsis.
+    Ellipsis,
+}
+
+/// Emits `content` set in `style` with `modifier`, overflowing its box as `overflow` says:
+/// Compose's `BasicText(text, modifier, style, overflow, maxLines)`, the line limit being
+/// the style's `max_lines`.
+///
+/// With [`TextOverflow::Ellipsis`] a style of at most one line, for content of one line,
+/// is set as [`text_ellipsized`] sets it; any other text is set as [`text_styled`] sets it.
+/// Inside a [`selection_container`](crate::selection_container) it takes part in the
+/// selection, text cut short with the part that shows.
+#[track_caller]
+pub fn basic_text(
+    modifier: Modifier,
+    content: impl Into<String>,
+    style: TextStyle,
+    overflow: TextOverflow,
+) {
+    let content: String = content.into();
+    if overflow == TextOverflow::Ellipsis && style.max_lines == Some(1) && !content.contains('\n') {
+        text_ellipsized(modifier, content, style);
+        return;
+    }
+    text_styled(modifier, content, style);
 }
 
 /// Emits a picture, sized to its pixels unless `modifier` or the space available says otherwise.
@@ -77,20 +114,17 @@ pub fn rich_text(spans: Vec<TextSpan>) {
     rich_text_with(Modifier::new(), spans);
 }
 
-/// Emits rich text with `modifier`.
+/// Emits rich text with `modifier`. Inside a
+/// [`selection_container`](crate::selection_container) it takes part in the selection.
 #[track_caller]
 pub fn rich_text_with(modifier: Modifier, spans: Vec<TextSpan>) {
     let style = LOCAL_TEXT_STYLE.current();
-    if let Some(scope) = LOCAL_SELECTION.current() {
-        // Inside a selection container the text is one block of its selection.
+    let modifier = if in_selection_container() {
         let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-        emit_block(&scope, modifier, text, |editing| Content::RichText {
-            spans,
-            style,
-            editing: Some(editing),
-        });
-        return;
-    }
+        selectable_modifier(modifier, text)
+    } else {
+        modifier
+    };
     emit(Node {
         modifier,
         content: Content::RichText {

@@ -772,3 +772,233 @@ fn chain_members_may_link_to_each_other() {
     assert_eq!(tuple(found["a"]), (0.0, 0.0, 150.0, 10.0));
     assert_eq!(tuple(found["b"]), (150.0, 0.0, 50.0, 10.0));
 }
+
+/// `SpacedByAligned` keeps the gap between neighbours and places the group by its alignment
+/// in the room left over, as Compose's `Arrangement.spacedBy(space, alignment)` does.
+#[test]
+fn spaced_rows_place_the_group_by_their_alignment() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        row_arranged(
+            Modifier::new().width(100.0),
+            Arrangement::SpacedByAligned(10.0, Alignment::Center),
+            Alignment::Start,
+            move || {
+                probe(&probes, "first", 20.0, 10.0);
+                probe(&probes, "second", 20.0, 10.0);
+            },
+        );
+    });
+    assert_eq!(tuple(laid["first"]), (25.0, 0.0, 20.0, 10.0));
+    assert_eq!(tuple(laid["second"]), (55.0, 0.0, 20.0, 10.0));
+}
+
+/// `SpacedBy` puts a fixed gap between neighbours.
+#[test]
+fn spaced_columns_keep_the_gap() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        column_arranged(
+            Modifier::new(),
+            Arrangement::SpacedBy(8.0),
+            Alignment::Start,
+            move || {
+                probe(&probes, "first", 10.0, 10.0);
+                probe(&probes, "second", 10.0, 10.0);
+            },
+        );
+    });
+    assert_eq!(tuple(laid["second"]), (0.0, 18.0, 10.0, 10.0));
+}
+
+/// A child's own `align` wins over the row's alignment across the row.
+#[test]
+fn a_child_aligns_itself_across_a_row() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        row_arranged(
+            Modifier::new(),
+            Arrangement::Start,
+            Alignment::Start,
+            move || {
+                probe(&probes, "tall", 10.0, 40.0);
+                probe_with(
+                    &probes,
+                    "low",
+                    Modifier::new()
+                        .size(10.0, 10.0)
+                        .align(rustle_ui::BoxAlignment::BottomStart),
+                );
+            },
+        );
+    });
+    assert_eq!(tuple(laid["low"]), (10.0, 30.0, 10.0, 10.0));
+}
+
+/// A child that matches its stack's size takes the size the other children gave the stack.
+#[test]
+fn a_child_can_match_its_stacks_size() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        stack_with(Modifier::new(), move || {
+            probe(&probes, "content", 60.0, 30.0);
+            probe_with(&probes, "overlay", Modifier::new().match_parent_size());
+        });
+    });
+    assert_eq!(tuple(laid["overlay"]), (0.0, 0.0, 60.0, 30.0));
+}
+
+/// Without a bound along the column, weighted children share only the column's least length,
+/// none here, as in Compose.
+#[test]
+fn weights_in_an_unbounded_column_share_its_least_length() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, f32::INFINITY), &rects, move || {
+        let probes = Rc::clone(&probes);
+        column(move || {
+            probe(&probes, "first", 10.0, 10.0);
+            probe_with(&probes, "grown", Modifier::new().weight(1.0).width(10.0));
+        });
+    });
+    assert_eq!(tuple(laid["grown"]), (0.0, 10.0, 10.0, 0.0));
+}
+
+/// A weighted child that does not fill takes at most its share, as long as its content wants.
+#[test]
+fn unfilled_weights_keep_their_own_length_within_their_share() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        row_with(Modifier::new().width(100.0), move || {
+            let inner = Rc::clone(&probes);
+            row_with(Modifier::new().weight_with(1.0, false), move || {
+                probe(&inner, "short", 30.0, 10.0)
+            });
+            let inner = Rc::clone(&probes);
+            row_with(Modifier::new().weight_with(1.0, false), move || {
+                probe(&inner, "long", 90.0, 10.0)
+            });
+            probe(&probes, "fixed", 20.0, 10.0);
+        });
+    });
+    assert_eq!(tuple(laid["short"]), (0.0, 0.0, 30.0, 10.0));
+    assert_eq!(laid["long"].origin.x, 30.0);
+    assert_eq!(tuple(laid["fixed"]), (70.0, 0.0, 20.0, 10.0));
+}
+
+/// Without a bound along the column but with a least length, weighted children fill what the
+/// least length leaves.
+#[test]
+fn weights_fill_a_columns_least_length() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        rustle_ui::layout(Modifier::new(), ForcedHeight(100.0), move || {
+            let probes = Rc::clone(&probes);
+            column(move || {
+                probe(&probes, "first", 10.0, 10.0);
+                probe_with(&probes, "grown", Modifier::new().weight(1.0).width(10.0));
+            })
+        });
+    });
+    assert_eq!(tuple(laid["grown"]), (0.0, 10.0, 10.0, 90.0));
+}
+
+/// Measures its one child with no bound down its length and at least as tall as it holds.
+struct ForcedHeight(f32);
+
+impl rustle_ui::Layout for ForcedHeight {
+    /// Measures the child at least this tall, unbounded downwards.
+    fn measure(
+        &self,
+        children: &mut rustle_ui::Children,
+        constraints: Constraints,
+    ) -> rustle_ui::LayoutResult {
+        let size = children.measure(
+            0,
+            Constraints {
+                min_height: self.0,
+                max_height: f32::INFINITY,
+                ..constraints
+            },
+        );
+        rustle_ui::LayoutResult {
+            size,
+            positions: vec![Offset::new(0.0, 0.0)],
+        }
+    }
+}
+
+/// A flow row centres each child across its line when asked to.
+#[test]
+fn flow_rows_align_children_across_their_line() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        flow_row_with(
+            Modifier::new(),
+            FlowOptions::new(0.0, 0.0).item_alignment(Alignment::Center),
+            move || {
+                probe(&probes, "tall", 10.0, 40.0);
+                probe(&probes, "short", 10.0, 10.0);
+            },
+        );
+    });
+    assert_eq!(tuple(laid["short"]), (10.0, 15.0, 10.0, 10.0));
+}
+
+/// Content that wraps its width without a bound keeps its own width and, aligned to the end,
+/// runs out of its parent on the start side, as Compose's `wrapContentWidth(End, unbounded =
+/// true)` places it.
+#[test]
+fn unbounded_wrapped_content_runs_past_its_parent() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        stack_with(Modifier::new().size(50.0, 50.0), move || {
+            probe_with(
+                &probes,
+                "wide",
+                Modifier::new()
+                    .wrap_content_width(rustle_ui::BoxAlignment::CenterEnd, true)
+                    .size(80.0, 10.0),
+            );
+        });
+    });
+    assert_eq!(tuple(laid["wide"]), (-30.0, 0.0, 80.0, 10.0));
+}
+
+/// Content that wraps its height without a bound keeps its own height and, aligned to the top,
+/// runs out of its parent at the bottom, as Compose's `wrapContentHeight(Top, unbounded = true)`
+/// places it.
+#[test]
+fn unbounded_wrapped_columns_keep_their_childrens_heights() {
+    let rects = rects();
+    let probes = Rc::clone(&rects);
+    let laid = run(Size::new(400.0, 300.0), &rects, move || {
+        let probes = Rc::clone(&probes);
+        column_with(
+            Modifier::new()
+                .height(30.0)
+                .wrap_content_height(rustle_ui::BoxAlignment::TopStart, true),
+            move || {
+                probe(&probes, "first", 10.0, 20.0);
+                probe(&probes, "second", 10.0, 20.0);
+            },
+        );
+    });
+    assert_eq!(tuple(laid["second"]), (0.0, 20.0, 10.0, 20.0));
+}

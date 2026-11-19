@@ -126,6 +126,8 @@ pub enum ItemAlign {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Request {
     Item(usize, ItemAlign),
+    /// Item `.0` at the start of the viewport, scrolled `.1` pixels further.
+    At(usize, f32),
     End,
 }
 
@@ -157,10 +159,42 @@ struct ListInner {
     stagger: RefCell<(Vec<u64>, HashMap<u64, f32>)>,
     /// For a spanned grid, the items of each row, so items can be asked for by index.
     grid_rows: RefCell<Vec<Vec<usize>>>,
+    /// How many handles pin each item, by key: pinned items stay composed out of view.
+    pinned: RefCell<HashMap<u64, usize>>,
+}
+
+/// One item a lazy list laid out in view, like Compose's `LazyListItemInfo`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LazyListItemInfo {
+    /// The item's index in the list.
+    pub index: usize,
+    /// Where the item starts, along the list, from the start of the viewport, in
+    /// logical pixels; negative while it is partly scrolled out.
+    pub offset: f32,
+    /// How long the item is along the list, in logical pixels.
+    pub size: f32,
+}
+
+/// What a lazy list laid out in its latest composition, like Compose's
+/// `LazyListLayoutInfo`. See [`LazyListState::layout_info`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LazyListLayoutInfo {
+    /// The items in view, first to last.
+    pub visible_items_info: Vec<LazyListItemInfo>,
+    /// Where the viewport starts, in logical pixels.
+    pub viewport_start_offset: f32,
+    /// Where the viewport ends, in logical pixels.
+    pub viewport_end_offset: f32,
+    /// How many items the list has.
+    pub total_items_count: usize,
 }
 
 /// What a variable-height lazy list remembers: its scroll position and the
 /// heights its items turned out to have.
+///
+/// Like Compose's `LazyListState(...)`, it can be made outside composition with
+/// [`LazyListState::new`], by a state holder that owns it, or remembered at a call site
+/// with [`remember_lazy_list_state`]. Two handles are equal when they are the same state.
 #[derive(Clone)]
 pub struct LazyListState {
     scroll: ScrollState,
@@ -169,7 +203,77 @@ pub struct LazyListState {
     version: State<u64>,
 }
 
+impl PartialEq for LazyListState {
+    /// Whether both handles are the same state.
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.inner, &other.inner)
+    }
+}
+
+impl std::fmt::Debug for LazyListState {
+    /// The scroll state.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LazyListState")
+            .field("scroll", &self.scroll)
+            .finish()
+    }
+}
+
+impl Default for LazyListState {
+    /// A list scrolled to its start.
+    fn default() -> Self {
+        Self::new(0, 0.0)
+    }
+}
+
+impl ListInner {
+    /// What a list knows before it was laid out: nothing.
+    fn new() -> Self {
+        Self {
+            heights: RefCell::default(),
+            sum: Cell::new(0.0),
+            placed: RefCell::default(),
+            stick_to_end: Cell::new(false),
+            request: Cell::new(None),
+            lanes: RefCell::default(),
+            slide_until: Cell::new(None),
+            stagger: RefCell::default(),
+            grid_rows: RefCell::default(),
+            pinned: RefCell::default(),
+        }
+    }
+}
+
 impl LazyListState {
+    /// A list with item `first_visible_item` at the start of its viewport, scrolled
+    /// `first_visible_item_offset` logical pixels further, which belongs to no
+    /// composition: Compose's `LazyListState(firstVisibleItemIndex,
+    /// firstVisibleItemScrollOffset)`, for a state holder to own.
+    pub fn new(first_visible_item: usize, first_visible_item_offset: f32) -> Self {
+        let inner = ListInner::new();
+        if first_visible_item > 0 || first_visible_item_offset > 0.0 {
+            inner.request.set(Some(Request::At(
+                first_visible_item,
+                first_visible_item_offset,
+            )));
+        }
+        Self {
+            scroll: ScrollState::new(0.0),
+            inner: Rc::new(inner),
+            version: rustle_runtime::mutable_state(0),
+        }
+    }
+
+    /// Scrolls so that item `index` is at the start of the viewport, then `offset`
+    /// logical pixels further: Compose's `scrollToItem(index, scrollOffset)`. Done the
+    /// next time the list composes.
+    pub fn scroll_to_item_offset(&self, index: usize, offset: f32) {
+        self.inner.request.set(Some(Request::At(index, offset)));
+        self.scroll.show_scrollbar();
+        self.bump();
+    }
+
     /// The scroll state, for reading the offset, the extent or scrolling.
     pub fn scroll(&self) -> &ScrollState {
         &self.scroll
@@ -229,6 +333,78 @@ impl LazyListState {
         Some(rows.get(row).map_or(row, |items| items[0]))
     }
 
+    /// What the latest composition laid out: the items in view, where each is and how
+    /// long it is along the list, the viewport and how many items there are, like
+    /// Compose's `LazyListState.layoutInfo`. Empty until the list has composed. In a
+    /// [`lazy_vertical_grid_spanned`] every item of a row in view is listed with the row's
+    /// place and length.
+    pub fn layout_info(&self) -> LazyListLayoutInfo {
+        let placed = self.inner.placed.borrow();
+        let count = placed.keys.len();
+        let offset = self.scroll.offset();
+        let end = offset + placed.viewport;
+        let rows = self.inner.grid_rows.borrow();
+        let mut visible_items_info = Vec::new();
+        if count > 0 {
+            for row in item_at(&placed.tops, offset).min(count - 1)..count {
+                let (top, bottom) = (placed.tops[row], placed.tops[row + 1]);
+                if top >= end {
+                    break;
+                }
+                let items = rows.get(row).map_or(row..row + 1, |items| {
+                    items[0]..items.last().map_or(items[0], |last| last + 1)
+                });
+                visible_items_info.extend(items.map(|index| LazyListItemInfo {
+                    index,
+                    offset: top - offset,
+                    size: bottom - top,
+                }));
+            }
+        }
+        let total_items_count = rows
+            .last()
+            .and_then(|items| items.last())
+            .map_or(count, |last| last + 1);
+        LazyListLayoutInfo {
+            visible_items_info,
+            viewport_start_offset: 0.0,
+            viewport_end_offset: placed.viewport,
+            total_items_count,
+        }
+    }
+
+    /// Pins the item with `key`, so it stays composed while out of view, until the
+    /// handle returned is released.
+    fn pin(&self, key: u64) -> PinnedHandle {
+        let first = {
+            let mut pinned = self.inner.pinned.borrow_mut();
+            let count = pinned.entry(key).or_insert(0);
+            *count += 1;
+            *count == 1
+        };
+        if first {
+            self.bump();
+        }
+        PinnedHandle {
+            state: self.clone(),
+            key,
+            released: Cell::new(false),
+        }
+    }
+
+    /// How far the start of the viewport is past the start of the first item in
+    /// view, in logical pixels: Compose's `firstVisibleItemScrollOffset`.
+    pub fn first_visible_item_scroll_offset(&self) -> f32 {
+        let placed = self.inner.placed.borrow();
+        let count = placed.keys.len();
+        if count == 0 {
+            return 0.0;
+        }
+        let offset = self.scroll.offset();
+        let first = item_at(&placed.tops, offset).min(count - 1);
+        (offset - placed.tops[first]).max(0.0)
+    }
+
     fn bump(&self) {
         self.version.update(|version| *version += 1);
     }
@@ -248,25 +424,87 @@ impl LazyListState {
     }
 }
 
+/// What an item of a lazy list can be pinned through, so it stays composed while it
+/// is scrolled out of view: Compose's `PinnableContainer`, read from
+/// [`LOCAL_PINNABLE_CONTAINER`] inside an item, as a focused item pins itself to keep
+/// its focus and state.
+#[derive(Clone, PartialEq)]
+pub struct PinnableContainer {
+    state: LazyListState,
+    key: u64,
+}
+
+impl std::fmt::Debug for PinnableContainer {
+    /// The key of the item.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PinnableContainer")
+            .field("key", &self.key)
+            .finish()
+    }
+}
+
+impl PinnableContainer {
+    /// Pins the item: it stays composed, at its place in the list, while it is out of
+    /// view, until every handle pinning it is released. Compose's `pin()`.
+    pub fn pin(&self) -> PinnedHandle {
+        self.state.pin(self.key)
+    }
+}
+
+/// A pin on an item of a lazy list, from [`PinnableContainer::pin`]: Compose's
+/// `PinnedHandle`. Released by [`PinnedHandle::release`] or when dropped.
+pub struct PinnedHandle {
+    state: LazyListState,
+    key: u64,
+    released: Cell<bool>,
+}
+
+impl PinnedHandle {
+    /// Releases the pin; the item leaves the composition once it is out of view and no
+    /// other handle pins it. Releasing twice does nothing more. Compose's `release()`.
+    pub fn release(&self) {
+        if self.released.replace(true) {
+            return;
+        }
+        let last = {
+            let mut pinned = self.state.inner.pinned.borrow_mut();
+            match pinned.get_mut(&self.key) {
+                Some(count) if *count > 1 => {
+                    *count -= 1;
+                    false
+                }
+                Some(_) => {
+                    pinned.remove(&self.key);
+                    true
+                }
+                None => false,
+            }
+        };
+        if last {
+            self.state.bump();
+        }
+    }
+}
+
+impl Drop for PinnedHandle {
+    /// Releases the pin if it was not released.
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// The [`PinnableContainer`] of the lazy list item being composed, or `None` outside
+/// one: Compose's `LocalPinnableContainer`.
+pub static LOCAL_PINNABLE_CONTAINER: rustle_runtime::CompositionLocal<Option<PinnableContainer>> =
+    rustle_runtime::CompositionLocal::new(|| None);
+
 /// Remembers a [`LazyListState`] at this call site.
 #[track_caller]
 pub fn remember_lazy_list_state() -> LazyListState {
     group(|| LazyListState {
         scroll: remember_scroll_state(),
-        inner: remember(|| {
-            Rc::new(ListInner {
-                heights: RefCell::default(),
-                sum: Cell::new(0.0),
-                placed: RefCell::default(),
-                stick_to_end: Cell::new(false),
-                request: Cell::new(None),
-                lanes: RefCell::default(),
-                slide_until: Cell::new(None),
-                stagger: RefCell::default(),
-                grid_rows: RefCell::default(),
-            })
-        })
-        .get(),
+        inner: remember(|| Rc::new(ListInner::new())).get(),
         version: remember(|| 0),
     })
 }
@@ -337,6 +575,12 @@ impl Reposition<'_> {
                     ItemAlign::End => bottom - self.viewport,
                 };
                 return target.clamp(0.0, max);
+            }
+            Some(Request::At(index, offset)) => {
+                let Some(last) = self.new_keys.len().checked_sub(1) else {
+                    return 0.0;
+                };
+                return (self.new_tops[index.min(last)] + offset).clamp(0.0, max);
             }
             None => {}
         }
@@ -438,6 +682,9 @@ pub struct LazyContent {
     /// How items move to their new place when the keys of a list are
     /// reordered, inserted or removed; `None` moves them at once.
     pub animate_item: Option<AnimationSpec>,
+    /// Whether the list is laid out from its end: the first item at the bottom
+    /// (or the right), the offset counted from there. Compose's `reverseLayout`.
+    pub reverse_layout: bool,
 }
 
 impl LazyContent {
@@ -474,6 +721,21 @@ impl LazyContent {
         self.animate_item = Some(spec);
         self
     }
+
+    /// Lays the list out from its end, as Compose's `reverseLayout = true` does: the
+    /// first item sits at the bottom of a vertical list (the right of a horizontal
+    /// one) and the later items above it, the scroll offset counts from there, so
+    /// an offset of 0 shows the first item, and the padding at the start is the
+    /// padding at that end. Everything else is mirrored with it: the item kept in
+    /// place as others are measured or inserted is the one at that end of the
+    /// viewport, a list at offset 0 stays there as items grow or are added before
+    /// it, and `first_visible_item` is the item nearest that end. A list shorter
+    /// than its viewport still starts at the top (or left), as with
+    /// `Arrangement.Top`. For a conversation, give the newest message index 0.
+    pub fn reverse_layout(mut self, reverse: bool) -> Self {
+        self.reverse_layout = reverse;
+        self
+    }
 }
 
 /// Emits `content` in a column for a vertical axis and a row for a horizontal one.
@@ -506,6 +768,20 @@ fn item_cell(
     shift: f32,
     body: impl FnOnce(),
 ) {
+    item_cell_with(axis, state, item_key, (spacing, false), shift, body);
+}
+
+/// Like [`item_cell`], with `spacing` before the item instead of after it when
+/// `spacing_first`, as in a list laid out from its end.
+#[track_caller]
+fn item_cell_with(
+    axis: Axis,
+    state: &LazyListState,
+    item_key: u64,
+    (spacing, spacing_first): (f32, bool),
+    shift: f32,
+    body: impl FnOnce(),
+) {
     let learn = state.clone();
     let mut modifier = match axis {
         Axis::Vertical => Modifier::new().fill_max_width(),
@@ -523,8 +799,11 @@ fn item_cell(
             Axis::Vertical => Modifier::new().fill_max_width(),
             Axis::Horizontal => Modifier::new().fill_max_height(),
         };
+        if spacing_first && spacing > 0.0 {
+            gap(axis, spacing);
+        }
         stack_with(across, body);
-        if spacing > 0.0 {
+        if !spacing_first && spacing > 0.0 {
             gap(axis, spacing);
         }
     });
@@ -701,15 +980,20 @@ fn list_impl<K: Hash>(
             state.scroll.jump_to(offset);
         }
 
-        let first = item_at(&new_tops, offset).min(count);
+        let seen = if content.reverse_layout {
+            offset.min((new_tops[count] - viewport).max(0.0))
+        } else {
+            offset
+        };
+        let first = item_at(&new_tops, seen).min(count);
         let last = new_tops
-            .partition_point(|top| *top < offset + viewport)
+            .partition_point(|top| *top < seen + viewport)
             .min(count);
         let first = first.saturating_sub(1);
         let last = (last + 1).min(count);
         if let Some(request) = state.inner.request.get() {
             let target = match request {
-                Request::Item(index, _) => index,
+                Request::Item(index, _) | Request::At(index, _) => index,
                 Request::End => usize::MAX,
             };
             let heights = state.inner.heights.borrow();
@@ -729,13 +1013,40 @@ fn list_impl<K: Hash>(
             .get()
             .is_some_and(|until| frame_clock().now() < until);
         let scroll_modifier = match axis {
-            Axis::Vertical => modifier.vertical_scroll(&state.scroll),
-            Axis::Horizontal => modifier.horizontal_scroll(&state.scroll),
+            Axis::Vertical => modifier.vertical_scroll_with(&state.scroll, content.reverse_layout),
+            Axis::Horizontal => {
+                modifier.horizontal_scroll_with(&state.scroll, content.reverse_layout)
+            }
         };
 
+        let composed = composed_items(&keys, first, last, &state.inner.pinned.borrow());
+
+        if content.reverse_layout {
+            let cells = Cells {
+                axis,
+                state,
+                tops: &new_tops,
+                spacing: content.spacing,
+                padding_end: content.padding_end,
+                animate_item: content.animate_item,
+                sliding,
+                held,
+            };
+            along(axis, scroll_modifier, || {
+                reversed_items(&cells, &keys, &composed, &item)
+            });
+            return;
+        }
         along(axis, scroll_modifier, || {
-            gap(axis, new_tops[first]);
-            for (index, &item_key) in keys.iter().enumerate().take(last).skip(first) {
+            let mut end = 0.0;
+            for &index in &composed {
+                let item_key = keys[index];
+                gap(axis, new_tops[index] - end);
+                end = if index + 1 == count {
+                    new_tops[count] - content.padding_end
+                } else {
+                    new_tops[index + 1]
+                };
                 key(item_key, || {
                     let shift = match content.animate_item {
                         Some(spec) => slide_shift(new_tops[index], spec, sliding, held),
@@ -746,17 +1057,99 @@ fn list_impl<K: Hash>(
                     } else {
                         0.0
                     };
-                    item_cell(axis, state, item_key, spacing, shift, || item(index));
+                    let container = PinnableContainer {
+                        state: state.clone(),
+                        key: item_key,
+                    };
+                    item_cell(axis, state, item_key, spacing, shift, || {
+                        LOCAL_PINNABLE_CONTAINER.provide(Some(container), || item(index))
+                    });
                 });
             }
-            let composed_end = if last == count {
-                new_tops[count] - content.padding_end
-            } else {
-                new_tops[last]
-            };
-            gap(axis, new_tops[count] - composed_end);
+            gap(axis, new_tops[count] - end);
         });
     });
+}
+
+/// The items a list composes, in order: those from `first` up to `last`, and those
+/// outside them that are pinned.
+fn composed_items(
+    keys: &[u64],
+    first: usize,
+    last: usize,
+    pinned: &HashMap<u64, usize>,
+) -> Vec<usize> {
+    if pinned.is_empty() {
+        return (first..last).collect();
+    }
+    let before = (0..first).filter(|index| pinned.contains_key(&keys[*index]));
+    let after = (last..keys.len()).filter(|index| pinned.contains_key(&keys[*index]));
+    before.chain(first..last).chain(after).collect()
+}
+
+/// Where the items of a list composing go and how they move: what
+/// [`reversed_items`] needs besides the items themselves.
+struct Cells<'a> {
+    /// Which way the list scrolls.
+    axis: Axis,
+    /// The state the items report their lengths to.
+    state: &'a LazyListState,
+    /// The near edge of each item counted from the start of the list, and, last, the
+    /// length of the list.
+    tops: &'a [f32],
+    /// The space between one item and the next.
+    spacing: f32,
+    /// The space after the last item, which the length of the list counts.
+    padding_end: f32,
+    /// How items slide to new places, if they do.
+    animate_item: Option<AnimationSpec>,
+    /// Whether items are sliding now.
+    sliding: bool,
+    /// How far the list scrolled to keep the view still.
+    held: f32,
+}
+
+/// Emits the items `composed` (ascending indexes into `keys`) of a list laid out from
+/// its end: the last of them first, each after the space between it and the one
+/// drawn before, then the space from the first item to the end of the list.
+#[track_caller]
+fn reversed_items(cells: &Cells<'_>, keys: &[u64], composed: &[usize], item: &impl Fn(usize)) {
+    let count = keys.len();
+    let mut drawn_to = cells.tops[count];
+    for &index in composed.iter().rev() {
+        let item_key = keys[index];
+        let end = if index + 1 == count {
+            cells.tops[count] - cells.padding_end
+        } else {
+            cells.tops[index + 1]
+        };
+        gap(cells.axis, drawn_to - end);
+        drawn_to = cells.tops[index];
+        key(item_key, || {
+            let shift = match cells.animate_item {
+                Some(spec) => -slide_shift(cells.tops[index], spec, cells.sliding, cells.held),
+                None => 0.0,
+            };
+            let spacing = if index + 1 < count {
+                cells.spacing
+            } else {
+                0.0
+            };
+            let container = PinnableContainer {
+                state: cells.state.clone(),
+                key: item_key,
+            };
+            item_cell_with(
+                cells.axis,
+                cells.state,
+                item_key,
+                (spacing, true),
+                shift,
+                || LOCAL_PINNABLE_CONTAINER.provide(Some(container), || item(index)),
+            );
+        });
+    }
+    gap(cells.axis, drawn_to);
 }
 
 /// Which header a list shows pinned at its top, and how far the next header

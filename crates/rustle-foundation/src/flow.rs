@@ -2,7 +2,7 @@ use rustle_geometry::{Offset, Size};
 use rustle_ui::{Children, Layout, LayoutResult, Modifier, is_rtl, layout};
 use rustle_unit::Constraints;
 
-use crate::linear::{Arrangement, arrange};
+use crate::linear::{Alignment, Arrangement, arrange};
 
 /// How a [`flow_row_with`] or [`flow_column_with`] fills its lines.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,8 +16,13 @@ pub struct FlowOptions {
     /// The most children in one line; a longer run wraps even if it would fit.
     pub max_items_per_line: Option<usize>,
     /// How the space left in a line is spread, when the container is bounded.
-    /// `SpacedBy` is the same as `Start`: spacing is `main_spacing`.
+    /// `SpacedBy` is the same as `Start`, and `SpacedByAligned` places the line by its
+    /// alignment: spacing is `main_spacing`.
     pub arrangement: Arrangement,
+    /// Where each child sits across its line when it is shorter than the line, as
+    /// Compose's `FlowRow` `itemVerticalAlignment` and `FlowColumn`
+    /// `itemHorizontalAlignment` place them.
+    pub item_alignment: Alignment,
 }
 
 impl FlowOptions {
@@ -30,6 +35,7 @@ impl FlowOptions {
             max_lines: None,
             max_items_per_line: None,
             arrangement: Arrangement::Start,
+            item_alignment: Alignment::Start,
         }
     }
 
@@ -42,6 +48,13 @@ impl FlowOptions {
     /// Puts at most `max_items` children in a line.
     pub fn max_items_per_line(mut self, max_items: usize) -> Self {
         self.max_items_per_line = Some(max_items);
+        self
+    }
+
+    /// Places each child across its line by `alignment`: vertically in a flow row,
+    /// horizontally in a flow column.
+    pub fn item_alignment(mut self, alignment: Alignment) -> Self {
+        self.item_alignment = alignment;
         self
     }
 
@@ -357,17 +370,25 @@ impl Layout for Flow {
             };
             let (start, extra) = match self.options.arrangement {
                 Arrangement::SpacedBy(_) => (0.0, 0.0),
+                aligned @ Arrangement::SpacedByAligned(..) => {
+                    (arrange(aligned, free, line.len()).0, 0.0)
+                }
                 other => arrange(other, free, line.len()),
             };
             let mut main = start;
             for index in line {
-                let (length, _) = sizes[*index];
+                let (length, cross) = sizes[*index];
                 let along = if self.rtl && !self.vertical {
                     main_size - main - length
                 } else {
                     main
                 };
-                let offset = self.join(along, cross_offset);
+                let across = match self.options.item_alignment {
+                    Alignment::Start => 0.0,
+                    Alignment::Center => (line_cross - cross) / 2.0,
+                    Alignment::End => line_cross - cross,
+                };
+                let offset = self.join(along, cross_offset + across);
                 positions[*index] = Offset::new(offset.width, offset.height);
                 main += length + self.options.main_spacing + extra;
             }
