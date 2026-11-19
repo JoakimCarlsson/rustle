@@ -14,7 +14,7 @@ use rustle_ui::Node;
 use winit::dpi::LogicalSize;
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::Fullscreen;
-use winit::window::{Window, WindowAttributes};
+use winit::window::{Window, WindowAttributes, WindowLevel};
 
 /// The appearance a window is given, whatever the system prefers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -107,6 +107,10 @@ pub struct WindowOptions {
     /// The shadow the window casts around its frame while it floats, when it draws its own
     /// frame without the system's decorations. See [`WindowShadow`](crate::WindowShadow).
     pub shadow: Option<crate::WindowShadow>,
+    /// Whether the window stays in front of every window that is not also kept in front:
+    /// Compose's `alwaysOnTop`. Where the desktop decides itself, as on Wayland, it may be
+    /// ignored.
+    pub always_on_top: bool,
 }
 
 impl Default for WindowOptions {
@@ -131,6 +135,7 @@ impl Default for WindowOptions {
             parent: None,
             closes_itself: false,
             shadow: None,
+            always_on_top: false,
         }
     }
 }
@@ -232,6 +237,12 @@ impl WindowOptions {
         self
     }
 
+    /// Sets whether the window stays in front of the other windows.
+    pub fn with_always_on_top(mut self, always_on_top: bool) -> Self {
+        self.always_on_top = always_on_top;
+        self
+    }
+
     /// Makes the window close when the user closes it.
     pub fn with_closes_itself(mut self, closes_itself: bool) -> Self {
         self.closes_itself = closes_itself;
@@ -250,6 +261,11 @@ impl WindowOptions {
             .with_transparent(self.transparent)
             .with_theme(self.theme.map(WindowTheme::winit))
             .with_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)))
+            .with_window_level(if self.always_on_top {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            })
             .with_surface_size(LogicalSize::new(self.size.0, self.size.1))
             .with_min_surface_size(LogicalSize::new(self.min_size.0, self.min_size.1));
         let attributes = match self.position {

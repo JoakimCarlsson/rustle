@@ -4,6 +4,7 @@ use crate::color::*;
 use crate::effect::*;
 use crate::image::*;
 use crate::path::*;
+use crate::svg::*;
 
 /// An outline drawn inside the edge of a rectangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -252,6 +253,16 @@ pub enum DrawCommand {
         mask: ImageData,
         color: Color,
     },
+    /// An SVG document drawn over `rect`, at `rect`'s size in physical pixels so it stays sharp
+    /// (see [`SvgPainter`]), faded to `opacity` from 0 (invisible) to 1 (as is): in its own
+    /// colors, or, with a `tint`, as a coverage mask filled with that color, as Compose's
+    /// `ColorFilter.tint(color)` draws a painter.
+    Svg {
+        rect: Rect,
+        painter: SvgPainter,
+        tint: Option<Color>,
+        opacity: f32,
+    },
     /// Draws everything until the matching `PopLayer` as one picture, then puts
     /// it on what is below turned `rotation` radians clockwise and scaled by
     /// `scale` about the center of `rect`, and faded to `alpha`.
@@ -326,6 +337,7 @@ impl DrawCommand {
                 }
             }
             Self::Image { opacity, .. } => *opacity *= alpha.max(0.0),
+            Self::Svg { opacity, .. } => *opacity *= alpha.max(0.0),
             Self::PushEffect { effect, .. } => effect.alpha *= alpha.max(0.0),
             Self::PushLayer { alpha: layer, .. } => *layer *= alpha.max(0.0),
             Self::Shader { .. }
@@ -357,6 +369,7 @@ impl DrawCommand {
             | Self::Shadow { rect, .. }
             | Self::Image { rect, .. }
             | Self::Mask { rect, .. }
+            | Self::Svg { rect, .. }
             | Self::Path { rect, .. }
             | Self::PushClip { rect }
             | Self::PushRoundedClip { rect, .. }

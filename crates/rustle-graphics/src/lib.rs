@@ -5,9 +5,11 @@ mod draw;
 mod effect;
 mod image;
 mod path;
+mod svg;
 
 pub use color::*;
 pub use draw::*;
 pub use effect::*;
 pub use image::*;
 pub use path::*;
+pub use svg::*;

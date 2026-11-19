@@ -135,6 +135,20 @@ fn options_become_window_attributes() {
     ));
 }
 
+/// A window kept in front opens at the level that keeps it there; others at the normal one.
+#[test]
+fn always_on_top_becomes_the_window_level() {
+    let level = |options: WindowOptions| options.attributes(None).window_level;
+    assert_eq!(
+        level(WindowOptions::new("Picker").with_always_on_top(true)),
+        winit::window::WindowLevel::AlwaysOnTop
+    );
+    assert_eq!(
+        level(WindowOptions::new("Plain")),
+        winit::window::WindowLevel::Normal
+    );
+}
+
 #[test]
 fn a_window_is_created_hidden_so_the_accessibility_adapter_comes_first() {
     for visible in [true, false] {

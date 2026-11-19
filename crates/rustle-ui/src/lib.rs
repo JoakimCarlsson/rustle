@@ -31,7 +31,7 @@ pub use canvas::Canvas;
 pub use cursor::CursorIcon;
 pub use drag_and_drop::{
     DragAndDropEvent, DragAndDropSourceRegion, DragAndDropTarget, DragAndDropTargetRegion,
-    DragAndDropTransferData, ShouldStartFn, TransferDataFn,
+    DragAndDropTransferData, DragData, ShouldStartFn, TransferDataFn,
 };
 pub use gesture::{
     AnchoredDraggableState, Axis, DraggableState, NestedScrollConnection, PointerId, PointerInput,

@@ -5,7 +5,7 @@
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::{
     Border, Color, DrawCommand, FontFamily, ImageData, LayerEffect, Path, ShaderBrush, StyledSpan,
-    TextAlign,
+    SvgPainter, TextAlign,
 };
 use rustle_text::{Affinity, TextLayout, TextSpan, TextStyle};
 
@@ -114,6 +114,28 @@ impl Canvas {
             rect: Self::rect_at(x, y, width, height),
             image: image.clone(),
             corner_radius,
+            opacity,
+        });
+    }
+
+    /// The SVG document `painter` stretched over a rectangle and drawn at its size in physical
+    /// pixels, faded to `opacity` from 0 (invisible) to 1 (as is): in its own colors, or filled
+    /// with `tint` where it covers, as Compose's `Painter.draw(size, alpha, colorFilter)` with
+    /// `ColorFilter.tint(color)`.
+    pub fn svg(
+        &mut self,
+        painter: &SvgPainter,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        tint: Option<Color>,
+        opacity: f32,
+    ) {
+        self.commands.push(DrawCommand::Svg {
+            rect: Self::rect_at(x, y, width, height),
+            painter: painter.clone(),
+            tint,
             opacity,
         });
     }

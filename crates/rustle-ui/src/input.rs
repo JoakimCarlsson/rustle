@@ -677,7 +677,9 @@ pub trait Clipboard {
     }
 }
 
-/// Installs the clipboard text editing uses. The host does this at startup.
+/// Installs the clipboard text editing uses. A window or embedded interface installs the
+/// system clipboard when it opens, unless one was installed before, so a program or a test
+/// that installs its own first, such as a fake kept in memory, keeps it.
 pub fn set_clipboard(clipboard: Rc<dyn Clipboard>) {
     CLIPBOARD.with(|current| *current.borrow_mut() = Some(clipboard));
 }

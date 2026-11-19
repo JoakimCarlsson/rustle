@@ -57,7 +57,7 @@ pub use popup::{
 pub use sized::sized_box;
 pub use text::{
     LOCAL_SYSTEM_DARK, LOCAL_TEXT_STYLE, image, is_system_in_dark_theme, mask_image, rich_text,
-    rich_text_with, text, text_styled, text_with,
+    rich_text_with, svg_image, text, text_styled, text_with,
 };
 pub use text::{TextOverflow, basic_text};
 pub use viewport::{viewport, viewport_with};

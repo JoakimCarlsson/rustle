@@ -5,7 +5,7 @@
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::{
     BlendMode, Color, ColorFilter, DrawCommand, FontFamily, ImageData, ImageKey, LayerEffect, Path,
-    PathCommand, ShaderBrush, TextAlign, TextWrap,
+    PathCommand, ShaderBrush, SvgPainter, TextAlign, TextWrap,
 };
 
 use crate::Renderer;
@@ -868,6 +868,61 @@ fn a_mask_is_filled_with_its_color_by_coverage() {
         "the color's alpha fades the mask: {:?}",
         [r, g, b]
     );
+}
+
+/// A 4 by 4 SVG document: red over its top half, nothing below.
+const TOP_HALF_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="2" fill="#ff0000"/></svg>"##;
+
+/// A 4 by 4 SVG document in red stripes one unit wide: the first and third columns.
+const STRIPES_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="1" height="4" fill="#ff0000"/><rect x="2" width="1" height="4" fill="#ff0000"/></svg>"##;
+
+#[test]
+fn an_svg_is_drawn_in_its_colors_or_tinted() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    let painter = SvgPainter::from_str(TOP_HALF_SVG).unwrap();
+    let own = [DrawCommand::Svg {
+        rect: area(8.0, 8.0, 16.0, 16.0),
+        painter: painter.clone(),
+        tint: None,
+        opacity: 1.0,
+    }];
+    let picture = draw(&mut renderer, &own);
+    picture.expect(16, 12, [255, 0, 0, 255], 2);
+    picture.expect(16, 20, BACKGROUND, 2);
+
+    let tinted = [DrawCommand::Svg {
+        rect: area(8.0, 8.0, 16.0, 16.0),
+        painter,
+        tint: Some(GREEN),
+        opacity: 1.0,
+    }];
+    let picture = draw(&mut renderer, &tinted);
+    picture.expect(16, 12, [0, 255, 0, 255], 2);
+    picture.expect(16, 20, BACKGROUND, 2);
+}
+
+#[test]
+fn an_svg_is_drawn_at_its_physical_size() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    let commands = [DrawCommand::Svg {
+        rect: area(10.0, 10.0, 4.0, 4.0),
+        painter: SvgPainter::from_str(STRIPES_SVG).unwrap(),
+        tint: None,
+        opacity: 1.0,
+    }];
+    let (width, _, pixels) = renderer.snapshot(&commands, 2.0).unwrap();
+    let picture = Picture { width, pixels };
+    for (column, red) in [true, true, false, false, true, true, false, false]
+        .into_iter()
+        .enumerate()
+    {
+        let expected = if red { [255, 0, 0, 255] } else { BACKGROUND };
+        picture.expect(20 + column as u32, 24, expected, 2);
+    }
 }
 
 /// A coverage mask of `size` pixels square in stripes: every even column covered, every odd

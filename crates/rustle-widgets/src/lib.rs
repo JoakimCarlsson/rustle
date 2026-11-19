@@ -42,7 +42,7 @@ pub use display::{BadgeStyle, avatar, badge, chip, pill};
 pub use feedback::{
     TooltipDefaults, TooltipState, remember_tooltip_state, snackbar, tooltip, tooltip_box,
 };
-pub use icons::icon;
+pub use icons::{icon, svg_icon};
 pub use inputs::{select_field, text_area, text_field, text_field_focused};
 pub use layout::{
     CardColors, CardDefaults, DividerDefaults, ScaffoldPadding, ScaffoldSlots, card, card_header,

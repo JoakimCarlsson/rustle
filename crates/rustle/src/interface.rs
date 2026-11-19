@@ -84,6 +84,8 @@ pub(crate) struct Interface {
     /// The press on a `drag_and_drop_source` and the drag it became, until the button is
     /// released.
     pub(crate) drag_and_drop: Option<crate::drag_and_drop::DragAndDrop>,
+    /// Files from another application dragged over the area, until they are let go or leave.
+    pub(crate) file_drag_and_drop: Option<crate::drag_and_drop::FileDragAndDrop>,
     pub(crate) modifiers: Modifiers,
     /// When and where the primary button last went down, and how many in a row.
     pub(crate) last_press: Option<(Instant, Offset, u32)>,
@@ -134,6 +136,7 @@ impl Interface {
         mem::swap(&mut self.dragging, &mut other.dragging);
         mem::swap(&mut self.carrying, &mut other.carrying);
         mem::swap(&mut self.drag_and_drop, &mut other.drag_and_drop);
+        mem::swap(&mut self.file_drag_and_drop, &mut other.file_drag_and_drop);
         mem::swap(&mut self.last_press, &mut other.last_press);
         mem::swap(&mut self.pointers, &mut other.pointers);
         mem::swap(&mut self.primary_contact, &mut other.primary_contact);
@@ -294,14 +297,6 @@ impl Interface {
             }
         }
         taken
-    }
-
-    /// A file was dropped at `point`; it goes to the file drop area there, if any.
-    pub(crate) fn file_dropped_at(&mut self, point: Offset, path: std::path::PathBuf) {
-        if let Some(region) = self.display.file_drop_at(point) {
-            let on_drop = Rc::clone(&region.on_drop);
-            on_drop(path);
-        }
     }
 
     /// A pinch gesture changed the scale by `delta` where the pointer is.

@@ -131,7 +131,7 @@ impl Embedded {
     ) -> Self {
         let dark = Rc::new(Cell::new(true));
         let wake: Waker = Arc::new(wake);
-        rustle_ui::set_clipboard(Rc::new(input::SystemClipboard::new()));
+        input::install_system_clipboard();
         let mut composition = composition_of(root, &dark, &wake);
         composition.compose();
         let mut ui = Interface::new();
@@ -401,22 +401,42 @@ impl Embedded {
         used || (self.ui.focused.is_some() && typed)
     }
 
-    /// Whether the area has a file drop area at `position`, in logical pixels from its top-left
-    /// corner, so a host following a drag of files from another application can tell the
-    /// desktop whether letting go there would do anything.
+    /// Whether files a drag from another application holds at `position`, in logical pixels
+    /// from the area's top-left corner, would be taken there, by a
+    /// [`drag_and_drop_target`](crate::Modifier::drag_and_drop_target) that accepts a
+    /// [`DragData::FilesList`](crate::DragData::FilesList) or a file drop area, so a host
+    /// following the drag can tell the desktop whether letting go there would do anything.
     pub fn takes_files_at(&self, position: Offset) -> bool {
-        self.ui.display.file_drop_at(position).is_some()
+        self.ui.takes_files_at(position)
     }
 
-    /// Files a drag from another application let go of at `position`, handed to the file drop
-    /// area there one by one. Returns whether there was one to take them.
+    /// Files a drag from another application holds are at `position`: the drop targets that
+    /// accept them hear the drag started, the first time, and then entered, moved over and
+    /// exited as with a drag inside the area. Returns whether letting go there would be taken.
+    pub fn files_dragged_over(&mut self, position: Offset) -> bool {
+        let taken = self.ui.files_dragged_over(position);
+        self.ui.after_input();
+        taken
+    }
+
+    /// The drag of files from another application left the area or was given up: the drop
+    /// targets that heard of it are told it ended.
+    pub fn files_drag_left(&mut self) {
+        self.ui.files_drag_left();
+        self.ui.after_input();
+    }
+
+    /// Files a drag from another application let go of at `position`, handed to the drop
+    /// target there that accepts them, all in one
+    /// [`DragData::FilesList`](crate::DragData::FilesList), or else to the file drop area there
+    /// one by one. Returns whether there was one to take them.
     pub fn files_dropped(&mut self, position: Offset, paths: Vec<std::path::PathBuf>) -> bool {
         if !self.takes_files_at(position) {
+            self.ui.files_drag_left();
+            self.ui.after_input();
             return false;
         }
-        for path in paths {
-            self.ui.file_dropped_at(position, path);
-        }
+        self.ui.files_let_go(position, paths);
         self.ui.apply_focus_request();
         self.ui.after_input();
         true

@@ -2,6 +2,7 @@
 //! with their `DragAndDropTarget` callbacks.
 
 use std::any::Any;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Rect};
@@ -26,6 +27,17 @@ impl DragAndDropTransferData {
     }
 }
 
+/// What a drag from another application carries, as the payload of the
+/// [`DragAndDropEvent`]s its targets are told: Compose's `DragData`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DragData {
+    /// Files of this machine: Compose's `DragData.FilesList`. The desktop hands the list over
+    /// only once the files are let go, so it is empty in every event before `on_drop`, and
+    /// holds the paths, in the order the other application gave them, in the one `on_drop`
+    /// is given.
+    FilesList(Vec<PathBuf>),
+}
+
 /// A moment of a drag and drop, as a target sees it: Compose's `DragAndDropEvent`.
 #[derive(Clone)]
 pub struct DragAndDropEvent {
@@ -42,9 +54,17 @@ impl DragAndDropEvent {
     pub fn payload<T: Any>(&self) -> Option<&T> {
         self.payload.downcast_ref()
     }
+
+    /// What a drag from another application carries, or `None` for a drag that started in
+    /// the window: Compose's `DragAndDropEvent.dragData()`.
+    pub fn drag_data(&self) -> Option<&DragData> {
+        self.payload()
+    }
 }
 
-/// What a drop target is told during a drag and drop: Compose's `DragAndDropTarget`. Every
+/// What a drop target is told during a drag and drop: Compose's `DragAndDropTarget`. The drag
+/// started either from a [`drag_and_drop_source`](Modifier::drag_and_drop_source) in the window
+/// or in another application, whose payload is a [`DragData`]. Every
 /// target that said yes to a drag when it started hears `on_started` and `on_ended`; the
 /// topmost of them under the pointer hears `on_entered`, `on_moved` and `on_exited` as the
 /// pointer comes, moves over it and leaves, and `on_drop` when the button is let go over it.

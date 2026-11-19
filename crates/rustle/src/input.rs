@@ -32,6 +32,14 @@ impl SystemClipboard {
     }
 }
 
+/// Installs the system clipboard as the one text editing uses, unless the program installed
+/// its own with [`set_clipboard`](rustle_ui::set_clipboard) first, such as a test's fake.
+pub(crate) fn install_system_clipboard() {
+    if rustle_ui::clipboard().is_none() {
+        rustle_ui::set_clipboard(std::rc::Rc::new(SystemClipboard::new()));
+    }
+}
+
 impl Clipboard for SystemClipboard {
     fn text(&self) -> Option<String> {
         self.with(|clipboard| clipboard.get_text().ok())

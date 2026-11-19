@@ -179,8 +179,8 @@ impl Images {
             .retain(|_, cached| frame - cached.last_used < 120);
     }
 
-    /// The instance that draws `command` if it is a picture or a coverage mask, uploading the
-    /// texture if new.
+    /// The instance that draws `command` if it is a picture, a coverage mask or an SVG document
+    /// (drawn at its area's size in physical pixels), uploading the texture if new.
     pub(crate) fn instance(
         &mut self,
         device: &wgpu::Device,
@@ -196,19 +196,41 @@ impl Images {
                 opacity,
             } => (
                 *rect,
-                image,
+                image.clone(),
                 [corner_radius * scale, *opacity, 0.0, 0.0],
                 [0.0; 4],
             ),
-            DrawCommand::Mask { rect, mask, color } => {
-                (*rect, mask, [0.0, 1.0, 1.0, 0.0], self.channels(*color))
+            DrawCommand::Mask { rect, mask, color } => (
+                *rect,
+                mask.clone(),
+                [0.0, 1.0, 1.0, 0.0],
+                self.channels(*color),
+            ),
+            DrawCommand::Svg {
+                rect,
+                painter,
+                tint,
+                opacity,
+            } => {
+                let picture = painter.rasterize(
+                    (rect.size.width * scale).round() as u32,
+                    (rect.size.height * scale).round() as u32,
+                )?;
+                match tint {
+                    Some(tint) => {
+                        let mut tint = *tint;
+                        tint.a = (f32::from(tint.a) * opacity.clamp(0.0, 1.0)).round() as u8;
+                        (*rect, picture, [0.0, 1.0, 1.0, 0.0], self.channels(tint))
+                    }
+                    None => (*rect, picture, [0.0, *opacity, 0.0, 0.0], [0.0; 4]),
+                }
             }
             _ => return None,
         };
-        self.ensure(device, queue, image);
-        let (origin, size) = placement(rect, image, scale);
+        self.ensure(device, queue, &image);
+        let (origin, size) = placement(rect, &image, scale);
         Some((
-            slot(image),
+            slot(&image),
             Instance {
                 origin,
                 size,

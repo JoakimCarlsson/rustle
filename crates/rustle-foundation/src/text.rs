@@ -1,4 +1,4 @@
-use rustle_graphics::{Color, ImageData};
+use rustle_graphics::{Color, ImageData, SvgPainter};
 use rustle_runtime::CompositionLocal;
 use rustle_text::{TextSpan, TextStyle};
 use rustle_ui::{Content, ContentScale, Modifier, Node, canvas, emit};
@@ -104,6 +104,48 @@ pub fn mask_image(modifier: Modifier, mask: &ImageData, color: Color) {
         let (width, height) = (canvas.width(), canvas.height());
         canvas.mask(&mask, 0.0, 0.0, width, height, color);
     });
+}
+
+/// Emits the SVG document `painter`, as Compose's `Image(painter, contentScale, colorFilter)`:
+/// in its own colors, or filled with `tint` where it covers, as `ColorFilter.tint(color)` does.
+///
+/// It is the document's own size in logical pixels unless `modifier` sizes it; `scale` says
+/// how the document fills an area of a different shape. The document is drawn at the size it
+/// takes on screen in physical pixels, so it stays sharp at any size and scale factor.
+#[track_caller]
+pub fn svg_image(
+    modifier: Modifier,
+    painter: &SvgPainter,
+    scale: ContentScale,
+    tint: Option<Color>,
+) {
+    let natural = painter.intrinsic_size();
+    let painter = painter.clone();
+    canvas(modifier.size(natural.0, natural.1), move |canvas| {
+        let (width, height) = (canvas.width(), canvas.height());
+        let (drawn_width, drawn_height) = fitted(natural, (width, height), scale);
+        let (x, y) = ((width - drawn_width) / 2.0, (height - drawn_height) / 2.0);
+        let crop = scale == ContentScale::Crop;
+        if crop {
+            canvas.push_clip(0.0, 0.0, width, height);
+        }
+        canvas.svg(&painter, x, y, drawn_width, drawn_height, tint, 1.0);
+        if crop {
+            canvas.pop_clip();
+        }
+    });
+}
+
+/// The size something `natural` in size is drawn at in an area of `area`, as `scale` says.
+fn fitted(natural: (f32, f32), area: (f32, f32), scale: ContentScale) -> (f32, f32) {
+    let (width, height) = (natural.0.max(f32::EPSILON), natural.1.max(f32::EPSILON));
+    let fit = (area.0 / width).min(area.1 / height);
+    let cover = (area.0 / width).max(area.1 / height);
+    match scale {
+        ContentScale::Stretch => area,
+        ContentScale::Fit => (width * fit, height * fit),
+        ContentScale::Crop => (width * cover, height * cover),
+    }
 }
 
 /// Emits text made of runs in their own colors, weights, fonts, slants, sizes and

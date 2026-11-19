@@ -230,7 +230,7 @@ impl Renderer {
                         scale_factor,
                     );
                 }
-                DrawCommand::Image { .. } | DrawCommand::Mask { .. } => {
+                DrawCommand::Image { .. } | DrawCommand::Mask { .. } | DrawCommand::Svg { .. } => {
                     // A picture after text, an outline or a rectangle must paint over it.
                     if !current.texts.is_empty()
                         || !current.quads.is_empty()
@@ -576,6 +576,7 @@ fn bounds(command: &DrawCommand) -> Option<(f32, f32, f32, f32)> {
         | DrawCommand::Arc { rect, .. }
         | DrawCommand::Image { rect, .. }
         | DrawCommand::Mask { rect, .. }
+        | DrawCommand::Svg { rect, .. }
         | DrawCommand::Path { rect, .. } => around(rect, 2.0),
         DrawCommand::Shadow { rect, blur, .. } => around(rect, blur * 2.0 + 2.0),
         DrawCommand::BackdropBlur { rect, .. } => around(rect, 1.0),

@@ -1,7 +1,9 @@
 //! Files dragged onto a window from other applications, through winit's drag and drop: while
-//! a drag that offers files is over a window, it is accepted only where the window has a file
-//! drop area, so the desktop shows whether letting go there would do anything, and on a drop
-//! the files go to the area under the point.
+//! a drag that offers files is over a window, the drop targets that accept a
+//! [`DragData::FilesList`](rustle_ui::DragData::FilesList) follow it as they follow a drag
+//! inside the window, and it is accepted only where such a target or a file drop area is, so
+//! the desktop shows whether letting go there would do anything; on a drop the files go to
+//! the target or area under the point.
 
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -72,6 +74,7 @@ impl App {
                     .is_some_and(|drag| drag.id == *id && drag.fetch.is_none())
                 {
                     self.file_drag = None;
+                    self.file_drag_left(index);
                 }
             }
             WindowEvent::DataTransferReceived { id, serial, value } => {
@@ -104,7 +107,7 @@ impl App {
             ));
         }
         let (files, at) = (drag.files, drag.at);
-        let taken = files && at.is_some_and(|at| self.takes_files_at(index, at));
+        let taken = files && at.is_some_and(|at| self.files_over(index, at));
         let Some(drag) = self.file_drag.as_mut() else {
             return;
         };
@@ -125,7 +128,11 @@ impl App {
             .then(|| event_loop.fetch_data_transfer(id, &TypeHint::UriList).ok())
             .flatten();
         if drag.fetch.is_none() {
+            let window = drag.window;
             self.file_drag = None;
+            if let Some(index) = self.slot_of(window) {
+                self.file_drag_left(index);
+            }
         }
     }
 
@@ -164,23 +171,36 @@ impl App {
         }
     }
 
-    /// Whether the window in slot `index` has a file drop area at `at` that input may reach now.
-    pub(crate) fn takes_files_at(&mut self, index: usize, at: Offset) -> bool {
+    /// Follows files held at `at` over the window in slot `index` with its drop targets, and
+    /// says whether letting go there would be taken: never while a modal window blocks it.
+    fn files_over(&mut self, index: usize, at: Offset) -> bool {
         if self.blocking_modal(index).is_some() {
+            self.file_drag_left(index);
             return false;
         }
         self.activate(index);
-        self.ui.display.file_drop_at(at).is_some()
+        let taken = self.ui.files_dragged_over(at);
+        self.apply_effects();
+        taken
     }
 
-    /// Hands `paths`, dropped at `at` on the window in slot `index`, to the file drop area there.
+    /// Tells the drop targets of the window in slot `index` that the drag of files over it
+    /// ended without a drop.
+    fn file_drag_left(&mut self, index: usize) {
+        self.activate(index);
+        self.ui.files_drag_left();
+        self.apply_effects();
+    }
+
+    /// Hands `paths`, dropped at `at` on the window in slot `index`, to the drop target or file
+    /// drop area there.
     pub(crate) fn files_dropped(&mut self, index: usize, at: Offset, paths: Vec<PathBuf>) {
-        if !self.takes_files_at(index, at) {
+        if self.blocking_modal(index).is_some() {
+            self.file_drag_left(index);
             return;
         }
-        for path in paths {
-            self.ui.file_dropped_at(at, path);
-        }
+        self.activate(index);
+        self.ui.files_let_go(at, paths);
         self.apply_focus_request();
         self.apply_effects();
     }

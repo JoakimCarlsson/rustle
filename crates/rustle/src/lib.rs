@@ -50,6 +50,7 @@ pub use rustle_charts::{
     ChartStyle, Series, area_chart, bar_chart, bar_hover, chart_hover, donut_chart, line_chart,
     qr_code, sparkline,
 };
+pub use rustle_foundation::svg_image;
 pub use rustle_foundation::{
     Alignment, Arrangement, BoxAlignment, Canvas, ContentScale, ItemAlign,
     LOCAL_PINNABLE_CONTAINER, LOCAL_SCROLLBAR_STYLE, LOCAL_TEXT_SELECTION_COLORS, LOCAL_TEXT_STYLE,
@@ -107,6 +108,7 @@ pub use rustle_foundation::{
     lazy_vertical_staggered_grid,
 };
 pub use rustle_geometry::{Offset, Rect, Size};
+pub use rustle_graphics::SvgPainter;
 pub use rustle_graphics::TextWrap;
 pub use rustle_graphics::{
     BlendMode, Color, ColorFilter, DrawCommand, ImageData, ImageKey, LayerEffect, ShaderBrush,
@@ -133,10 +135,11 @@ pub use rustle_ui::{
     TaggedNode, clipboard, restartable, set_clipboard, skippable, subcompose_layout,
 };
 pub use rustle_ui::{
-    DragAndDropEvent, DragAndDropTarget, DragAndDropTransferData, LOCAL_VIEW_CONFIGURATION,
-    ViewConfiguration,
+    DragAndDropEvent, DragAndDropTarget, DragAndDropTransferData, DragData,
+    LOCAL_VIEW_CONFIGURATION, ViewConfiguration,
 };
 pub use rustle_unit::{Constraints, Dp, dp};
+pub use rustle_widgets::svg_icon;
 pub use rustle_widgets::{
     BadgeStyle, ButtonColors, ButtonDefaults, ButtonStyle, ColorScheme, ContentTransform,
     CornerSizes, EnterTransition, ExitTransition, Icon, MenuItem, PagerState, RippleConfiguration,

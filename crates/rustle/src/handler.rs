@@ -1,7 +1,6 @@
 //! The window's event handler: creating the window, and reacting to what happens to it.
 
 use std::process;
-use std::rc::Rc;
 use std::time::Instant;
 
 use rustle_geometry::Offset;
@@ -64,7 +63,7 @@ impl App {
             Err(error) => return self.fail(event_loop, error),
         };
         self.set_dark(state.window.theme() != Some(WindowTheme::Light));
-        rustle_ui::set_clipboard(Rc::new(input::SystemClipboard::new()));
+        input::install_system_clipboard();
         self.window = Some(state);
         self.register_main();
         self.relayout();
