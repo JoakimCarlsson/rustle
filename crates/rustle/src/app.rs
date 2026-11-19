@@ -141,11 +141,12 @@ pub fn run_with(options: WindowOptions, root: impl FnMut() + 'static) {
     }
     rustle_runtime::set_saver(Rc::new(saved::FileSaver::open()));
     let dark = Rc::new(Cell::new(true));
-    let provided = provided(root, Rc::clone(&dark));
+    let info = crate::window_info::WindowInfo::new();
+    let provided = provided(root, Rc::clone(&dark), info.clone());
     let result = EventLoop::new().and_then(|event_loop| {
         let proxy = event_loop.create_proxy();
         let _ = EXTERNAL_PROXY.set(proxy.clone());
-        let app = App::new(provided, dark, options, true, waker(proxy.clone()));
+        let app = App::new(provided, dark, info, options, true, waker(proxy.clone()));
         // A new composition is dirty, so the first wake-up also composes it.
         proxy.wake_up();
         event_loop.set_control_flow(ControlFlow::Wait);
@@ -157,14 +158,18 @@ pub fn run_with(options: WindowOptions, root: impl FnMut() + 'static) {
     }
 }
 
-/// Wraps `root` so it sees the main window's handle and the system appearance in `dark`.
+/// Wraps `root` so it sees the main window's handle, the system appearance in `dark`, and
+/// the window `info` describes, with its density.
 pub(crate) fn provided(
     mut root: impl FnMut() + 'static,
     dark: Rc<Cell<bool>>,
+    info: crate::window_info::WindowInfo,
 ) -> impl FnMut() + 'static {
     move || {
         crate::window::in_main_window(|| {
-            rustle_foundation::LOCAL_SYSTEM_DARK.provide(dark.get(), &mut root)
+            crate::window_info::provide_window(&info, || {
+                rustle_foundation::LOCAL_SYSTEM_DARK.provide(dark.get(), &mut root)
+            })
         })
     }
 }
@@ -172,6 +177,8 @@ pub(crate) fn provided(
 pub(crate) struct App {
     /// Whether the system is set to a dark appearance, as the root sees it.
     pub(crate) dark: Rc<Cell<bool>>,
+    /// What the root knows of the main window.
+    pub(crate) main_info: crate::window_info::WindowInfo,
     pub(crate) composition: Composition,
     pub(crate) started: Instant,
     /// What the window being served shows, and what input did to it.
@@ -185,7 +192,7 @@ pub(crate) struct App {
     pub(crate) requested: Receiver<(WindowId, Request)>,
     /// The files being dragged over a window, from the moment they enter it.
     pub(crate) file_drag: Option<FileDrag>,
-    pub(crate) window: Option<WindowState>,
+    pub(crate) window: Option<NativeWindow>,
     /// The registry key of the window the fields above belong to.
     pub(crate) key: u64,
     /// The state of every window. The active one's is in the fields above and its
@@ -196,7 +203,7 @@ pub(crate) struct App {
     pub(crate) error: Option<String>,
 }
 
-pub(crate) struct WindowState {
+pub(crate) struct NativeWindow {
     pub(crate) adapter: Adapter,
     pub(crate) renderer: Renderer,
     pub(crate) window: Arc<dyn Window>,
@@ -207,11 +214,13 @@ impl App {
     ///
     /// `wake` is called, from any thread, when state changed, a frame was requested or the
     /// platform's accessibility API asked for something, and must make the event loop call
-    /// [`App::woken`]. `native` says whether the application opens native windows, which
+    /// [`App::woken`]. `main_info` is what the root is told of the main window, kept up to
+    /// date here. `native` says whether the application opens native windows, which
     /// get accessibility adapters.
     pub(crate) fn new(
         root: impl FnMut() + 'static,
         dark: Rc<Cell<bool>>,
+        main_info: crate::window_info::WindowInfo,
         options: WindowOptions,
         native: bool,
         wake: impl Fn() + Clone + Send + Sync + 'static,
@@ -229,10 +238,13 @@ impl App {
         crate::window::set_wake(Rc::new(wake.clone()));
         composition.on_frame_request(wake);
         let phases = composition.phase_observer();
+        let started = Instant::now();
+        composition.set_time_source(move || started.elapsed());
         Self {
             dark,
+            main_info,
             composition,
-            started: Instant::now(),
+            started,
             ui: Interface {
                 phases: Some(phases),
                 ..Interface::new()
@@ -269,10 +281,15 @@ impl App {
         };
         let scale_factor = state.window.scale_factor() as f32;
         let size = state.window.surface_size();
-        let constraints = Constraints::loose(Size::new(
+        let logical = Size::new(
             size.width as f32 / scale_factor,
             size.height as f32 / scale_factor,
-        ));
+        );
+        let constraints = Constraints::loose(logical);
+        if let Some(info) = crate::window::window_info(self.key) {
+            info.set_size(logical);
+            info.set_density(scale_factor);
+        }
         let laid_out = self
             .composition
             .phase_observer()

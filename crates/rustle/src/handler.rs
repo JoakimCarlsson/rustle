@@ -70,23 +70,29 @@ impl App {
         self.sync_windows(event_loop);
     }
 
-    /// Waits for the next long press that is due, or for the next event.
+    /// Resumes the tasks whose delays ended and waits for the next long press or delay that
+    /// is due, or for the next event.
     pub(crate) fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.sync_windows(event_loop);
-        let Some((due, ..)) = &self.ui.long_press else {
-            event_loop.set_control_flow(ControlFlow::Wait);
-            return;
-        };
-        if Instant::now() >= *due {
-            if let Some((_, on_long_press, ..)) = self.ui.long_press.take() {
-                // The press has become a long press, so it is no longer a click.
-                self.ui.pressed = None;
-                on_long_press();
-            }
-            event_loop.set_control_flow(ControlFlow::Wait);
-        } else {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(*due));
+        if self.composition.run_timers(self.started.elapsed()) {
+            self.woken();
         }
+        let mut due = self.composition.next_timer().map(|at| self.started + at);
+        if let Some((pressed_until, ..)) = &self.ui.long_press {
+            if Instant::now() >= *pressed_until {
+                if let Some((_, on_long_press, ..)) = self.ui.long_press.take() {
+                    // The press has become a long press, so it is no longer a click.
+                    self.ui.pressed = None;
+                    on_long_press();
+                }
+            } else {
+                due = Some(due.map_or(*pressed_until, |at| at.min(*pressed_until)));
+            }
+        }
+        event_loop.set_control_flow(match due {
+            Some(at) => ControlFlow::WaitUntil(at),
+            None => ControlFlow::Wait,
+        });
     }
 
     /// Answers what the platform's accessibility API asked, composes and lays out again what
@@ -131,8 +137,19 @@ impl App {
             WindowEvent::SurfaceResized(size) => {
                 state.renderer.resize(size.width, size.height);
                 self.relayout();
+                self.observe_window_state();
             }
-            WindowEvent::ScaleFactorChanged { .. } => self.relayout(),
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.relayout();
+                self.observe_window_state();
+            }
+            WindowEvent::Moved(_) | WindowEvent::Occluded(_) => self.observe_window_state(),
+            WindowEvent::Focused(focused) => {
+                if let Some(info) = crate::window::window_info(self.key) {
+                    info.set_focused(focused);
+                }
+                self.observe_window_state();
+            }
             WindowEvent::PointerEntered {
                 position,
                 kind: WinitKind::Mouse | WinitKind::TabletTool(_) | WinitKind::Unknown,
@@ -223,6 +240,9 @@ impl App {
             WindowEvent::ThemeChanged(theme) => self.set_dark(theme == WindowTheme::Dark),
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.ui.modifiers = input::modifiers(modifiers.state());
+                if let Some(info) = crate::window::window_info(self.key) {
+                    info.set_modifiers(self.ui.modifiers);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let event = input::key_event(&event, self.ui.modifiers);

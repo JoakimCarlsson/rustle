@@ -269,6 +269,26 @@ pub trait ShapeModifier: Sized {
     fn clip_shape(self, shape: Shape) -> Self;
 }
 
+/// Shadows cast by a [`Shape`]: Compose's `Modifier.dropShadow(shape, shadow)`.
+pub trait ShadowModifier: Sized {
+    /// Casts `shadow` from `shape` behind the content: Compose's
+    /// `Modifier.dropShadow(shape, shadow)`. Chain one per layer for a shadow of several
+    /// layers, the first drawn lowest. The shadow follows a rounded rectangle: a shape whose
+    /// corners differ, or are cut, casts the shadow of a rectangle rounded by the mean of its
+    /// corners.
+    fn drop_shadow_shape(self, shape: Shape, shadow: rustle_graphics::Shadow) -> Self;
+}
+
+impl ShadowModifier for Modifier {
+    fn drop_shadow_shape(self, shape: Shape, shadow: rustle_graphics::Shadow) -> Self {
+        let radius = shape.uniform_radius().unwrap_or_else(|| match shape {
+            Shape::Rounded(sizes) | Shape::Cut(sizes) => sizes.array().iter().sum::<f32>() / 4.0,
+            Shape::Rectangle | Shape::Circle => 0.0,
+        });
+        self.drop_shadow_with(radius, shadow)
+    }
+}
+
 impl ShapeModifier for Modifier {
     fn background_shape(self, color: Color, shape: Shape) -> Self {
         match shape.uniform_radius() {

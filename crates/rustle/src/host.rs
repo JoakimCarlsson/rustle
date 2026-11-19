@@ -41,9 +41,10 @@ impl Host {
     ) -> Self {
         rustle_runtime::set_saver(Rc::new(saved::FileSaver::open()));
         let dark = Rc::new(Cell::new(true));
-        let provided = provided(root, Rc::clone(&dark));
+        let info = crate::window_info::WindowInfo::new();
+        let provided = provided(root, Rc::clone(&dark), info.clone());
         Self {
-            app: App::new(provided, dark, options, true, waker(proxy)),
+            app: App::new(provided, dark, info, options, true, waker(proxy)),
         }
     }
 

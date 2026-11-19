@@ -9,7 +9,10 @@ use rustle_text::{LineLayout, StyledSpan, TextLayout, TextMeasurer, TextStyle};
 use rustle_ui::{composition, display_list};
 use rustle_unit::Constraints;
 
-use super::{ProgressIndicatorDefaults, linear_progress_indicator_with};
+use super::{
+    ProgressIndicatorDefaults, circular_progress_indicator_with,
+    circular_progress_indicator_with_progress, linear_progress_indicator_with,
+};
 
 /// A measurer for a tree without text.
 struct NoText;
@@ -77,4 +80,50 @@ fn takes_default_size_unless_told() {
         placed(Modifier::new().size(100.0, 6.0)).size,
         Size::new(100.0, 6.0)
     );
+}
+
+/// The arcs a circular indicator made with `emit` draws, as (start, sweep, color red).
+fn arcs(emit: impl Fn() + 'static) -> Vec<(f32, f32, u8)> {
+    let mut composition = composition(emit);
+    composition.compose();
+    let window = Constraints::loose(Size::new(400.0, 100.0));
+    let list = display_list(composition.output().unwrap(), window, &mut NoText);
+    list.commands
+        .iter()
+        .filter_map(|command| match command {
+            rustle_graphics::DrawCommand::Arc {
+                start,
+                sweep,
+                color,
+                ..
+            } => Some((*start, *sweep, color.r)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A determinate ring draws its track and then its share from the top; an indeterminate one
+/// with no track draws only its arc.
+#[test]
+fn circular_indicators_draw_their_track_and_arc() {
+    let drawn = arcs(|| {
+        circular_progress_indicator_with_progress(
+            || 0.25,
+            Modifier::new(),
+            rustle_graphics::Color::rgb(255, 0, 0),
+            4.0,
+            rustle_graphics::Color::rgb(1, 1, 1),
+        );
+    });
+    assert_eq!(drawn, vec![(0.0, 1.0, 1), (0.0, 0.25, 255)]);
+    let spinning = arcs(|| {
+        circular_progress_indicator_with(
+            Modifier::new(),
+            rustle_graphics::Color::rgb(255, 0, 0),
+            4.0,
+            rustle_graphics::Color::TRANSPARENT,
+        );
+    });
+    assert_eq!(spinning.len(), 1);
+    assert_eq!(spinning[0].2, 255);
 }

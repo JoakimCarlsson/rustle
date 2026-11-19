@@ -9,7 +9,7 @@ use rustle_ui::{
 };
 
 use crate::interface::Interface;
-use crate::pointer::same_area;
+use crate::pointing::same_area;
 
 /// A pointer that is down on an area that watches the raw stream.
 pub(crate) struct ActivePointer {

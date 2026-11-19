@@ -64,14 +64,15 @@ pub use navigation::{
 };
 pub use progress::{
     ProgressIndicatorDefaults, circular_progress_indicator,
-    circular_progress_indicator_indeterminate, dashed_spinner, linear_progress_indicator,
+    circular_progress_indicator_indeterminate, circular_progress_indicator_with,
+    circular_progress_indicator_with_progress, dashed_spinner, linear_progress_indicator,
     linear_progress_indicator_with, progress_rings,
 };
 pub use ripple::{
     RippleConfiguration, RippleModifier, provide_ripple_configuration, ripple_configuration,
 };
 pub use rustle_icons::{Icon, phosphor};
-pub use shape::{BorderStroke, CornerSizes, Shape, ShapeModifier};
+pub use shape::{BorderStroke, CornerSizes, ShadowModifier, Shape, ShapeModifier};
 pub use theme::{
     ColorScheme, Shapes, Typography, absolute_tonal_elevation, color_scheme, content_color,
     content_color_for, dark_color_scheme, light_color_scheme, provide_content_color, shapes, theme,

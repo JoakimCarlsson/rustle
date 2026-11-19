@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use rustle_animation::{
-    Easing, animate_float_as_state, infinite_float, infinite_float_repeating, tween,
+    AnimationSpec, Easing, RepeatMode, animate_float_as_state, infinite_float,
+    infinite_float_repeating, infinite_repeatable, remember_infinite_transition, tween,
 };
 use rustle_foundation::{
     BoxAlignment, Modifier, Role, Semantics, spacer, stack_aligned, stack_with,
@@ -52,6 +53,127 @@ impl ProgressIndicatorDefaults {
     pub fn linear_track_color() -> rustle_graphics::Color {
         color_scheme().surface_variant
     }
+
+    /// How thick a circular indicator's ring is: Compose's `CircularStrokeWidth`, 4 dp.
+    pub const CIRCULAR_STROKE_WIDTH: f32 = 4.0;
+
+    /// How wide a circular indicator is unless its modifier says: Compose's 40 dp.
+    pub const CIRCULAR_INDICATOR_DIAMETER: f32 = 40.0;
+
+    /// The color of a circular indicator's ring: the theme's primary, as `circularColor`.
+    pub fn circular_color() -> rustle_graphics::Color {
+        color_scheme().primary
+    }
+
+    /// The track under an indeterminate circular indicator: none, as Compose's
+    /// `circularIndeterminateTrackColor`.
+    pub fn circular_indeterminate_track_color() -> rustle_graphics::Color {
+        rustle_graphics::Color::TRANSPARENT
+    }
+
+    /// The track under a determinate circular indicator: the theme's surface variant, as
+    /// `circularDeterminateTrackColor`.
+    pub fn circular_determinate_track_color() -> rustle_graphics::Color {
+        color_scheme().surface_variant
+    }
+}
+
+/// The ring a circular indicator draws in a canvas of `width` by `height`: a track all round in
+/// `track_color`, then `sweep` of the circle (0 to 1) from `start` degrees in `color`.
+fn draw_ring(
+    canvas: &mut rustle_foundation::Canvas,
+    stroke_width: f32,
+    track_color: rustle_graphics::Color,
+    color: rustle_graphics::Color,
+    start: f32,
+    sweep: f32,
+) {
+    let side = canvas.width().min(canvas.height());
+    let (x, y) = (canvas.width() / 2.0, canvas.height() / 2.0);
+    let radius = ((side - stroke_width) / 2.0).max(0.0);
+    if track_color.a > 0 {
+        canvas.arc(x, y, radius, stroke_width, 0.0, 1.0, track_color);
+    }
+    if sweep > 0.0 {
+        canvas.arc(x, y, radius, stroke_width, start, sweep, color);
+    }
+}
+
+/// Emits an indeterminate circular progress indicator, Compose's
+/// `CircularProgressIndicator(modifier, color, strokeWidth, trackColor)`: an arc in `color`,
+/// `stroke_width` thick over a ring in `track_color`, turning and growing and shrinking for as
+/// long as it is in the composition. Its angles are read when it is drawn, so it turns without
+/// composing again. Its size is what `modifier` says,
+/// [`ProgressIndicatorDefaults::CIRCULAR_INDICATOR_DIAMETER`] on a side where it says nothing.
+///
+/// For a spinner of another look, such as an icon that turns, animate an angle with
+/// `remember_infinite_transition` and draw it with `Modifier::rotate_with`.
+#[track_caller]
+pub fn circular_progress_indicator_with(
+    modifier: Modifier,
+    color: rustle_graphics::Color,
+    stroke_width: f32,
+    track_color: rustle_graphics::Color,
+) {
+    let transition = remember_infinite_transition();
+    let linear = |millis: u64, mode: RepeatMode| {
+        infinite_repeatable(
+            AnimationSpec::Tween {
+                duration: Duration::from_millis(millis),
+                easing: Easing::Linear,
+            },
+            mode,
+        )
+    };
+    let turn = transition.animate_float(0.0, 360.0, linear(1100, RepeatMode::Restart));
+    let grow = transition.animate_float(0.1, 0.75, linear(700, RepeatMode::Reverse));
+    rustle_foundation::canvas(
+        modifier.semantics(Semantics::new(Role::ProgressBar)).size(
+            ProgressIndicatorDefaults::CIRCULAR_INDICATOR_DIAMETER,
+            ProgressIndicatorDefaults::CIRCULAR_INDICATOR_DIAMETER,
+        ),
+        move |canvas| {
+            draw_ring(
+                canvas,
+                stroke_width,
+                track_color,
+                color,
+                turn.get(),
+                grow.get(),
+            );
+        },
+    );
+}
+
+/// Emits a determinate circular progress indicator, Compose's
+/// `CircularProgressIndicator(progress, modifier, color, strokeWidth, trackColor)`: a ring in
+/// `track_color` with the share `progress` reads, from 0 to 1, filled clockwise from the top
+/// in `color`. `progress` is read when the indicator is drawn. Its size is what `modifier`
+/// says, [`ProgressIndicatorDefaults::CIRCULAR_INDICATOR_DIAMETER`] on a side where it says
+/// nothing.
+#[track_caller]
+pub fn circular_progress_indicator_with_progress(
+    progress: impl Fn() -> f32 + 'static,
+    modifier: Modifier,
+    color: rustle_graphics::Color,
+    stroke_width: f32,
+    track_color: rustle_graphics::Color,
+) {
+    rustle_foundation::canvas(
+        modifier.semantics(Semantics::new(Role::ProgressBar)).size(
+            ProgressIndicatorDefaults::CIRCULAR_INDICATOR_DIAMETER,
+            ProgressIndicatorDefaults::CIRCULAR_INDICATOR_DIAMETER,
+        ),
+        move |canvas| {
+            let share = progress();
+            let share = if share.is_finite() {
+                share.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            draw_ring(canvas, stroke_width, track_color, color, 0.0, share);
+        },
+    );
 }
 
 /// Emits a determinate linear progress indicator as Compose's `LinearProgressIndicator(progress,

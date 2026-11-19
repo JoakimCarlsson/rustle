@@ -36,7 +36,7 @@ type Waker = Arc<dyn Fn() + Send + Sync>;
 
 /// A clock the host sets: the time of the frame [`Embedded::update`] runs, since a start the
 /// host chooses.
-type Clock = Box<dyn Fn() -> Duration>;
+type Clock = Rc<dyn Fn() -> Duration>;
 
 /// A rustle application inside a host that owns the window, the GPU device and the frame.
 ///
@@ -78,17 +78,20 @@ pub struct Embedded {
     started: Instant,
     clock: Option<Clock>,
     dark: Rc<Cell<bool>>,
+    info: crate::window_info::WindowInfo,
     wake: Waker,
     timing: UpdateTiming,
 }
 
-/// A composition of `root` that calls `wake` when state changed or a frame was requested.
+/// A composition of `root`, told the appearance in `dark` and the area `info` describes,
+/// that calls `wake` when state changed or a frame was requested.
 fn composition_of(
     root: impl FnMut() + 'static,
     dark: &Rc<Cell<bool>>,
+    info: &crate::window_info::WindowInfo,
     wake: &Waker,
 ) -> Composition {
-    let mut composition = rustle_ui::composition(provided(root, Rc::clone(dark)));
+    let mut composition = rustle_ui::composition(provided(root, Rc::clone(dark), info.clone()));
     let invalidated = Arc::clone(wake);
     composition.on_invalidate(move || invalidated());
     let requested = Arc::clone(wake);
@@ -130,9 +133,10 @@ impl Embedded {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         let dark = Rc::new(Cell::new(true));
+        let info = crate::window_info::WindowInfo::new();
         let wake: Waker = Arc::new(wake);
         input::install_system_clipboard();
-        let mut composition = composition_of(root, &dark, &wake);
+        let mut composition = composition_of(root, &dark, &info, &wake);
         composition.compose();
         let mut ui = Interface::new();
         ui.phases = Some(composition.phase_observer());
@@ -147,9 +151,32 @@ impl Embedded {
             started: Instant::now(),
             clock: None,
             dark,
+            info,
             wake,
             timing: UpdateTiming::default(),
         }
+        .timed()
+    }
+
+    /// This interface, its composition's tasks timed by its frame clock, as
+    /// [`frame_time`](Embedded::frame_time) gives it.
+    fn timed(mut self) -> Self {
+        self.share_clock();
+        self
+    }
+
+    /// Gives the composition the clock [`frame_time`](Embedded::frame_time) reads, so the
+    /// delays of its tasks are measured on it and end at the [`update`](Embedded::update)
+    /// whose frame time reaches them.
+    fn share_clock(&mut self) {
+        let source: Clock = match &self.clock {
+            Some(clock) => Rc::clone(clock),
+            None => {
+                let started = self.started;
+                Rc::new(move || started.elapsed())
+            }
+        };
+        self.composition.set_time_source(move || source());
     }
 
     /// Replaces the root composable with `root`, keeping the renderer, its fonts and its
@@ -161,24 +188,29 @@ impl Embedded {
     /// held are kept. A host that reloads the library `root` came from calls this with the
     /// new one before it unloads the old, because dropping the old composition runs code from it.
     pub fn set_root(&mut self, root: impl FnMut() + 'static) {
-        let mut composition = composition_of(root, &self.dark, &self.wake);
+        let mut composition = composition_of(root, &self.dark, &self.info, &self.wake);
         composition.compose();
         self.composition = composition;
         self.ui.clear();
         self.ui.phases = Some(self.composition.phase_observer());
         self.started = Instant::now();
+        self.share_clock();
         self.lay_out();
         self.ui.after_input();
     }
 
     /// Tells the interface its area is `size` physical pixels with `scale_factor` physical
-    /// pixels to a logical one, and lays it out.
+    /// pixels to a logical one, and lays it out. The content reads the size from
+    /// [`LOCAL_WINDOW_INFO`](crate::LOCAL_WINDOW_INFO) and the scale from
+    /// [`LOCAL_DENSITY`](crate::LOCAL_DENSITY), and composes again when either changed.
     pub fn resize(&mut self, size: (u32, u32), scale_factor: f32) {
         if let Backend::Drawing(renderer) = &mut self.backend {
             renderer.resize(size.0, size.1);
         }
         self.scale_factor = scale_factor;
         self.size = Size::new(size.0 as f32 / scale_factor, size.1 as f32 / scale_factor);
+        self.info.set_size(self.size);
+        self.info.set_density(scale_factor);
         self.lay_out();
         self.ui.after_input();
     }
@@ -238,6 +270,7 @@ impl Embedded {
         if self.composition.has_pending_frame() {
             self.composition.run_frame(self.frame_time());
         }
+        self.composition.run_timers(self.frame_time());
         let changed = self.composition.recompose();
         self.timing = UpdateTiming {
             compose: started.elapsed(),
@@ -281,7 +314,8 @@ impl Embedded {
     /// snapshot "500 ms after opening", gives a clock here so the result does not depend on how
     /// long the work took. `clock` must never go backwards.
     pub fn set_clock(&mut self, clock: impl Fn() -> Duration + 'static) {
-        self.clock = Some(Box::new(clock));
+        self.clock = Some(Rc::new(clock));
+        self.share_clock();
     }
 
     /// Times frames with the real clock again, from now, undoing
@@ -289,6 +323,7 @@ impl Embedded {
     pub fn use_real_clock(&mut self) {
         self.clock = None;
         self.started = Instant::now();
+        self.share_clock();
     }
 
     /// Stops the clock at `time` and runs [`update`](Embedded::update) at it.
@@ -309,14 +344,23 @@ impl Embedded {
             .map_or_else(|| self.started.elapsed(), |clock| clock())
     }
 
-    /// Whether an animation or a task wants another frame.
+    /// Whether an animation or a task wants another frame, or a task waits for a delay to
+    /// end, which an [`update`](Embedded::update) at a later frame time ends.
     pub fn wants_frame(&self) -> bool {
-        self.composition.has_pending_frame()
+        self.composition.has_pending_frame() || self.composition.next_timer().is_some()
     }
 
     /// Sets the modifier keys that are held, for pointer events and the keys that follow.
     pub fn set_modifiers(&mut self, modifiers: Modifiers) {
         self.ui.modifiers = modifiers;
+        self.info.set_modifiers(modifiers);
+    }
+
+    /// Tells the interface whether the window it is shown in has keyboard focus, as
+    /// [`WindowInfo::is_window_focused`](crate::WindowInfo::is_window_focused) reports it to
+    /// the content. An interface starts out focused.
+    pub fn set_window_focused(&mut self, focused: bool) {
+        self.info.set_focused(focused);
     }
 
     /// The pointer moved to `position`, in logical pixels from the area's top-left corner.

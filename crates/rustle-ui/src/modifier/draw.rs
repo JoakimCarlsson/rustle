@@ -321,6 +321,22 @@ impl Modifier {
         }))
     }
 
+    /// Casts `shadow` from the area's rectangle with corners rounded to `corner_radius`,
+    /// behind the content: Compose's `Modifier.dropShadow(shape, shadow)` for a rounded
+    /// rectangle. The shadow is grown by its spread, moved by its offset, blurred over its
+    /// radius and blended as it says; chain one per layer for a shadow of several layers,
+    /// the first drawn lowest.
+    pub fn drop_shadow_with(
+        self,
+        corner_radius: impl Into<Dp>,
+        shadow: rustle_graphics::Shadow,
+    ) -> Self {
+        self.then(Element::Fill(Fill::ShadowOf {
+            shadow,
+            corner_radius: corner_radius.into().0,
+        }))
+    }
+
     /// Blurs what is already drawn behind the area, in its rounded rectangle, with a
     /// Gaussian of `blur` standard deviation: frosted glass. Follow it with a
     /// translucent `background` for a tint. See [`rustle_graphics::DrawCommand::BackdropBlur`].

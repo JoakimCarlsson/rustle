@@ -7,12 +7,19 @@ use std::time::Duration;
 
 type Callback = Box<dyn FnOnce(Duration)>;
 
+/// What runs when a timer is due.
+type Alarm = Box<dyn FnOnce()>;
+
 #[derive(Default)]
 pub(crate) struct FrameQueue {
     callbacks: RefCell<Vec<Callback>>,
     waker: RefCell<Option<Box<dyn Fn()>>>,
     /// The time of the latest frame that ran.
     latest: Cell<Duration>,
+    /// What runs once the host's clock reaches a time, with that time.
+    timers: RefCell<Vec<(Duration, Alarm)>>,
+    /// The host's clock, when it gave one, which timers are set against.
+    time_source: RefCell<Option<Box<dyn Fn() -> Duration>>>,
 }
 
 impl FrameQueue {
@@ -26,6 +33,43 @@ impl FrameQueue {
 
     pub(crate) fn has_pending(&self) -> bool {
         !self.callbacks.borrow().is_empty()
+    }
+
+    /// Gives the host's clock, which [`now`](Self::now) reads.
+    pub(crate) fn set_time_source(&self, source: impl Fn() -> Duration + 'static) {
+        *self.time_source.borrow_mut() = Some(Box::new(source));
+    }
+
+    /// The time on the host's clock, if it gave one.
+    pub(crate) fn now(&self) -> Option<Duration> {
+        self.time_source.borrow().as_ref().map(|source| source())
+    }
+
+    /// Runs `alarm` once the host's clock reaches `at`.
+    pub(crate) fn add_timer(&self, at: Duration, alarm: Alarm) {
+        self.timers.borrow_mut().push((at, alarm));
+    }
+
+    /// The earliest time a timer waits for.
+    pub(crate) fn next_timer(&self) -> Option<Duration> {
+        self.timers.borrow().iter().map(|(at, _)| *at).min()
+    }
+
+    /// Runs the timers due at `now`, and says whether any was.
+    pub(crate) fn run_timers(&self, now: Duration) -> bool {
+        let due: Vec<Alarm> = {
+            let mut timers = self.timers.borrow_mut();
+            let (due, waiting) = mem::take(&mut *timers)
+                .into_iter()
+                .partition::<Vec<_>, _>(|(at, _)| *at <= now);
+            *timers = waiting;
+            due.into_iter().map(|(_, alarm)| alarm).collect()
+        };
+        let fired = !due.is_empty();
+        for alarm in due {
+            alarm();
+        }
+        fired
     }
 
     pub(crate) fn request(&self, callback: Callback) {
@@ -47,6 +91,7 @@ impl FrameQueue {
         for callback in callbacks {
             callback(now);
         }
+        self.run_timers(now);
     }
 }
 
@@ -75,5 +120,16 @@ impl FrameClock {
     /// host started its clock. It runs once; request again for the frame after.
     pub fn request_frame(&self, callback: impl FnOnce(Duration) + 'static) {
         self.queue.request(Box::new(callback));
+    }
+
+    /// The time on the host's clock now, when the host gave its clock to the composition
+    /// ([`Composition::set_time_source`](crate::Composition::set_time_source)).
+    pub(crate) fn host_now(&self) -> Option<Duration> {
+        self.queue.now()
+    }
+
+    /// Runs `alarm` once the host's clock reaches `at`, without asking for a frame.
+    pub(crate) fn at(&self, at: Duration, alarm: impl FnOnce() + 'static) {
+        self.queue.add_timer(at, Box::new(alarm));
     }
 }

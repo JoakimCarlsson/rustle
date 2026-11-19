@@ -17,13 +17,16 @@ mod host;
 mod input;
 mod interface;
 mod overlay;
-mod pointer;
+mod pointer_events;
+mod pointing;
 mod preview;
 mod saved;
 mod shadow;
 #[cfg(test)]
 mod testing;
 mod window;
+mod window_info;
+mod window_state;
 #[cfg(test)]
 mod window_tests;
 mod windows;
@@ -39,6 +42,8 @@ pub use preview::{
 };
 pub use shadow::{ShadowLayer, WindowShadow};
 pub use window::{ResizeEdge, WindowHandle, WindowOptions, WindowTheme, current_window, window};
+pub use window_info::{LOCAL_WINDOW_INFO, WindowInfo};
+pub use window_state::{WindowPlacement, WindowPosition, WindowState, remember_window_state};
 
 pub use rustle_animation::{
     Animatable, AnimationSpec, DecaySpec, Easing, Keyframe, Lerp, RepeatMode, Transition,
@@ -46,6 +51,7 @@ pub use rustle_animation::{
     infinite_float, infinite_float_repeating, infinite_repeatable, keyframes, paths_compatible,
     remember_animatable, repeatable, snap, spring, tween, update_transition,
 };
+pub use rustle_animation::{InfiniteTransition, remember_infinite_transition};
 pub use rustle_charts::{
     ChartStyle, Series, area_chart, bar_chart, bar_hover, chart_hover, donut_chart, line_chart,
     qr_code, sparkline,
@@ -108,6 +114,7 @@ pub use rustle_foundation::{
     lazy_vertical_staggered_grid,
 };
 pub use rustle_geometry::{Offset, Rect, Size};
+pub use rustle_graphics::Shadow;
 pub use rustle_graphics::SvgPainter;
 pub use rustle_graphics::TextWrap;
 pub use rustle_graphics::{
@@ -133,6 +140,14 @@ pub use rustle_ui::{
     Clipboard, ClipboardImage, CursorIcon, DisplayOptions, Interaction, InteractionColors,
     IntrinsicSize, Measurable, PixelRounding, Placement, SubcomposeResult, SubcomposeScope,
     TaggedNode, clipboard, restartable, set_clipboard, skippable, subcompose_layout,
+};
+pub use rustle_ui::{
+    Density, DragInteraction, FocusInteraction, HoverInteraction, Indication,
+    IndicationNodeFactory, InteractionId, InteractionSource, LOCAL_DENSITY, LOCAL_INDICATION,
+    MutableInteractionSource, PlatformTextInputMethodRequest, PlatformTextInputSession,
+    PointerButtons, PointerEventPass, PointerEventType, PointerInputChange, PressInteraction,
+    interaction_source, pointer, remember_mutable_interaction_source,
+    remember_platform_text_input_session,
 };
 pub use rustle_ui::{
     DragAndDropEvent, DragAndDropTarget, DragAndDropTransferData, DragData,
@@ -168,6 +183,9 @@ pub use rustle_widgets::{
     DialogProperties, ProgressIndicatorDefaults, SegmentedButtonColors, SegmentedButtonDefaults,
     dialog_with, linear_progress_indicator_with, segmented_button,
     single_choice_segmented_button_row,
+};
+pub use rustle_widgets::{
+    ShadowModifier, circular_progress_indicator_with, circular_progress_indicator_with_progress,
 };
 pub use rustle_widgets::{
     TooltipDefaults, TooltipState, dropdown_menu_anchored, remember_tooltip_state, tooltip_box,

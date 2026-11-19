@@ -898,8 +898,11 @@ fn field(
 
         let caret_on = remember(|| true);
         let blink = caret_on.clone();
+        let composition = preedit
+            .as_ref()
+            .map(|preedit| (preedit.text.clone(), preedit.cursor));
         launched_effect(
-            (focused, value.cursor, value.text.len()),
+            (focused, value.cursor, value.text.len(), composition),
             move |scope| async move {
                 if !blink.get() {
                     blink.set(true);

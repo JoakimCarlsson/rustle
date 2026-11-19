@@ -72,6 +72,12 @@ pub struct DisplayList {
     /// The popups shown, in paint order, so later ones are on top. See
     /// [`Modifier::popup_placement`](crate::Modifier::popup_placement).
     pub popups: Vec<PopupRegion>,
+    /// Areas that hear pointer events in passes, in paint order. See
+    /// [`Modifier::on_pointer_event`](crate::Modifier::on_pointer_event).
+    pub pointer_events: Vec<crate::pointer::PointerEventRegion>,
+    /// Areas that take text from the input method through a session, in paint order. See
+    /// [`Modifier::platform_text_input`](crate::Modifier::platform_text_input).
+    pub text_inputs: Vec<crate::text_input::TextInputRegion>,
 }
 
 /// A popup shown in the window: where it was painted and how it is dismissed.
@@ -324,7 +330,7 @@ pub struct ScrollRegion {
     pub vertical: bool,
 }
 
-fn contains(rect: Rect, point: Offset) -> bool {
+pub(crate) fn contains(rect: Rect, point: Offset) -> bool {
     let Rect { origin, size } = rect;
     point.x >= origin.x
         && point.x < origin.x + size.width
@@ -332,7 +338,7 @@ fn contains(rect: Rect, point: Offset) -> bool {
         && point.y < origin.y + size.height
 }
 
-pub(super) fn intersect(a: Rect, b: Rect) -> Rect {
+pub(crate) fn intersect(a: Rect, b: Rect) -> Rect {
     let left = a.origin.x.max(b.origin.x);
     let top = a.origin.y.max(b.origin.y);
     let right = (a.origin.x + a.size.width).min(b.origin.x + b.size.width);
@@ -346,16 +352,20 @@ pub(super) fn intersect(a: Rect, b: Rect) -> Rect {
 impl DisplayList {
     /// Where text input goes now, in the window, for placing an input method's candidate
     /// popup: the caret of the text being edited ([`ime_area`](Self::ime_area)), or else the
+    /// caret the started request of the focused
+    /// [`platform_text_input`](crate::Modifier::platform_text_input) area reports, or else the
     /// last [`ime_caret`](crate::Modifier::ime_caret) area whose focus is held. `None` when
-    /// neither applies.
+    /// none applies.
     pub fn focused_ime_area(&self) -> Option<Rect> {
-        self.ime_area.or_else(|| {
-            self.ime_carets
-                .iter()
-                .rev()
-                .find(|caret| caret.focus.as_ref().is_some_and(Focus::is_focused))
-                .map(|caret| caret.rect)
-        })
+        self.ime_area
+            .or_else(|| self.focused_text_input().and_then(|region| region.caret()))
+            .or_else(|| {
+                self.ime_carets
+                    .iter()
+                    .rev()
+                    .find(|caret| caret.focus.as_ref().is_some_and(Focus::is_focused))
+                    .map(|caret| caret.rect)
+            })
     }
 
     /// Whether any area that reacts to the pointer or blocks it contains `point`: clickable,
@@ -380,6 +390,7 @@ impl DisplayList {
             || self.drag_sources.iter().any(|region| over(region.rect))
             || self.drop_targets.iter().any(|region| over(region.rect))
             || self.pointer_inputs.iter().any(|region| over(region.rect))
+            || self.pointer_events.iter().any(|region| over(region.rect))
     }
 
     /// Whether an area marked [`blocks_pointer`](crate::Modifier::blocks_pointer) contains `point`.

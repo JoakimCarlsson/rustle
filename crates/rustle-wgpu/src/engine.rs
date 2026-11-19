@@ -61,8 +61,38 @@ impl TextEngine for Engine {
             .flat_map(|face| face.families.iter().map(|(name, _)| name.clone()))
             .collect();
         self.generation.set(self.generation.get() + 1);
+        hand_fonts_to_svg(&font_system);
         added.into_iter().collect()
     }
+}
+
+/// Hands every font `font_system` holds to SVG documents, with the families its generic names
+/// stand for, so the text of an [`SvgPainter`](rustle_graphics::SvgPainter) is set with the
+/// fonts the rest of the interface uses.
+pub(crate) fn hand_fonts_to_svg(font_system: &FontSystem) {
+    use glyphon::fontdb::{Family, Source};
+    let database = font_system.db();
+    let sources = database
+        .faces()
+        .map(|face| match &face.source {
+            Source::Binary(data) => {
+                rustle_graphics::SvgFontSource::Data(std::sync::Arc::clone(data))
+            }
+            Source::File(path) | Source::SharedFile(path, _) => {
+                rustle_graphics::SvgFontSource::File(path.clone())
+            }
+        })
+        .collect();
+    let family = |generic: Family<'_>| {
+        let name = database.family_name(&generic);
+        (!name.is_empty()).then(|| name.to_string())
+    };
+    rustle_graphics::set_svg_fonts(
+        sources,
+        family(Family::SansSerif),
+        family(Family::Serif),
+        family(Family::Monospace),
+    );
 }
 
 /// `spans` shaped and broken into lines at `width`, as a [`TextLayout`].

@@ -488,3 +488,29 @@ fn paths_morph_point_by_point_and_end_on_the_target() {
         PathCommand::MoveTo(100.0, 0.0)
     );
 }
+
+#[test]
+fn an_infinite_transition_runs_its_value_over_and_over() {
+    let mut rig = Rig::new(|| {
+        let transition = remember_infinite_transition();
+        let tween = AnimationSpec::Tween {
+            duration: Duration::from_millis(100),
+            easing: Easing::Linear,
+        };
+        transition
+            .animate_float(0.0, 360.0, infinite_repeatable(tween, RepeatMode::Restart))
+            .get()
+    });
+    rig.advance(0);
+    let mut angles = Vec::new();
+    for _ in 0..30 {
+        rig.advance(16);
+        angles.push(*rig.composition.output().unwrap());
+    }
+    assert!(angles.iter().all(|angle| (0.0..=360.0).contains(angle)));
+    assert!(angles.iter().any(|angle| *angle > 180.0));
+    assert!(
+        angles.windows(2).any(|pair| pair[1] < pair[0]),
+        "never restarted"
+    );
+}

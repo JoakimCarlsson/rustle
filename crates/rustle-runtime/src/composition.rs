@@ -234,6 +234,33 @@ impl<T> Composition<T> {
         self.executor.poll_woken();
     }
 
+    /// Gives the composition the host's clock: the time since the host started it, the
+    /// same clock [`run_frame`](Composition::run_frame) is given. A task's
+    /// [`delay`](crate::TaskScope::delay) is then measured on it from when the task waits,
+    /// and waits on a timer instead of on frames, so a host does not draw while a task
+    /// waits. Without it, a delay starts at the next frame.
+    pub fn set_time_source(&mut self, source: impl Fn() -> std::time::Duration + 'static) {
+        self.frames.set_time_source(source);
+    }
+
+    /// The earliest time on the host's clock a task waits for with
+    /// [`delay`](crate::TaskScope::delay), if one waits. The host calls
+    /// [`run_timers`](Composition::run_timers) once its clock reaches it, as Compose's
+    /// dispatcher resumes a coroutine whose `delay` ended.
+    pub fn next_timer(&self) -> Option<std::time::Duration> {
+        self.frames.next_timer()
+    }
+
+    /// Resumes the tasks whose delays ended by `now` on the host's clock, without running
+    /// a frame. Returns whether any did; what they changed marks the composition dirty.
+    pub fn run_timers(&mut self, now: std::time::Duration) -> bool {
+        let fired = self.frames.run_timers(now);
+        if fired {
+            self.executor.poll_woken();
+        }
+        fired
+    }
+
     /// A handle through which the host lays out and draws this composition's output, so that
     /// state read only while laying out or drawing asks for a layout or a drawing when it
     /// changes, instead of composing the root again (see [`PhaseObserver`]).

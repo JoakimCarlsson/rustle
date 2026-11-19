@@ -3,6 +3,7 @@
 mod draw;
 mod gesture;
 mod input;
+mod interaction;
 mod sizing;
 
 use std::path::PathBuf;
@@ -63,6 +64,11 @@ pub(crate) enum Fill {
         dy: f32,
         blur: f32,
         color: Color,
+        corner_radius: f32,
+    },
+    /// A [`Shadow`](rustle_graphics::Shadow) of the area's rounded rectangle.
+    ShadowOf {
+        shadow: rustle_graphics::Shadow,
         corner_radius: f32,
     },
 }
@@ -178,6 +184,14 @@ pub(crate) enum Element {
         touch_slop: f32,
     },
     PointerInput(PointerInputHandler),
+    /// Hears one type of pointer event in one pass, consumed or not.
+    PointerEvent {
+        event_type: crate::pointer::PointerEventType,
+        pass: crate::pointer::PointerEventPass,
+        on_event: crate::pointer::PointerEventHandler,
+    },
+    /// Takes text from the input method through a session while its focus is held.
+    TextInput(crate::text_input::PlatformTextInputSession),
     DropTarget(DropHandler),
     /// Where a drag and drop starts, what it carries and how far the pointer moves first.
     DragAndDropSource(crate::drag_and_drop::TransferDataFn, f32),

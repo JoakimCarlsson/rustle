@@ -175,6 +175,7 @@ impl LaidOut {
             pointer,
             resolved,
             anchors: Vec::new(),
+            pointer_event_parents: Vec::new(),
         };
         painter.paint(&self.measured, Offset::default());
         painter.paint_deferred();
@@ -206,6 +207,8 @@ struct Deferred<'a> {
     key_scopes: Vec<usize>,
     /// The bounds of the layout it was declared in, the anchor of a popup.
     anchor: Option<Rect>,
+    /// The areas that hear pointer events it was declared inside, innermost last.
+    pointer_event_parents: Vec<usize>,
     measured: &'a Measured,
 }
 
@@ -255,6 +258,9 @@ struct Painter<'a> {
     /// The unrounded bounds of the layouts being painted inside, in the window, innermost
     /// last: the anchor of a popup declared in them.
     anchors: Vec<Rect>,
+    /// The areas that hear pointer events being painted inside, as indices into the list,
+    /// innermost last.
+    pointer_event_parents: Vec<usize>,
 }
 
 impl<'a> Painter<'a> {
@@ -359,6 +365,7 @@ impl<'a> Painter<'a> {
                 let first = self.list.focusables.len();
                 self.key_scopes = raised.key_scopes;
                 self.anchors = raised.anchor.into_iter().collect();
+                self.pointer_event_parents = raised.pointer_event_parents;
                 self.paint(raised.measured, raised.origin);
                 let painted = first..self.list.focusables.len();
                 if !painted.is_empty() {
@@ -505,6 +512,49 @@ impl<'a> Painter<'a> {
                 blur: *blur,
                 color: self.faded(*color),
             },
+            Fill::ShadowOf {
+                shadow,
+                corner_radius,
+            } => {
+                let spread = shadow.spread;
+                let grown = Rect::new(
+                    Offset::new(
+                        rect.origin.x + shadow.offset.x - spread,
+                        rect.origin.y + shadow.offset.y - spread,
+                    ),
+                    Size::new(
+                        (rect.size.width + 2.0 * spread).max(0.0),
+                        (rect.size.height + 2.0 * spread).max(0.0),
+                    ),
+                );
+                let command = DrawCommand::Shadow {
+                    rect: grown,
+                    corner_radius: (corner_radius + spread).max(0.0),
+                    blur: shadow.radius.max(0.0),
+                    color: self.faded(shadow.effective_color()),
+                };
+                if shadow.blend_mode == rustle_graphics::BlendMode::SrcOver {
+                    command
+                } else {
+                    let reach = shadow.radius.max(0.0) * 2.0;
+                    let bounds = Rect::new(
+                        Offset::new(grown.origin.x - reach, grown.origin.y - reach),
+                        Size::new(
+                            grown.size.width + 2.0 * reach,
+                            grown.size.height + 2.0 * reach,
+                        ),
+                    );
+                    self.list.commands.push(DrawCommand::PushEffect {
+                        rect: bounds,
+                        effect: rustle_graphics::LayerEffect {
+                            blend_mode: shadow.blend_mode,
+                            ..rustle_graphics::LayerEffect::default()
+                        },
+                    });
+                    self.list.commands.push(command);
+                    DrawCommand::PopEffect
+                }
+            }
         };
         self.list.commands.push(command);
     }
@@ -1212,6 +1262,48 @@ impl<'a> Painter<'a> {
                 });
                 self.paint(inner, exact);
             }
+            Paint::PointerEvent {
+                event_type,
+                pass,
+                on_event,
+                inner,
+            } => {
+                let index = self.list.pointer_events.len();
+                self.list
+                    .pointer_events
+                    .push(crate::pointer::PointerEventRegion {
+                        rect: self.visible(rect),
+                        origin,
+                        parent: self.pointer_event_parents.last().copied(),
+                        depth: self.pointer_event_parents.len(),
+                        event_type: *event_type,
+                        pass: *pass,
+                        on_event: Rc::clone(on_event),
+                    });
+                self.pointer_event_parents.push(index);
+                self.paint(inner, exact);
+                self.pointer_event_parents.pop();
+            }
+            Paint::TextInput { session, inner } => {
+                let index = self.list.text_inputs.len();
+                let first = self.list.focusables.len();
+                self.list
+                    .text_inputs
+                    .push(crate::text_input::TextInputRegion {
+                        rect: self.visible(rect),
+                        origin,
+                        focus: self.focus.clone(),
+                        session: session.clone(),
+                    });
+                self.paint(inner, exact);
+                if self.list.text_inputs[index].focus.is_none() {
+                    self.list.text_inputs[index].focus = self
+                        .list
+                        .focusables
+                        .get(first)
+                        .map(|region| region.focus.clone());
+                }
+            }
             Paint::Pinch { on_pinch, inner } => {
                 self.list.pinches.push(PinchRegion {
                     rect: self.visible(rect),
@@ -1345,6 +1437,7 @@ impl<'a> Painter<'a> {
                     group: self.group,
                     key_scopes: self.key_scopes.clone(),
                     anchor: self.anchors.last().copied(),
+                    pointer_event_parents: self.pointer_event_parents.clone(),
                     measured: inner,
                 });
             }
@@ -1660,6 +1753,8 @@ fn chain_focus(measured: &Measured) -> Option<Focus> {
             | Paint::DragAndDropSource { inner, .. }
             | Paint::DragAndDropTarget { inner, .. }
             | Paint::PointerInput { inner, .. }
+            | Paint::PointerEvent { inner, .. }
+            | Paint::TextInput { inner, .. }
             | Paint::Pinch { inner, .. }
             | Paint::BlocksPointer(inner)
             | Paint::Alpha { inner, .. }

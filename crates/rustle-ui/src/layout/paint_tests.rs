@@ -76,6 +76,7 @@ fn paint_once(measured: &Measured) -> DisplayList {
         pointer: PointerState::default(),
         resolved: None,
         anchors: Vec::new(),
+        pointer_event_parents: Vec::new(),
     };
     painter.paint(measured, Offset::default());
     painter.paint_deferred();
@@ -730,4 +731,58 @@ fn canvases_are_faded_by_alpha_around_them() {
         .iter()
         .any(|command| matches!(command, DrawCommand::Rect { color, .. } if color.a == 100));
     assert!(faded, "{:?}", list.commands);
+}
+
+/// The commands an area of 40 by 20 at (10, 10) with `modifier` after its offset draws.
+fn shadowed(modifier: Modifier) -> Vec<DrawCommand> {
+    let root = Node {
+        modifier: Modifier::new()
+            .absolute_offset(10.0, 10.0)
+            .size(40.0, 20.0)
+            .chain(modifier),
+        content: Content::Canvas {
+            draw: Rc::new(|_| Vec::new()),
+        },
+    };
+    display_list_with(
+        &root,
+        Constraints::loose(Size::new(100.0, 100.0)),
+        &mut FixedText,
+        DisplayOptions::default(),
+    )
+    .commands
+}
+
+/// A shadow value is grown by its spread, moved by its offset, faded by its alpha and drawn
+/// in a layer of its blend mode when it has one; chained shadows are layered in order.
+#[test]
+fn a_shadow_value_is_spread_moved_and_blended() {
+    let shadow = rustle_graphics::Shadow::new(6.0)
+        .with_spread(2.0)
+        .with_offset(Offset::new(1.0, 3.0))
+        .with_color(Color::rgba(0, 0, 0, 200))
+        .with_alpha(0.5);
+    let commands = shadowed(Modifier::new().drop_shadow_with(4.0, shadow));
+    assert_eq!(
+        commands,
+        vec![DrawCommand::Shadow {
+            rect: Rect::new(Offset::new(9.0, 11.0), Size::new(44.0, 24.0)),
+            corner_radius: 6.0,
+            blur: 6.0,
+            color: Color::rgba(0, 0, 0, 100),
+        }]
+    );
+    let blended = shadow.with_blend_mode(rustle_graphics::BlendMode::Multiply);
+    let commands = shadowed(
+        Modifier::new()
+            .drop_shadow_with(4.0, blended)
+            .drop_shadow_with(4.0, rustle_graphics::Shadow::new(1.0)),
+    );
+    assert!(matches!(
+        commands[0],
+        DrawCommand::PushEffect { effect, .. } if effect.blend_mode == rustle_graphics::BlendMode::Multiply
+    ));
+    assert!(matches!(commands[1], DrawCommand::Shadow { .. }));
+    assert_eq!(commands[2], DrawCommand::PopEffect);
+    assert!(matches!(commands[3], DrawCommand::Shadow { blur, .. } if blur == 1.0));
 }

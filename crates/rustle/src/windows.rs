@@ -17,7 +17,7 @@ use winit::window::{
 };
 
 use crate::accessibility::{Adapter, Request};
-use crate::app::{App, WindowState};
+use crate::app::{App, NativeWindow};
 use crate::interface::Interface;
 use crate::window::{Entry, MAIN, REGISTRY, WindowOptions, WindowTheme};
 
@@ -27,7 +27,7 @@ pub(crate) struct WindowCtx {
     pub(crate) key: u64,
     pub(crate) ui: Interface,
     pub(crate) options: WindowOptions,
-    pub(crate) window: Option<WindowState>,
+    pub(crate) window: Option<NativeWindow>,
 }
 
 impl App {
@@ -83,7 +83,7 @@ impl App {
     }
 
     /// The window in slot `index`, if it is open.
-    pub(crate) fn slot_window(&self, index: usize) -> Option<&WindowState> {
+    pub(crate) fn slot_window(&self, index: usize) -> Option<&NativeWindow> {
         if index == self.active {
             self.window.as_ref()
         } else {
@@ -106,7 +106,7 @@ impl App {
     }
 
     /// Every window that is open.
-    pub(crate) fn native_windows(&self) -> impl Iterator<Item = &WindowState> {
+    pub(crate) fn native_windows(&self) -> impl Iterator<Item = &NativeWindow> {
         (0..self.slots.len()).filter_map(|index| self.slot_window(index))
     }
 
@@ -147,7 +147,7 @@ impl App {
         &self,
         event_loop: &dyn ActiveEventLoop,
         options: &WindowOptions,
-    ) -> Result<WindowState, String> {
+    ) -> Result<NativeWindow, String> {
         let parent = options.parent.and_then(|parent| {
             REGISTRY.with(|r| r.borrow().entries.get(&parent.key)?.window.clone())
         });
@@ -178,7 +178,7 @@ impl App {
             options.transparent,
         )
         .map_err(|error| error.to_string())?;
-        Ok(WindowState {
+        Ok(NativeWindow {
             adapter,
             renderer,
             window,
@@ -197,6 +197,7 @@ impl App {
                     on_close: None,
                     window,
                     closed: false,
+                    info: self.main_info.clone(),
                 },
             );
         });
@@ -231,6 +232,7 @@ impl App {
             }
             close_requested(key);
         }
+        self.apply_window_states();
         if !REGISTRY.with(|r| mem::take(&mut r.borrow_mut().dirty)) {
             return;
         }
@@ -277,6 +279,29 @@ impl App {
         }
     }
 
+    /// Changes each open window whose [`WindowState`](crate::WindowState) the application
+    /// changed since it was last applied or read.
+    pub(crate) fn apply_window_states(&self) {
+        for index in 0..self.slots.len() {
+            let options = if index == self.active {
+                &self.options
+            } else {
+                &self.slots[index].options
+            };
+            if let (Some(state), Some(open)) = (&options.state, self.slot_window(index)) {
+                state.apply_to(&*open.window);
+            }
+        }
+    }
+
+    /// Reads what the active window is now into its [`WindowState`](crate::WindowState),
+    /// after the user or the system moved, resized, maximized or minimized it.
+    pub(crate) fn observe_window_state(&self) {
+        if let (Some(state), Some(open)) = (&self.options.state, &self.window) {
+            state.observe(&*open.window);
+        }
+    }
+
     /// Applies the options of an open secondary window that changed.
     fn apply_options(&mut self, index: usize, options: WindowOptions) {
         let ctx = &mut self.slots[index];
@@ -313,6 +338,13 @@ impl App {
             }
             if ctx.options.theme != options.theme {
                 window.set_theme(options.theme.map(WindowTheme::winit));
+            }
+            if ctx.options.always_on_top != options.always_on_top {
+                window.set_window_level(if options.always_on_top {
+                    winit::window::WindowLevel::AlwaysOnTop
+                } else {
+                    winit::window::WindowLevel::Normal
+                });
             }
             if !ctx.options.modal && options.modal {
                 window.focus_window();

@@ -5,8 +5,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use rustle::Embedded;
 use rustle::prelude::*;
+use rustle::{Embedded, TextFieldState, basic_text_field};
 
 /// A root whose task waits `delay` after its first frame and then records that it finished.
 fn delayed(done: Rc<Cell<bool>>, delay: Duration) -> impl FnMut() {
@@ -67,4 +67,45 @@ fn the_real_clock_comes_back() {
     embedded.advance_to(Duration::from_secs(100));
     embedded.use_real_clock();
     assert!(embedded.frame_time() < Duration::from_secs(100));
+}
+
+/// A headless interface of a focused, empty text field, timed by the host from zero.
+fn focused_field() -> Embedded {
+    let state = TextFieldState::new("");
+    let mut embedded = rig(move || {
+        basic_text_field(Modifier::new().width(160.0).test_tag("field"), &state);
+    });
+    embedded.advance_to(Duration::ZERO);
+    assert!(embedded.request_focus_on_tag("field"));
+    embedded.update();
+    embedded
+}
+
+/// How many drawing commands `embedded` drew at `at`, once the frame is laid out again.
+fn drawn_at(embedded: &mut Embedded, at: Duration) -> usize {
+    embedded.advance_to(at);
+    embedded.invalidate();
+    embedded.update();
+    embedded.commands().len()
+}
+
+/// A change to the input method's composition shows the caret again and starts its blink
+/// over, as typing does.
+#[test]
+fn composing_restarts_the_caret_blink() {
+    let mut early = focused_field();
+    early.preedit("ka", Some((2, 2)));
+    early.update();
+    let blinked_off = drawn_at(&mut early, Duration::from_millis(600));
+    let mut late = focused_field();
+    late.preedit("k", Some((1, 1)));
+    late.update();
+    late.advance_to(Duration::from_millis(590));
+    late.preedit("ka", Some((2, 2)));
+    late.update();
+    let shown_again = drawn_at(&mut late, Duration::from_millis(600));
+    assert!(
+        shown_again > blinked_off,
+        "the caret shows after the composition changed: {shown_again} commands, {blinked_off} once blinked off"
+    );
 }

@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fontdb = { version = "0.24", default-features = false, features = ["std", "fs", "memmap"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-resvg = { version = "0.48.1", default-features = false }
+resvg = { version = "0.48.1", default-features = false, features = ["raster-images", "text"] }
 rustle-geometry.workspace = true

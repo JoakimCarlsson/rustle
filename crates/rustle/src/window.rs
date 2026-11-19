@@ -111,6 +111,11 @@ pub struct WindowOptions {
     /// Compose's `alwaysOnTop`. Where the desktop decides itself, as on Wayland, it may be
     /// ignored.
     pub always_on_top: bool,
+    /// The state the window is opened in and kept in step with: Compose's `Window(state = ...)`.
+    /// When given, its size, position and placement replace `size`, `position` and
+    /// `fullscreen`, changing it changes the window, and what the user does to the window
+    /// changes it. See [`WindowState`](crate::WindowState).
+    pub state: Option<crate::WindowState>,
 }
 
 impl Default for WindowOptions {
@@ -136,6 +141,7 @@ impl Default for WindowOptions {
             closes_itself: false,
             shadow: None,
             always_on_top: false,
+            state: None,
         }
     }
 }
@@ -243,6 +249,12 @@ impl WindowOptions {
         self
     }
 
+    /// Opens the window in `state` and keeps them in step: Compose's `Window(state = ...)`.
+    pub fn with_state(mut self, state: crate::WindowState) -> Self {
+        self.state = Some(state);
+        self
+    }
+
     /// Makes the window close when the user closes it.
     pub fn with_closes_itself(mut self, closes_itself: bool) -> Self {
         self.closes_itself = closes_itself;
@@ -253,6 +265,25 @@ impl WindowOptions {
     /// the system has a notion of a parent that does not confine the window to it. It is
     /// made hidden, because the accessibility adapter has to exist before the window is shown.
     pub(crate) fn attributes(&self, parent: Option<&dyn Window>) -> WindowAttributes {
+        let (size, position, placement) = match &self.state {
+            Some(state) => (
+                (state.size().width, state.size().height),
+                match state.position() {
+                    crate::WindowPosition::Absolute { x, y } => Some((x, y)),
+                    crate::WindowPosition::PlatformDefault => None,
+                },
+                state.placement(),
+            ),
+            None => (
+                self.size,
+                self.position,
+                if self.fullscreen {
+                    crate::WindowPlacement::Fullscreen
+                } else {
+                    crate::WindowPlacement::Floating
+                },
+            ),
+        };
         let attributes = WindowAttributes::default()
             .with_title(self.title.as_str())
             .with_visible(false)
@@ -260,15 +291,19 @@ impl WindowOptions {
             .with_resizable(self.resizable)
             .with_transparent(self.transparent)
             .with_theme(self.theme.map(WindowTheme::winit))
-            .with_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)))
+            .with_fullscreen(
+                (placement == crate::WindowPlacement::Fullscreen)
+                    .then_some(Fullscreen::Borderless(None)),
+            )
+            .with_maximized(placement == crate::WindowPlacement::Maximized)
             .with_window_level(if self.always_on_top {
                 WindowLevel::AlwaysOnTop
             } else {
                 WindowLevel::Normal
             })
-            .with_surface_size(LogicalSize::new(self.size.0, self.size.1))
+            .with_surface_size(LogicalSize::new(size.0, size.1))
             .with_min_surface_size(LogicalSize::new(self.min_size.0, self.min_size.1));
-        let attributes = match self.position {
+        let attributes = match position {
             Some((x, y)) => attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
             None => attributes,
         };
@@ -569,6 +604,116 @@ impl WindowHandle {
         self.with_window(|w| w.focus_window());
     }
 
+    /// Brings the window in front of the others and gives it keyboard focus: Compose Desktop's
+    /// `ComposeWindow.toFront()`. The same as [`focus`](Self::focus).
+    pub fn to_front(self) {
+        self.focus();
+    }
+
+    /// Asks the desktop to draw the user's attention to the window, such as by flashing its
+    /// taskbar entry, until it is focused, as Compose Desktop asks for a `ComposeWindow`.
+    /// `critical` asks for more insistence where the desktop tells the two apart.
+    pub fn request_user_attention(self, critical: bool) {
+        let kind = if critical {
+            winit::window::UserAttentionType::Critical
+        } else {
+            winit::window::UserAttentionType::Informational
+        };
+        self.with_window(|w| w.request_user_attention(Some(kind)));
+    }
+
+    /// Whether the window has keyboard focus: `ComposeWindow.isFocused`.
+    pub fn is_focused(self) -> bool {
+        self.with_window(|w| w.has_focus()).unwrap_or(false)
+    }
+
+    /// Minimizes the window, or restores it when `minimized` is false.
+    pub fn set_minimized(self, minimized: bool) {
+        self.with_window(|w| w.set_minimized(minimized));
+    }
+
+    /// Whether the window is minimized, where the platform says; false when it does not.
+    pub fn is_minimized(self) -> bool {
+        self.with_window(|w| w.is_minimized().unwrap_or(false))
+            .unwrap_or(false)
+    }
+
+    /// Maximizes the window, or restores it when `maximized` is false.
+    pub fn set_maximized(self, maximized: bool) {
+        self.with_window(|w| w.set_maximized(maximized));
+    }
+
+    /// How the window sits on the screen: Compose's `WindowState.placement`.
+    pub fn placement(self) -> crate::WindowPlacement {
+        if self.is_fullscreen() {
+            crate::WindowPlacement::Fullscreen
+        } else if self.is_maximized() {
+            crate::WindowPlacement::Maximized
+        } else {
+            crate::WindowPlacement::Floating
+        }
+    }
+
+    /// Floats, maximizes or makes the window full screen.
+    pub fn set_placement(self, placement: crate::WindowPlacement) {
+        self.with_window(|w| match placement {
+            crate::WindowPlacement::Fullscreen => {
+                w.set_fullscreen(Some(Fullscreen::Borderless(None)));
+            }
+            crate::WindowPlacement::Maximized => {
+                w.set_fullscreen(None);
+                w.set_maximized(true);
+            }
+            crate::WindowPlacement::Floating => {
+                w.set_fullscreen(None);
+                w.set_maximized(false);
+            }
+        });
+    }
+
+    /// The size of the window's content in logical pixels, while it is open.
+    pub fn size(self) -> Option<rustle_geometry::Size> {
+        self.with_window(|w| {
+            let size = w.surface_size().to_logical::<f32>(w.scale_factor());
+            rustle_geometry::Size::new(size.width, size.height)
+        })
+    }
+
+    /// How large the screen the window is on is, in logical pixels at that screen's scale,
+    /// while the window is open and the platform says: the bounds of a Compose Desktop
+    /// `ComposeWindow`'s `graphicsConfiguration`. A program sizes a window to fit the screen
+    /// with it.
+    pub fn screen_size(self) -> Option<rustle_geometry::Size> {
+        self.with_window(|w| {
+            let monitor = w.current_monitor()?;
+            let size = monitor
+                .current_video_mode()?
+                .size()
+                .to_logical::<f32>(monitor.scale_factor());
+            Some(rustle_geometry::Size::new(size.width, size.height))
+        })
+        .flatten()
+    }
+
+    /// Asks for the window's content to be `size` logical pixels.
+    pub fn set_size(self, size: rustle_geometry::Size) {
+        self.with_window(|w| {
+            let _ = w.request_surface_size(LogicalSize::new(size.width, size.height).into());
+        });
+    }
+
+    /// Keeps the window in front of every window that is not also kept in front, or stops
+    /// doing so: Compose's `alwaysOnTop`, changed while the window is open.
+    pub fn set_always_on_top(self, always_on_top: bool) {
+        self.with_window(|w| {
+            w.set_window_level(if always_on_top {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            });
+        });
+    }
+
     /// Shows or hides the window.
     pub fn set_visible(self, visible: bool) {
         self.with_window(|w| w.set_visible(visible));
@@ -643,22 +788,25 @@ pub fn window(
 ) {
     rustle_runtime::group(|| {
         let key = rustle_runtime::remember(next_key).get();
+        let info = rustle_runtime::remember(crate::window_info::WindowInfo::new).get();
         let handle = WindowHandle { key };
         rustle_runtime::disposable_effect((), move || {
             move || REGISTRY.with(|r| r.borrow_mut().remove(key))
         });
         let theme = options.theme;
         let tree = LOCAL_WINDOW.provide(handle, || {
-            rustle_ui::compose(|| match theme {
-                Some(theme) => {
-                    rustle_foundation::LOCAL_SYSTEM_DARK.provide(theme.is_dark(), content)
-                }
-                None => content(),
+            crate::window_info::provide_window(&info, || {
+                rustle_ui::compose(|| match theme {
+                    Some(theme) => {
+                        rustle_foundation::LOCAL_SYSTEM_DARK.provide(theme.is_dark(), content)
+                    }
+                    None => content(),
+                })
             })
         });
         REGISTRY.with(|r| {
             r.borrow_mut()
-                .update(key, options, tree, Rc::new(on_close_request));
+                .update(key, options, tree, Rc::new(on_close_request), info);
         });
     });
 }
@@ -688,6 +836,8 @@ pub(crate) struct Entry {
     pub(crate) window: Option<Arc<dyn Window>>,
     /// Whether the user closed a window that closes itself, so it is not opened again.
     pub(crate) closed: bool,
+    /// What the window's content is told about it.
+    pub(crate) info: crate::window_info::WindowInfo,
 }
 
 /// The windows composition has asked for, and the requests waiting for the event loop.
@@ -706,13 +856,21 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    fn update(&mut self, key: u64, options: WindowOptions, tree: Node, on_close: Rc<dyn Fn()>) {
+    fn update(
+        &mut self,
+        key: u64,
+        options: WindowOptions,
+        tree: Node,
+        on_close: Rc<dyn Fn()>,
+        info: crate::window_info::WindowInfo,
+    ) {
         match self.entries.get_mut(&key) {
             Some(entry) => {
                 self.dirty |= entry.options != options;
                 entry.options = options;
                 entry.tree = Some(tree);
                 entry.on_close = Some(on_close);
+                entry.info = info;
             }
             None => {
                 self.dirty = true;
@@ -724,6 +882,7 @@ impl Registry {
                         on_close: Some(on_close),
                         window: None,
                         closed: false,
+                        info,
                     },
                 );
             }
@@ -741,6 +900,11 @@ thread_local! {
         entries: std::collections::BTreeMap::new(),
         ..Registry::default()
     });
+}
+
+/// What the content of the window `key` is told about it, while the window is wanted.
+pub(crate) fn window_info(key: u64) -> Option<crate::window_info::WindowInfo> {
+    REGISTRY.with(|r| Some(r.borrow().entries.get(&key)?.info.clone()))
 }
 
 /// Lets `WindowHandle::close` wake the event loop.

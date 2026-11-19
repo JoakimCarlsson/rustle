@@ -44,6 +44,7 @@ pub(crate) fn shared_fonts() -> SharedFonts {
             for data in rustle_text::take_pending_fonts() {
                 rustle_text::TextEngine::register_font(&*engine, data);
             }
+            crate::engine::hand_fonts_to_svg(&font_system.borrow());
             (font_system, generation)
         });
         (Rc::clone(font_system), Rc::clone(generation))

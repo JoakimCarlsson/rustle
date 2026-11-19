@@ -93,6 +93,7 @@ impl Interface {
         if before != hover_target(&self.display, self.pointer) {
             self.redraw = true;
         }
+        self.pointer_event_moved();
     }
 
     /// A pointer button went down or up where the pointer is: tells the areas that react to
@@ -105,6 +106,19 @@ impl Interface {
     /// Like [`button_input`](Self::button_input); `mouse` says whether the button belongs to
     /// the mouse, as opposed to a contact that stands in for the primary button.
     pub(crate) fn button_input_from(&mut self, button: PointerButton, pressed: bool, mouse: bool) {
+        let held = if self.pointer.is_some() || !pressed {
+            self.pointer_event_button(button, pressed)
+        } else {
+            None
+        };
+        self.built_in_button(button, pressed, mouse);
+        self.finish_pointer_event(held);
+    }
+
+    /// The built-in handling of `button` going down or up where the pointer is: the areas
+    /// that react to it and, for the primary button, clicks, focus, drags and long presses.
+    /// `mouse` is as for [`button_input_from`](Self::button_input_from).
+    fn built_in_button(&mut self, button: PointerButton, pressed: bool, mouse: bool) {
         let Some(pointer) = self.pointer else {
             if !pressed {
                 self.release_without_pointer(button, mouse);

@@ -211,6 +211,20 @@ pub(super) fn measure_modified(
             on_event: Rc::clone(on_event),
             inner,
         }),
+        Element::PointerEvent {
+            event_type,
+            pass,
+            on_event,
+        } => wrap(next(constraints), |inner| Paint::PointerEvent {
+            event_type: *event_type,
+            pass: *pass,
+            on_event: Rc::clone(on_event),
+            inner,
+        }),
+        Element::TextInput(session) => wrap(next(constraints), |inner| Paint::TextInput {
+            session: session.clone(),
+            inner,
+        }),
         Element::DragSource {
             payload,
             button,

@@ -18,7 +18,7 @@ use rustle_ui::{CursorIcon, DisplayList, LaidOut, PointerButton, PointerId, Poin
 
 use crate::contact::ActivePointer;
 use crate::overlay::{carrying_overlay, feedback};
-use crate::pointer::HeldButton;
+use crate::pointing::HeldButton;
 
 /// An area following the pointer, and what to tell it when the pointer leaves.
 pub(crate) type FollowEntry = (Rect, Rc<dyn Fn(Option<Offset>)>);
@@ -108,6 +108,15 @@ pub(crate) struct Interface {
     /// The composition whose tree is shown, through which painting counts the state it
     /// reads as read while drawing, so a change to it draws again without composing.
     pub(crate) phases: Option<rustle_runtime::PhaseObserver>,
+    /// The mouse buttons held, as pointer events report them.
+    pub(crate) pointer_buttons: rustle_ui::PointerButtons,
+    /// The areas listening to pointer events the pointer is over, outermost first.
+    pub(crate) pointer_event_hovered: Vec<crate::pointer_events::ListenerKey>,
+    /// The listening areas the first press of the buttons held landed on, which hear every
+    /// pointer event until the last button is released.
+    pub(crate) pointer_event_captured: Option<Vec<crate::pointer_events::ListenerKey>>,
+    /// Where the pointer was at the pointer event before.
+    pub(crate) pointer_event_previous: Option<Offset>,
 }
 
 impl Interface {
@@ -143,6 +152,18 @@ impl Interface {
         mem::swap(&mut self.pressed, &mut other.pressed);
         mem::swap(&mut self.redraw, &mut other.redraw);
         mem::swap(&mut self.focus_changed, &mut other.focus_changed);
+        mem::swap(
+            &mut self.pointer_event_hovered,
+            &mut other.pointer_event_hovered,
+        );
+        mem::swap(
+            &mut self.pointer_event_captured,
+            &mut other.pointer_event_captured,
+        );
+        mem::swap(
+            &mut self.pointer_event_previous,
+            &mut other.pointer_event_previous,
+        );
     }
 
     /// Forgets everything tied to the tree that was shown, which no longer exists, and keeps
@@ -150,6 +171,8 @@ impl Interface {
     pub(crate) fn clear(&mut self) {
         *self = Self {
             pointer: self.pointer,
+            pointer_event_previous: self.pointer,
+            pointer_buttons: self.pointer_buttons,
             modifiers: self.modifiers,
             debug_input: self.debug_input,
             redraw: true,
@@ -164,6 +187,7 @@ impl Interface {
         self.display = self.paint(&laid_out, self.pointer_state());
         self.laid_out = Some(laid_out);
         self.follow_focused_area();
+        self.update_pointer_event_hover();
     }
 
     /// Paints `laid_out` with its interactive areas in the state `pointer` puts them in,
@@ -276,11 +300,21 @@ impl Interface {
         self.redraw = true;
         self.update_following();
         self.update_hover();
+        self.pointer_event_left();
     }
 
     /// The wheel or a trackpad scrolled by `delta` logical pixels where the pointer is.
     /// Returns whether a scrolling area took it.
     pub(crate) fn wheel(&mut self, delta: Offset) -> bool {
+        let (consumed, held) = self.pointer_event_scroll(delta);
+        let taken = consumed || self.scroll_areas(delta);
+        self.finish_pointer_event(held);
+        taken
+    }
+
+    /// Scrolls the areas under the pointer by `delta`, as the wheel does when no listening
+    /// area consumed it. Returns whether one took it.
+    fn scroll_areas(&mut self, delta: Offset) -> bool {
         if self.pointer_input_scroll(delta) {
             return true;
         }
@@ -325,6 +359,16 @@ impl Interface {
         if self.debug_input {
             eprintln!("rustle input: input method composing {text:?} {cursor:?}");
         }
+        if let Some(region) = self.display.focused_text_input()
+            && let Some(request) = region.session.request()
+        {
+            let preedit = (!text.is_empty()).then(|| rustle_ui::Preedit {
+                text: text.clone(),
+                cursor,
+            });
+            request.on_preedit(preedit.as_ref());
+            self.redraw = true;
+        }
         self.set_preedit(text, cursor);
     }
 
@@ -341,6 +385,13 @@ impl Interface {
         });
         if repeated {
             return false;
+        }
+        if let Some(region) = self.display.focused_text_input()
+            && let Some(request) = region.session.request()
+        {
+            request.on_commit(&text);
+            self.redraw = true;
+            return true;
         }
         let event = KeyEvent::typed(text, self.modifiers);
         self.key_event(event) || self.focused.is_some()

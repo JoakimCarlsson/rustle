@@ -411,6 +411,7 @@ fn the_main_window_is_never_wanted() {
                 on_close: None,
                 window: None,
                 closed: false,
+                info: crate::window_info::WindowInfo::new(),
             },
         );
     });
@@ -536,4 +537,40 @@ fn state_read_in_window_content_recomposes_the_window() {
     assert_eq!(before, "true");
     state.borrow().as_ref().unwrap().set(5);
     assert!(composition.recompose());
+}
+
+#[test]
+fn a_window_state_decides_how_the_window_opens() {
+    let state = crate::WindowState::new(
+        crate::WindowPlacement::Maximized,
+        false,
+        crate::WindowPosition::new(30.0, 40.0),
+        rustle_geometry::Size::new(640.0, 480.0),
+    );
+    let options = WindowOptions::new("Stateful")
+        .with_size(100.0, 100.0)
+        .with_state(state.clone());
+    let attributes = options.attributes(None);
+    assert!(attributes.maximized);
+    assert_eq!(
+        attributes.surface_size,
+        Some(winit::dpi::LogicalSize::new(640.0f32, 480.0).into())
+    );
+    assert_eq!(
+        attributes.position,
+        Some(winit::dpi::LogicalPosition::new(30.0f32, 40.0).into())
+    );
+    assert_eq!(
+        options,
+        WindowOptions::new("Stateful")
+            .with_size(100.0, 100.0)
+            .with_state(state)
+    );
+}
+
+/// A window that is not open has no screen to tell of, and no size.
+#[test]
+fn a_window_that_is_not_open_tells_no_screen_size() {
+    assert_eq!(handle(9_999).screen_size(), None);
+    assert_eq!(handle(9_999).size(), None);
 }

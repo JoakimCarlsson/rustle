@@ -1042,3 +1042,17 @@ fn a_shadow_lightens_its_corners() {
     let (side, corner) = (picture.at(32, 51)[3], picture.at(50, 50)[3]);
     assert!(corner < side, "side {side}, corner {corner}");
 }
+
+#[test]
+fn svg_text_is_set_with_the_text_engines_fonts() {
+    let _metrics = crate::TextMetrics::new();
+    if rustle_text::font_families().is_empty() {
+        return;
+    }
+    let painter = SvgPainter::from_str(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="60" height="30"><text x="2" y="24" font-size="24" font-family="sans-serif" fill="#000000">Hg</text></svg>"##,
+    )
+    .unwrap();
+    let image = painter.rasterize(60, 30).unwrap();
+    assert!(image.pixels().chunks(4).any(|pixel| pixel[3] > 0));
+}

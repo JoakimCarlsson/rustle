@@ -110,7 +110,9 @@ impl TaskScope {
         }
     }
 
-    /// Waits for at least `duration`, measured in frames.
+    /// Waits for at least `duration`, as Compose's `delay` suspends a coroutine: on a timer
+    /// set against the host's clock, without asking for frames while it waits. When the host
+    /// gave the composition no clock, the wait starts at the next frame.
     pub fn delay(&self, duration: Duration) -> Delay {
         Delay {
             clock: self.clock.clone(),
@@ -164,35 +166,89 @@ impl Future for Delay {
         }
         if !self.requested {
             self.requested = true;
-            tick(
-                self.clock.clone(),
-                Rc::new(Cell::new(None)),
-                self.duration,
-                Rc::clone(&self.done),
-                cx.waker().clone(),
-            );
+            let (done, waker, duration) =
+                (Rc::clone(&self.done), cx.waker().clone(), self.duration);
+            let alarm = move || {
+                done.set(true);
+                waker.wake();
+            };
+            match self.clock.host_now() {
+                Some(now) => self.clock.at(now + duration, alarm),
+                None => {
+                    let clock = self.clock.clone();
+                    self.clock
+                        .request_frame(move |now| clock.at(now + duration, alarm));
+                }
+            }
         }
         Poll::Pending
     }
 }
 
-/// Asks for frames until `duration` has passed since the first of them.
-fn tick(
-    clock: FrameClock,
-    started: Rc<Cell<Option<Duration>>>,
-    duration: Duration,
-    done: Rc<Cell<bool>>,
-    waker: Waker,
-) {
-    let next = clock.clone();
-    clock.request_frame(move |now| {
-        let start = started.get().unwrap_or(now);
-        started.set(Some(start));
-        if now.saturating_sub(start) >= duration {
-            done.set(true);
-            waker.wake();
-        } else {
-            tick(next, started, duration, done, waker);
-        }
-    });
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use crate::{Composition, launched_effect};
+
+    /// A composition whose task waits `delay` and then marks `done`, timed by `clock`.
+    fn waiting(
+        done: &Rc<Cell<bool>>,
+        delay: Duration,
+        clock: &Rc<Cell<Duration>>,
+    ) -> Composition<()> {
+        let done = Rc::clone(done);
+        let mut composition = Composition::new(move || {
+            let done = Rc::clone(&done);
+            launched_effect((), move |scope| async move {
+                scope.delay(delay).await;
+                done.set(true);
+            });
+        });
+        let time = Rc::clone(clock);
+        composition.set_time_source(move || time.get());
+        composition
+    }
+
+    /// With the host's clock, a delay waits on a timer from when the task waits, asking for
+    /// no frame, and ends when the host runs the timers at its end.
+    #[test]
+    fn a_delay_waits_on_a_timer_without_frames() {
+        let done = Rc::new(Cell::new(false));
+        let clock = Rc::new(Cell::new(Duration::from_secs(4)));
+        let mut composition = waiting(&done, Duration::from_millis(500), &clock);
+        composition.compose();
+        assert!(!composition.has_pending_frame());
+        assert_eq!(composition.next_timer(), Some(Duration::from_millis(4_500)));
+        assert!(!composition.run_timers(Duration::from_millis(4_499)));
+        assert!(!done.get());
+        assert!(composition.run_timers(Duration::from_millis(4_500)));
+        assert!(done.get());
+        assert_eq!(composition.next_timer(), None);
+    }
+
+    /// Without the host's clock, a delay starts at the next frame and ends at the frame
+    /// that reaches its end.
+    #[test]
+    fn without_a_clock_a_delay_starts_at_the_next_frame() {
+        let done = Rc::new(Cell::new(false));
+        let done_in = Rc::clone(&done);
+        let mut composition = Composition::new(move || {
+            let done = Rc::clone(&done_in);
+            launched_effect((), move |scope| async move {
+                scope.delay(Duration::from_millis(100)).await;
+                done.set(true);
+            });
+        });
+        composition.compose();
+        assert!(composition.has_pending_frame());
+        composition.run_frame(Duration::from_secs(1));
+        assert!(!composition.has_pending_frame());
+        composition.run_frame(Duration::from_millis(1_099));
+        assert!(!done.get());
+        composition.run_frame(Duration::from_millis(1_100));
+        assert!(done.get());
+    }
 }

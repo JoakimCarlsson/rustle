@@ -11,7 +11,7 @@ mod intrinsic;
 mod measure;
 mod measured;
 mod paint;
-mod regions;
+pub(crate) mod regions;
 
 #[cfg(test)]
 mod layout_tests;

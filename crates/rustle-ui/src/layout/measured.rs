@@ -164,6 +164,16 @@ pub(super) enum Paint {
         on_event: PointerInputHandler,
         inner: Box<Measured>,
     },
+    PointerEvent {
+        event_type: crate::pointer::PointerEventType,
+        pass: crate::pointer::PointerEventPass,
+        on_event: crate::pointer::PointerEventHandler,
+        inner: Box<Measured>,
+    },
+    TextInput {
+        session: crate::text_input::PlatformTextInputSession,
+        inner: Box<Measured>,
+    },
     Pinch {
         on_pinch: Rc<dyn Fn(f32)>,
         inner: Box<Measured>,

@@ -10,7 +10,7 @@ use rustle_geometry::{Offset, Rect};
 use rustle_ui::{DragAndDropEvent, DragAndDropTarget, DragData, TransferDataFn};
 
 use crate::interface::Interface;
-use crate::pointer::same_area;
+use crate::pointing::same_area;
 
 /// A press on a drag-and-drop source, and the drag it became once the pointer moved far
 /// enough.

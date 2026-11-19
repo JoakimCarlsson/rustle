@@ -48,3 +48,18 @@ pub(crate) fn display_of(content: impl FnMut() + 'static) -> DisplayList {
         &mut Fixed,
     )
 }
+
+/// A headless interface of `width` by `height` logical pixels with `root` composed and laid
+/// out in it.
+pub(crate) fn embedded(width: u32, height: u32, root: impl FnMut() + 'static) -> crate::Embedded {
+    let mut embedded = crate::Embedded::without_renderer(root, || {});
+    embedded.resize((width, height), 1.0);
+    embedded.update();
+    embedded
+}
+
+/// Emits a stack with `modifier`, its children at its top-left corner.
+#[track_caller]
+pub(crate) fn stack_sized(modifier: rustle_ui::Modifier, content: impl FnOnce()) {
+    rustle_foundation::stack_with(modifier, content);
+}

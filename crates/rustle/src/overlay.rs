@@ -5,7 +5,7 @@ use rustle_graphics::{Border, Color, DrawCommand};
 use rustle_ui::DisplayList;
 
 use crate::interface::Carrying;
-use crate::pointer::same_area;
+use crate::pointing::same_area;
 
 /// What is drawn on top while something is carried: the drop target under the
 /// pointer lit up, the place it came from dimmed, and a lifted, translucent copy
