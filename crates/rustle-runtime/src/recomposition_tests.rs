@@ -88,6 +88,40 @@ fn nested_scopes_run_exactly_as_often_as_needed() {
     assert!(!composition.recompose());
 }
 
+/// State made outside composition, as a state holder keeps it, is read by two compositions:
+/// a write reruns the root of the one whose root read it and only the scope of the other.
+#[test]
+fn state_made_outside_composition_invalidates_every_reader() {
+    let shared = mutable_state(0);
+    let (first_roots, second_roots, second_scopes) = (counter(), counter(), counter());
+    let (state, runs) = (shared.clone(), first_roots.clone());
+    let mut first = Composition::new(move || {
+        runs.set(runs.get() + 1);
+        let _ = state.get();
+    });
+    let (state, roots, scopes) = (shared.clone(), second_roots.clone(), second_scopes.clone());
+    let mut second = Composition::new(move || {
+        roots.set(roots.get() + 1);
+        let (state, scopes) = (state.clone(), scopes.clone());
+        restartable((), move || {
+            scopes.set(scopes.get() + 1);
+            let _ = state.get();
+        });
+    });
+    first.compose();
+    second.compose();
+    assert!(!first.recompose() && !second.recompose());
+
+    shared.set(1);
+    assert!(first.recompose());
+    assert!(second.recompose());
+    assert_eq!(
+        (first_roots.get(), second_roots.get(), second_scopes.get()),
+        (2, 1, 2)
+    );
+    assert!(!first.recompose() && !second.recompose());
+}
+
 /// Items of a keyed list keep their state and their scopes through reordering, only the item
 /// whose state changed reruns, and a removed item cleans up and is ignored afterwards.
 #[test]
@@ -540,4 +574,92 @@ fn remember_keeps_cloneable_and_live_values() {
     assert_eq!(taken(&handles.0).get(), [1, 2, 3]);
     assert_eq!(taken(&handles.1).with(|value| value.0), 5);
     assert_eq!(inits.get(), 1);
+}
+
+/// State read only while drawing asks for a drawing when it changes, state read only while
+/// laying out asks for a layout, and neither composes; state also read while composing
+/// composes the root as before.
+#[test]
+fn state_read_outside_composition_asks_for_its_phase_only() {
+    let runs = counter();
+    let (drawn_slot, laid_slot, composed_slot) = (slot::<f32>(), slot::<f32>(), slot::<f32>());
+    let (r, ds, ls, cs) = (
+        runs.clone(),
+        drawn_slot.clone(),
+        laid_slot.clone(),
+        composed_slot.clone(),
+    );
+    let mut composition = Composition::new(move || {
+        r.set(r.get() + 1);
+        *ds.borrow_mut() = Some(remember(|| 0.0));
+        *ls.borrow_mut() = Some(remember(|| 0.0));
+        let composed = remember(|| 0.0);
+        let _ = composed.get();
+        *cs.borrow_mut() = Some(composed);
+    });
+    composition.compose();
+    let phases = composition.phase_observer();
+    let (drawn, laid, composed) = (taken(&drawn_slot), taken(&laid_slot), taken(&composed_slot));
+    phases.run(Phase::Layout, || laid.get());
+    phases.run(Phase::Drawing, || (drawn.get(), composed.get()));
+
+    drawn.set(90.0);
+    assert!(!composition.is_dirty());
+    assert!(phases.take_redraw());
+    assert!(!phases.take_redraw());
+    assert!(!phases.take_relayout());
+
+    laid.set(4.0);
+    assert!(!composition.is_dirty());
+    assert!(phases.take_relayout());
+    assert!(!phases.take_redraw());
+
+    composed.set(1.0);
+    assert!(composition.is_dirty());
+    assert!(!phases.take_redraw());
+    assert!(composition.recompose());
+    assert_eq!(runs.get(), 2);
+}
+
+/// State read while both laying out and drawing asks for a layout alone, which draws too, and
+/// state nothing read still composes the root that remembered it.
+#[test]
+fn layout_covers_drawing_and_unread_state_composes() {
+    let (laid_slot, unread_slot) = (slot::<i32>(), slot::<i32>());
+    let (ls, us) = (laid_slot.clone(), unread_slot.clone());
+    let mut composition = Composition::new(move || {
+        *ls.borrow_mut() = Some(remember(|| 0));
+        *us.borrow_mut() = Some(remember(|| 0));
+    });
+    composition.compose();
+    let phases = composition.phase_observer();
+    let (laid, unread) = (taken(&laid_slot), taken(&unread_slot));
+    phases.run(Phase::Layout, || laid.get());
+    phases.run(Phase::Drawing, || laid.get());
+    laid.set(1);
+    assert!(phases.take_relayout());
+    assert!(!phases.take_redraw());
+    assert!(!composition.is_dirty());
+    unread.set(1);
+    assert!(composition.is_dirty());
+}
+
+/// State one composition composes with and another only draws asks the first to compose and
+/// the second to draw.
+#[test]
+fn each_composition_is_asked_for_the_phase_it_read_in() {
+    let shared = mutable_state(0);
+    let composed = shared.clone();
+    let mut composing = Composition::new(move || {
+        let _ = composed.get();
+    });
+    let mut drawing = Composition::new(|| {});
+    composing.compose();
+    drawing.compose();
+    let phases = drawing.phase_observer();
+    phases.run(Phase::Drawing, || shared.get());
+    shared.set(1);
+    assert!(composing.is_dirty());
+    assert!(!drawing.is_dirty());
+    assert!(phases.take_redraw());
 }

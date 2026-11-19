@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::mem;
 use std::rc::{Rc, Weak};
 
+use crate::phase::Phase;
 use crate::scope::{self, ScopeInner};
 use crate::snapshot;
 
@@ -20,6 +21,10 @@ pub(crate) struct Invalidation {
     /// Scopes that read state which changed, waiting to be recomposed.
     queue: RefCell<Vec<Weak<ScopeInner>>>,
     waker: RefCell<Option<Box<dyn Fn()>>>,
+    /// Whether state read only while laying out changed, so the tree is to be laid out again.
+    relayout: Cell<bool>,
+    /// Whether state read only while drawing changed, so the tree is to be drawn again.
+    redraw: Cell<bool>,
 }
 
 impl Invalidation {
@@ -30,7 +35,31 @@ impl Invalidation {
             root: Cell::new(true),
             queue: RefCell::new(Vec::new()),
             waker: RefCell::new(None),
+            relayout: Cell::new(false),
+            redraw: Cell::new(false),
         })
+    }
+
+    /// Asks for `phase` to run again over the tree as it is, without composing it, and runs
+    /// the waker when that was not asked for already.
+    pub(crate) fn invalidate_phase(&self, phase: Phase) {
+        let flag = match phase {
+            Phase::Layout => &self.relayout,
+            Phase::Drawing => &self.redraw,
+        };
+        if !flag.replace(true)
+            && let Some(waker) = &*self.waker.borrow()
+        {
+            waker();
+        }
+    }
+
+    /// Takes whether `phase` was asked to run again since this was last asked.
+    pub(crate) fn take_phase(&self, phase: Phase) -> bool {
+        match phase {
+            Phase::Layout => self.relayout.replace(false),
+            Phase::Drawing => self.redraw.replace(false),
+        }
     }
 
     /// Marks the whole root as needing to run again.
@@ -81,9 +110,27 @@ impl Invalidation {
     }
 }
 
+/// The compositions among `readers` that still exist, dropping those that do not.
+fn live_invalidations(readers: &RefCell<Vec<Weak<Invalidation>>>) -> Vec<Rc<Invalidation>> {
+    let mut live = Vec::new();
+    readers.borrow_mut().retain(|weak| match weak.upgrade() {
+        Some(invalidation) => {
+            live.push(invalidation);
+            true
+        }
+        None => false,
+    });
+    live
+}
+
+/// A scope that read a value: the scope, the run of it that read, and the composition it belongs to.
+type Reader = (Weak<ScopeInner>, u64, Weak<Invalidation>);
+
 struct Inner<T> {
     value: RefCell<T>,
-    invalidation: Rc<Invalidation>,
+    /// The composition that remembered the value, which a write invalidates when
+    /// nothing is known to have read it. `None` for state made outside composition.
+    invalidation: Option<Rc<Invalidation>>,
     /// Counts changes, so what read the value can tell it has moved on.
     version: Cell<u64>,
     /// Copies a value, for state that takes part in snapshots. `None` for plain state.
@@ -92,10 +139,15 @@ struct Inner<T> {
     written: Cell<u64>,
     /// Values overwritten while a snapshot was open, each with the generation of its overwrite.
     retained: RefCell<Vec<(u64, T)>>,
-    /// The scopes that read the value, each with the run of the scope that read it.
-    readers: RefCell<Vec<(Weak<ScopeInner>, u64)>>,
-    /// Whether something composing outside a scope read the value.
-    root_read: Cell<bool>,
+    /// The scopes that read the value, each with the run of the scope that read it and
+    /// the composition it belongs to.
+    readers: RefCell<Vec<Reader>>,
+    /// The compositions in which something composing outside a scope read the value.
+    root_readers: RefCell<Vec<Weak<Invalidation>>>,
+    /// The compositions whose tree was laid out reading the value, outside composition.
+    layout_readers: RefCell<Vec<Weak<Invalidation>>>,
+    /// The compositions whose tree was drawn reading the value, outside composition.
+    draw_readers: RefCell<Vec<Weak<Invalidation>>>,
 }
 
 impl<T: 'static> Inner<T> {
@@ -121,45 +173,113 @@ impl<T: 'static> Inner<T> {
         self.invalidate_readers();
     }
 
-    /// Invalidates what read the value: the scopes that did, or the whole root when the
-    /// root read it or nothing composing is known to have.
+    /// Invalidates what read the value, in every composition that read it: the whole root
+    /// of each composition whose root read it, the scopes that did in the others, the layout
+    /// or else the drawing of the compositions none of which composed with it but whose tree
+    /// was laid out or drawn reading it, and the root of the composition that remembered it
+    /// when nothing is known to have read it.
     fn invalidate_readers(&self) {
-        if self.root_read.get() {
-            self.invalidation.invalidate();
-            return;
-        }
-        let mut live = Vec::new();
-        self.readers.borrow_mut().retain(|(weak, run)| {
-            match weak.upgrade().filter(|scope| scope.run() == *run) {
-                Some(scope) => {
-                    live.push(scope);
+        let mut roots = Vec::new();
+        self.root_readers
+            .borrow_mut()
+            .retain(|weak| match weak.upgrade() {
+                Some(invalidation) => {
+                    roots.push(invalidation);
                     true
                 }
                 None => false,
+            });
+        let mut live = Vec::new();
+        self.readers.borrow_mut().retain(|(weak, run, owner)| {
+            match (
+                weak.upgrade().filter(|scope| scope.run() == *run),
+                owner.upgrade(),
+            ) {
+                (Some(scope), Some(owner)) => {
+                    live.push((scope, owner));
+                    true
+                }
+                _ => false,
             }
         });
-        if live.is_empty() {
-            self.invalidation.invalidate();
+        let laying = live_invalidations(&self.layout_readers);
+        let drawing = live_invalidations(&self.draw_readers);
+        let composing = |invalidation: &Rc<Invalidation>| {
+            roots.iter().any(|root| Rc::ptr_eq(root, invalidation))
+                || live
+                    .iter()
+                    .any(|(_, owner)| Rc::ptr_eq(owner, invalidation))
+        };
+        for invalidation in laying.iter().filter(|laid| !composing(laid)) {
+            invalidation.invalidate_phase(Phase::Layout);
         }
-        for scope in &live {
-            self.invalidation.invalidate_scope(scope);
+        for invalidation in drawing
+            .iter()
+            .filter(|drawn| !composing(drawn) && !laying.iter().any(|laid| Rc::ptr_eq(laid, drawn)))
+        {
+            invalidation.invalidate_phase(Phase::Drawing);
+        }
+        if roots.is_empty()
+            && live.is_empty()
+            && laying.is_empty()
+            && drawing.is_empty()
+            && let Some(invalidation) = &self.invalidation
+        {
+            invalidation.invalidate();
+        }
+        for root in &roots {
+            root.invalidate();
+        }
+        for (scope, owner) in &live {
+            if !roots.iter().any(|root| Rc::ptr_eq(root, owner)) {
+                owner.invalidate_scope(scope);
+            }
         }
     }
 
-    /// Remembers that whatever composes now read the value.
+    /// Remembers that whatever composes now read the value, in the composition it belongs to,
+    /// or, outside composition, that the phase a host observes read it.
     fn note_read(&self) {
-        match scope::reader() {
+        let reader = scope::reader();
+        if matches!(reader, scope::Reader::Nobody) {
+            if let Some((phase, invalidation)) = crate::phase::observing() {
+                let readers = match phase {
+                    Phase::Layout => &self.layout_readers,
+                    Phase::Drawing => &self.draw_readers,
+                };
+                let mut readers = readers.borrow_mut();
+                if !readers
+                    .iter()
+                    .any(|weak| std::ptr::eq(weak.as_ptr(), Rc::as_ptr(&invalidation)))
+                {
+                    readers.push(Rc::downgrade(&invalidation));
+                }
+            }
+            return;
+        }
+        let Some(composing) = crate::composition::current_invalidation() else {
+            return;
+        };
+        match reader {
             scope::Reader::Scope(scope) => {
                 let run = scope.run();
                 let mut readers = self.readers.borrow_mut();
-                let known = readers.iter().any(|(weak, seen)| {
+                let known = readers.iter().any(|(weak, seen, _)| {
                     *seen == run && std::ptr::eq(weak.as_ptr(), Rc::as_ptr(&scope))
                 });
                 if !known {
-                    readers.push((Rc::downgrade(&scope), run));
+                    readers.push((Rc::downgrade(&scope), run, Rc::downgrade(&composing)));
                 }
             }
-            scope::Reader::Root => self.root_read.set(true),
+            scope::Reader::Root => {
+                let mut roots = self.root_readers.borrow_mut();
+                if !roots
+                    .iter()
+                    .any(|weak| std::ptr::eq(weak.as_ptr(), Rc::as_ptr(&composing)))
+                {
+                    roots.push(Rc::downgrade(&composing));
+                }
+            }
             scope::Reader::Nobody => {}
         }
     }
@@ -317,7 +437,7 @@ pub struct State<T> {
 
 impl<T: 'static> State<T> {
     pub(crate) fn new(value: T, invalidation: Rc<Invalidation>) -> Self {
-        Self::build(value, invalidation, None)
+        Self::build(value, Some(invalidation), None)
     }
 
     /// State that takes part in snapshots, which needs to copy its value.
@@ -325,10 +445,23 @@ impl<T: 'static> State<T> {
     where
         T: Clone,
     {
-        Self::build(value, invalidation, Some(T::clone))
+        Self::build(value, Some(invalidation), Some(T::clone))
     }
 
-    fn build(value: T, invalidation: Rc<Invalidation>, cloner: Option<fn(&T) -> T>) -> Self {
+    /// State that belongs to no composition, for [`mutable_state`]. It invalidates
+    /// whatever composition read it.
+    pub(crate) fn new_detached(value: T) -> Self
+    where
+        T: Clone,
+    {
+        Self::build(value, None, Some(T::clone))
+    }
+
+    fn build(
+        value: T,
+        invalidation: Option<Rc<Invalidation>>,
+        cloner: Option<fn(&T) -> T>,
+    ) -> Self {
         Self {
             inner: Rc::new(Inner {
                 value: RefCell::new(value),
@@ -338,7 +471,9 @@ impl<T: 'static> State<T> {
                 written: Cell::new(0),
                 retained: RefCell::new(Vec::new()),
                 readers: RefCell::new(Vec::new()),
-                root_read: Cell::new(false),
+                root_readers: RefCell::new(Vec::new()),
+                layout_readers: RefCell::new(Vec::new()),
+                draw_readers: RefCell::new(Vec::new()),
             }),
         }
     }

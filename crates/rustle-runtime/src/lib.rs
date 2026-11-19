@@ -9,6 +9,7 @@ mod composition;
 mod effects;
 mod frame;
 mod local;
+mod phase;
 mod scope;
 mod snapshot;
 mod state;
@@ -19,8 +20,8 @@ mod recomposition_tests;
 
 pub use collections::{StateList, StateMap, remember_state_list, remember_state_map};
 pub use composition::{
-    Composition, Subcomposition, frame_clock, group, key, memo, mutable_state_of, remember,
-    remember_live, restartable,
+    Composition, Subcomposition, frame_clock, group, is_composing, key, memo, mutable_state,
+    mutable_state_of, remember, remember_live, restartable,
 };
 pub use effects::{
     Saver, derived_state_of, disposable_effect, launched_effect, produce_state, remember_saveable,
@@ -28,6 +29,7 @@ pub use effects::{
 };
 pub use frame::FrameClock;
 pub use local::CompositionLocal;
+pub use phase::{Phase, PhaseObserver};
 pub use scope::{Reads, Scope, mark_unskippable, track_reads};
 pub use snapshot::{
     AppliedChanges, ApplyResult, MutableSnapshot, ObserverHandle, Snapshot, SnapshotFlow,

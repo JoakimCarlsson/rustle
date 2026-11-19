@@ -17,6 +17,7 @@ use std::panic::Location;
 use std::rc::Rc;
 
 use crate::frame::{FrameClock, FrameQueue};
+use crate::phase::PhaseObserver;
 use crate::scope::{ReaderGuard, Scope, ScopeInner, ScopeSlot};
 use crate::state::{
     Invalidation, Read, RecordingGuard, State, begin_recording, end_recording, mark_untracked,
@@ -123,6 +124,29 @@ thread_local! {
     static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(None) };
 }
 
+/// Whether a composition pass is running on this thread, so composables and
+/// [`CompositionLocal::current`](crate::CompositionLocal::current) can be called. Code
+/// that also runs outside composition, such as measuring text for a host, checks it to
+/// fall back to its own defaults.
+pub fn is_composing() -> bool {
+    RUNTIME.with(|runtime| {
+        runtime
+            .try_borrow()
+            .map_or(true, |runtime| runtime.is_some())
+    })
+}
+
+/// The invalidation of the composition whose pass is in progress, if one is.
+pub(crate) fn current_invalidation() -> Option<Rc<Invalidation>> {
+    RUNTIME.with(|runtime| {
+        runtime
+            .try_borrow()
+            .ok()?
+            .as_ref()
+            .map(|runtime| Rc::clone(&runtime.invalidation))
+    })
+}
+
 /// Runs `access` on the pass in progress. Never run user code inside it.
 pub(crate) fn with_runtime<R>(access: impl FnOnce(&mut Runtime) -> R) -> R {
     RUNTIME.with(|runtime| {
@@ -208,6 +232,13 @@ impl<T> Composition<T> {
     pub fn run_frame(&mut self, now: std::time::Duration) {
         self.frames.run(now);
         self.executor.poll_woken();
+    }
+
+    /// A handle through which the host lays out and draws this composition's output, so that
+    /// state read only while laying out or drawing asks for a layout or a drawing when it
+    /// changes, instead of composing the root again (see [`PhaseObserver`]).
+    pub fn phase_observer(&self) -> PhaseObserver {
+        PhaseObserver::new(Rc::clone(&self.invalidation))
     }
 
     /// Marks the composition dirty, so the next [`Composition::recompose`]
@@ -594,6 +625,18 @@ pub fn mutable_state_of<T: Clone + 'static>(initial: T) -> State<T> {
     })
 }
 
+/// A state that belongs to no composition, like Compose's `mutableStateOf` called
+/// outside `remember`: for state a state holder, such as a view model, keeps outside
+/// the tree and hands to the composables that show it.
+///
+/// It can be made and written anywhere on the thread, also before any composition
+/// exists. Every composition that reads it is invalidated when it is written: the whole
+/// root of one whose root read it, the reading `restartable` scopes of the others. It
+/// takes part in snapshots like [`mutable_state_of`].
+pub fn mutable_state<T: Clone + 'static>(initial: T) -> State<T> {
+    State::new_detached(initial)
+}
+
 /// Returns the state remembered at `site`, making it with `make` the first time.
 fn remember_with<T: 'static>(
     site: &Location<'_>,
@@ -767,6 +810,18 @@ mod tests {
             id
         })
         .get()
+    }
+
+    /// A composition pass is running only while the root runs.
+    #[test]
+    fn composing_is_known_only_inside_a_pass() {
+        assert!(!is_composing());
+        let seen = Rc::new(Cell::new(false));
+        let inside = Rc::clone(&seen);
+        let mut composition = Composition::new(move || inside.set(is_composing()));
+        composition.compose();
+        assert!(seen.get());
+        assert!(!is_composing());
     }
 
     /// Checks that in-order traversal retains the existing child allocation.
