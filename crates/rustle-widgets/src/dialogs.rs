@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use rustle_animation::{animate_float_as_state, tween};
 use rustle_foundation::{
-    Alignment, Arrangement, BoxAlignment, Modifier, Role, Semantics, column_with, floating,
-    row_arranged, spacer, stack_aligned, stack_with, text,
+    Alignment, Arrangement, BoxAlignment, Key, Modifier, PointerButton, Role, Semantics,
+    column_with, floating, row_arranged, spacer, stack_aligned, stack_with, text,
 };
 use rustle_graphics::Color;
 use rustle_runtime::remember;
@@ -24,6 +24,74 @@ pub fn dialog(on_dismiss: impl Fn() + 'static, content: impl FnOnce()) {
     dialog_semantics(Semantics::new(Role::Dialog), on_dismiss, content);
 }
 
+/// How a dialog behaves: Compose's `DialogProperties`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DialogProperties {
+    /// Whether Escape, the desktop's back press, asks to dismiss the dialog, when it reaches
+    /// the dialog: from what has the keyboard inside it, or with nothing focused.
+    pub dismiss_on_back_press: bool,
+    /// Whether a press on the dimmed area outside the dialog's content asks to dismiss it.
+    pub dismiss_on_click_outside: bool,
+}
+
+impl Default for DialogProperties {
+    /// Compose's defaults: dismissed by Escape and by a press outside.
+    fn default() -> Self {
+        Self {
+            dismiss_on_back_press: true,
+            dismiss_on_click_outside: true,
+        }
+    }
+}
+
+/// The color of the layer that dims what lies behind a dialog.
+const SCRIM: Color = Color::rgba(0, 0, 0, 140);
+
+/// Emits a modal dialog as Compose's `Dialog(onDismissRequest, properties, content)`: a
+/// dimmed layer over the whole area with `content` at its center, drawn as it is given, with
+/// no container of its own. Nothing beneath the dimmed layer takes pointer presses while it
+/// is shown. As `properties` say, a press on the dimmed layer and Escape call
+/// `on_dismiss_request`; hide the dialog there by not emitting it any more.
+///
+/// It fills the space it is given, so emit it last in a stack that fills the window, where
+/// it covers what was emitted before it.
+#[track_caller]
+pub fn dialog_with(
+    on_dismiss_request: impl Fn() + 'static,
+    properties: DialogProperties,
+    content: impl FnOnce(),
+) {
+    let on_dismiss_request = Rc::new(on_dismiss_request);
+    let mut scrim = Modifier::new()
+        .fill_max_size()
+        .semantics(Semantics::new(Role::Dialog));
+    for button in [
+        PointerButton::Primary,
+        PointerButton::Secondary,
+        PointerButton::Middle,
+    ] {
+        scrim = scrim.on_pointer_button(button, |_| {});
+    }
+    if properties.dismiss_on_back_press {
+        let dismiss = Rc::clone(&on_dismiss_request);
+        scrim = scrim.on_key_event(move |event| {
+            let escape = event.pressed && event.key == Key::Escape;
+            if escape {
+                dismiss();
+            }
+            escape
+        });
+    }
+    let scrim = if properties.dismiss_on_click_outside {
+        scrim.clickable_plain(move || on_dismiss_request())
+    } else {
+        scrim.clickable_plain(|| {})
+    };
+    stack_aligned(scrim.background(SCRIM), BoxAlignment::Center, || {
+        stack_with(Modifier::new().clickable_plain(|| {}), content);
+    });
+}
+
 /// Emits a dialog described to assistive technology by `semantics`.
 #[track_caller]
 fn dialog_semantics(semantics: Semantics, on_dismiss: impl Fn() + 'static, content: impl FnOnce()) {
@@ -32,7 +100,7 @@ fn dialog_semantics(semantics: Semantics, on_dismiss: impl Fn() + 'static, conte
             .fill_max_size()
             .semantics(semantics)
             .clickable_plain(on_dismiss)
-            .background(Color::rgba(0, 0, 0, 140)),
+            .background(SCRIM),
         BoxAlignment::Center,
         || {
             // The card takes clicks so they do not reach the dimmed area behind it.
@@ -137,3 +205,6 @@ pub fn popup(on_dismiss: impl Fn() + 'static, content: impl FnOnce()) {
         content();
     });
 }
+
+#[cfg(test)]
+mod tests;

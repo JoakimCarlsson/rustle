@@ -1,4 +1,4 @@
-//! Tabs, segmented controls and the bottom navigation bar.
+//! Tabs, segmented controls and buttons, and the bottom navigation bar.
 
 use std::rc::Rc;
 
@@ -11,9 +11,10 @@ use rustle_runtime::key;
 use rustle_text::FontWeight;
 
 use crate::BadgeStyle;
+use crate::icons::icon;
 use crate::pill;
-use crate::shape::ShapeModifier;
-use crate::theme::{color_scheme, shapes, text_style_of, typography};
+use crate::shape::{BorderStroke, Shape, ShapeModifier};
+use crate::theme::{color_scheme, provide_content_color, shapes, text_style_of, typography};
 
 /// Emits a row of tabs labelled `labels`, with `selected` underlined, calling
 /// `on_select` with the index of the tab clicked.
@@ -178,6 +179,235 @@ pub fn segmented_control(selected: usize, labels: &[&str], on_select: impl Fn(us
     );
 }
 
+/// The colors of a segmented button in each of its states: Compose's `SegmentedButtonColors`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SegmentedButtonColors {
+    /// The fill of the selected button.
+    pub active_container_color: Color,
+    /// The text and icon of the selected button.
+    pub active_content_color: Color,
+    /// The border of the selected button.
+    pub active_border_color: Color,
+    /// The fill of a button not selected.
+    pub inactive_container_color: Color,
+    /// The text and icon of a button not selected.
+    pub inactive_content_color: Color,
+    /// The border of a button not selected.
+    pub inactive_border_color: Color,
+    /// The fill of the selected button while it is disabled.
+    pub disabled_active_container_color: Color,
+    /// The text and icon of the selected button while it is disabled.
+    pub disabled_active_content_color: Color,
+    /// The border of the selected button while it is disabled.
+    pub disabled_active_border_color: Color,
+    /// The fill of a button not selected while it is disabled.
+    pub disabled_inactive_container_color: Color,
+    /// The text and icon of a button not selected while it is disabled.
+    pub disabled_inactive_content_color: Color,
+    /// The border of a button not selected while it is disabled.
+    pub disabled_inactive_border_color: Color,
+}
+
+impl SegmentedButtonColors {
+    /// The fill of a button that is `enabled` or not and `active` (selected) or not:
+    /// Compose's `containerColor(enabled, active)`.
+    pub fn container_color(&self, enabled: bool, active: bool) -> Color {
+        match (enabled, active) {
+            (true, true) => self.active_container_color,
+            (true, false) => self.inactive_container_color,
+            (false, true) => self.disabled_active_container_color,
+            (false, false) => self.disabled_inactive_container_color,
+        }
+    }
+
+    /// The text and icon color of such a button: Compose's `contentColor(enabled, checked)`.
+    pub fn content_color(&self, enabled: bool, active: bool) -> Color {
+        match (enabled, active) {
+            (true, true) => self.active_content_color,
+            (true, false) => self.inactive_content_color,
+            (false, true) => self.disabled_active_content_color,
+            (false, false) => self.disabled_inactive_content_color,
+        }
+    }
+
+    /// The border color of such a button: Compose's `borderColor(enabled, active)`.
+    pub fn border_color(&self, enabled: bool, active: bool) -> Color {
+        match (enabled, active) {
+            (true, true) => self.active_border_color,
+            (true, false) => self.inactive_border_color,
+            (false, true) => self.disabled_active_border_color,
+            (false, false) => self.disabled_inactive_border_color,
+        }
+    }
+}
+
+/// The default look of segmented buttons: Compose's `SegmentedButtonDefaults`.
+pub struct SegmentedButtonDefaults;
+
+impl SegmentedButtonDefaults {
+    /// How thick the border of a segmented button is, and how far neighbours overlap so they
+    /// share one border: `SegmentedButtonDefaults.BorderWidth`.
+    pub const BORDER_WIDTH: f32 = 1.0;
+
+    /// How large the icon of a segmented button is: `SegmentedButtonDefaults.IconSize`.
+    pub const ICON_SIZE: f32 = 18.0;
+
+    /// The room around a segmented button's icon and label, horizontal and vertical:
+    /// `SegmentedButtonDefaults.ContentPadding`.
+    pub const CONTENT_PADDING: (f32, f32) = (12.0, 8.0);
+
+    /// The colors from the theme: the secondary container behind the selected button, the
+    /// outline around every button, as `SegmentedButtonDefaults.colors()`. Change fields with
+    /// struct update syntax for Compose's `colors(activeContainerColor = …)`.
+    pub fn colors() -> SegmentedButtonColors {
+        let scheme = color_scheme();
+        let disabled = with_alpha(scheme.on_surface, 0.38);
+        SegmentedButtonColors {
+            active_container_color: scheme.secondary_container,
+            active_content_color: scheme.on_secondary_container,
+            active_border_color: scheme.outline,
+            inactive_container_color: scheme.surface,
+            inactive_content_color: scheme.on_surface,
+            inactive_border_color: scheme.outline,
+            disabled_active_container_color: scheme.secondary_container,
+            disabled_active_content_color: disabled,
+            disabled_active_border_color: with_alpha(scheme.on_surface, 0.12),
+            disabled_inactive_container_color: scheme.surface,
+            disabled_inactive_content_color: disabled,
+            disabled_inactive_border_color: scheme.outline,
+        }
+    }
+
+    /// The shape the row of buttons is cut from: fully rounded ends, as
+    /// `SegmentedButtonDefaults.baseShape`.
+    pub fn base_shape() -> Shape {
+        Shape::rounded(Shape::FULL)
+    }
+
+    /// The shape of the button at `index` of `count`: the outer corners of `base_shape` on
+    /// the first and last, square corners between, as `SegmentedButtonDefaults.itemShape`.
+    pub fn item_shape(index: usize, count: usize, base_shape: Shape) -> Shape {
+        if count <= 1 {
+            return base_shape;
+        }
+        let corners = match base_shape {
+            Shape::Rectangle => return Shape::Rectangle,
+            Shape::Circle => crate::shape::CornerSizes::uniform(Shape::FULL),
+            Shape::Rounded(corners) | Shape::Cut(corners) => corners,
+        };
+        let first = index == 0;
+        let last = index + 1 == count;
+        let sizes = crate::shape::CornerSizes::new(
+            if first { corners.top_left } else { 0.0 },
+            if last { corners.top_right } else { 0.0 },
+            if last { corners.bottom_right } else { 0.0 },
+            if first { corners.bottom_left } else { 0.0 },
+        );
+        match base_shape {
+            Shape::Cut(_) => Shape::Cut(sizes),
+            _ => Shape::Rounded(sizes),
+        }
+    }
+
+    /// The border of a segmented button: `width` thick in `color`, as
+    /// `SegmentedButtonDefaults.borderStroke(color, width)`.
+    pub fn border_stroke(color: Color, width: f32) -> BorderStroke {
+        BorderStroke::new(width, color)
+    }
+
+    /// Emits the icon a segmented button shows by default: a check while `active`, nothing
+    /// otherwise, as `SegmentedButtonDefaults.Icon(active)`.
+    #[track_caller]
+    pub fn icon(active: bool) {
+        if active {
+            icon(
+                rustle_icons::phosphor::CHECK,
+                Self::ICON_SIZE,
+                crate::theme::content_color(),
+            );
+        }
+    }
+}
+
+/// `color` with its opacity multiplied by `alpha`, from 0.0 to 1.0.
+fn with_alpha(color: Color, alpha: f32) -> Color {
+    Color {
+        a: (f32::from(color.a) * alpha).round() as u8,
+        ..color
+    }
+}
+
+/// Emits a row of segmented buttons of which one is picked at a time, emitted by `content`
+/// with [`segmented_button`], each overlapping the one before it by `space` so neighbours
+/// share a border: Compose's `SingleChoiceSegmentedButtonRow(modifier, space, content)`.
+/// Give each button its place with [`SegmentedButtonDefaults::item_shape`].
+#[track_caller]
+pub fn single_choice_segmented_button_row(modifier: Modifier, space: f32, content: impl FnOnce()) {
+    row_arranged(
+        modifier
+            .height_intrinsic(rustle_foundation::IntrinsicSize::Min)
+            .semantics(Semantics::new(Role::Group)),
+        Arrangement::SpacedBy(-space),
+        Alignment::Center,
+        content,
+    );
+}
+
+/// Emits a button of a [`single_choice_segmented_button_row`]: filled, outlined and colored
+/// by `colors` as it is `selected` and `enabled`, in `shape` with `border` along it,
+/// `icon` then `label` inside `content_padding` (horizontal, vertical), and calling
+/// `on_click` when clicked while `enabled`, with the hover and press feedback of
+/// [`Modifier::clickable`]. Compose's `SegmentedButton(selected, onClick,
+/// shape, modifier, enabled, colors, border, contentPadding, icon, label)`; pass
+/// [`SegmentedButtonDefaults::icon`] for Compose's default icon. The selected button is drawn
+/// over its neighbours, so its border shows where they overlap. Its size is what `modifier`,
+/// the padding and the content make it.
+#[track_caller]
+#[allow(clippy::too_many_arguments)]
+pub fn segmented_button(
+    selected: bool,
+    on_click: impl Fn() + 'static,
+    shape: Shape,
+    modifier: Modifier,
+    enabled: bool,
+    colors: SegmentedButtonColors,
+    border: BorderStroke,
+    content_padding: (f32, f32),
+    icon: impl FnOnce(),
+    label: impl FnOnce(),
+) {
+    let container = colors.container_color(enabled, selected);
+    let content = colors.content_color(enabled, selected);
+    let mut modifier = modifier
+        .z_index(i32::from(selected))
+        .fill_max_height()
+        .semantics(
+            Semantics::new(Role::RadioButton)
+                .toggled(selected)
+                .merging_descendants(),
+        );
+    if enabled {
+        modifier = modifier.clickable(on_click);
+    }
+    let modifier = modifier
+        .background_shape(container, shape)
+        .border_shape(border.width, border.color, shape)
+        .padding_xy(content_padding.0, content_padding.1);
+    row_arranged(modifier, Arrangement::Center, Alignment::Center, || {
+        provide_content_color(content, || {
+            row_arranged(
+                Modifier::new(),
+                Arrangement::SpacedBy(8.0),
+                Alignment::Center,
+                || {
+                    icon();
+                    label();
+                },
+            );
+        });
+    });
+}
+
 /// Emits a bar of destinations, one per `(glyph, label)`, with `selected`
 /// highlighted, calling `on_select` with the index of the one clicked.
 #[track_caller]
@@ -237,3 +467,6 @@ pub fn navigation_bar(
         },
     );
 }
+
+#[cfg(test)]
+mod tests;

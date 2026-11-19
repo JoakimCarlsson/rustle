@@ -3,14 +3,16 @@
 use std::rc::Rc;
 
 use rustle_foundation::{
-    Alignment, Arrangement, LOCAL_TEXT_STYLE, Modifier, Role, Semantics, SubcomposeResult, column,
-    column_with, row_arranged, spacer, stack_with, subcompose_layout, text, text_styled,
+    Alignment, Arrangement, BoxAlignment, LOCAL_TEXT_STYLE, Modifier, Role, Semantics,
+    SubcomposeResult, column, column_arranged, column_with, row_arranged, spacer,
+    stack_propagating, stack_with, subcompose_layout, text, text_styled,
 };
 use rustle_geometry::{Offset, Size};
+use rustle_graphics::Color;
 use rustle_text::FontWeight;
 use rustle_unit::Constraints;
 
-use crate::shape::{Shape, ShapeModifier};
+use crate::shape::{BorderStroke, Shape, ShapeModifier};
 use crate::theme::{
     absolute_tonal_elevation, color_scheme, provide_content_color, provide_tonal_elevation, shapes,
     text_style_of, typography,
@@ -32,6 +34,130 @@ pub fn surface_with(modifier: Modifier, content: impl FnOnce()) {
             .background_shape(theme.surface, radius)
             .border_shape(1.0, theme.outline, radius),
         || provide_content_color(theme.on_surface, content),
+    );
+}
+
+/// Emits a surface with every part of its look given, as Compose's
+/// `Surface(modifier, shape, color, contentColor, border, content)`: `color` fills `shape`,
+/// `border` is drawn along it over what it holds, and text and icons inside take
+/// `content_color`. Its content gets the surface's least size as its own, as Compose's
+/// surface gives it (`propagateMinConstraints`), so content given no size of its own fills a
+/// surface whose `modifier` sets one.
+#[track_caller]
+pub fn surface_custom(
+    modifier: Modifier,
+    shape: Shape,
+    color: Color,
+    content_color: Color,
+    border: Option<BorderStroke>,
+    content: impl FnOnce(),
+) {
+    let mut modifier = modifier.background_shape(color, shape);
+    if let Some(border) = border {
+        modifier = modifier.border_shape(border.width, border.color, shape);
+    }
+    stack_propagating(modifier, BoxAlignment::TopStart, || {
+        provide_content_color(content_color, content)
+    });
+}
+
+/// The colors of a card, as Compose's `CardColors`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CardColors {
+    /// The fill of the card.
+    pub container_color: Color,
+    /// The color of text and icons on it.
+    pub content_color: Color,
+}
+
+/// The default look of cards, as Compose's `CardDefaults`.
+pub struct CardDefaults;
+
+impl CardDefaults {
+    /// The colors of an outlined card: the theme's surface and the text on it, as
+    /// `CardDefaults.outlinedCardColors()`.
+    pub fn outlined_card_colors() -> CardColors {
+        let scheme = color_scheme();
+        CardColors {
+            container_color: scheme.surface,
+            content_color: scheme.on_surface,
+        }
+    }
+
+    /// The border of an outlined card: a hairline in the theme's outline variant, as
+    /// `CardDefaults.outlinedCardBorder()`.
+    pub fn outlined_card_border() -> BorderStroke {
+        BorderStroke::new(1.0, color_scheme().outline_variant)
+    }
+
+    /// The shape of a card: the theme's medium shape, as `CardDefaults.shape`.
+    pub fn shape() -> Shape {
+        shapes().medium
+    }
+}
+
+/// Emits a card with an outline, as Compose's
+/// `OutlinedCard(modifier, shape, colors, border, content)`: a surface of `shape` filled and
+/// colored by `colors` with `border` along it, holding what `content` emits one under another.
+#[track_caller]
+pub fn outlined_card(
+    modifier: Modifier,
+    shape: Shape,
+    colors: CardColors,
+    border: BorderStroke,
+    content: impl FnOnce(),
+) {
+    surface_custom(
+        modifier,
+        shape,
+        colors.container_color,
+        colors.content_color,
+        Some(border),
+        || {
+            column_arranged(
+                Modifier::new(),
+                Arrangement::Start,
+                Alignment::Start,
+                content,
+            )
+        },
+    );
+}
+
+/// The default look of dividers, as Compose's `DividerDefaults`.
+pub struct DividerDefaults;
+
+impl DividerDefaults {
+    /// How thick a divider is: one logical pixel, as `DividerDefaults.Thickness`.
+    pub const THICKNESS: f32 = 1.0;
+
+    /// The color of a divider: the theme's outline variant, as `DividerDefaults.color`.
+    pub fn color() -> Color {
+        color_scheme().outline_variant
+    }
+}
+
+/// Emits a line `thickness` tall in `color` across the width it is given, as Compose's
+/// `HorizontalDivider(modifier, thickness, color)`.
+#[track_caller]
+pub fn horizontal_divider(modifier: Modifier, thickness: f32, color: Color) {
+    spacer(
+        modifier
+            .fill_max_width()
+            .height(thickness)
+            .background(color),
+    );
+}
+
+/// Emits a line `thickness` wide in `color` down the height it is given, as Compose's
+/// `VerticalDivider(modifier, thickness, color)`.
+#[track_caller]
+pub fn vertical_divider(modifier: Modifier, thickness: f32, color: Color) {
+    spacer(
+        modifier
+            .fill_max_height()
+            .width(thickness)
+            .background(color),
     );
 }
 

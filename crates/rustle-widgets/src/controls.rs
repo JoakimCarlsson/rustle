@@ -1,7 +1,7 @@
 //! Toggles and sliders.
 
 use rustle_animation::{animate_color_as_state, animate_float_as_state, tween};
-use rustle_foundation::{BoxAlignment, Modifier, Role, Semantics, spacer, stack_aligned};
+use rustle_foundation::{BoxAlignment, Modifier, Role, Semantics, canvas, spacer, stack_aligned};
 use rustle_graphics::Color;
 use rustle_icons::phosphor;
 use rustle_runtime::remember;
@@ -67,6 +67,233 @@ pub fn checkbox(checked: bool, on_change: impl Fn(bool) + 'static) {
             }
         },
     );
+}
+
+/// The state of a check box that also stands for others, as Compose's `ToggleableState`:
+/// ticked, clear, or ticked for only some of what it stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleableState {
+    /// Ticked.
+    On,
+    /// Clear.
+    Off,
+    /// Ticked for some of what it stands for: drawn with a dash.
+    Indeterminate,
+}
+
+impl From<bool> for ToggleableState {
+    /// `On` for true, `Off` for false.
+    fn from(on: bool) -> Self {
+        if on { Self::On } else { Self::Off }
+    }
+}
+
+/// The colors of a check box, as Compose's `CheckboxColors`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CheckboxColors {
+    /// The mark while ticked or dashed.
+    pub checked_checkmark_color: Color,
+    /// The fill of the box while ticked or dashed.
+    pub checked_box_color: Color,
+    /// The fill of the box while clear.
+    pub unchecked_box_color: Color,
+    /// The outline while ticked or dashed.
+    pub checked_border_color: Color,
+    /// The outline while clear.
+    pub unchecked_border_color: Color,
+    /// The fill of a switched off box while ticked or dashed.
+    pub disabled_checked_box_color: Color,
+    /// The outline of a switched off box.
+    pub disabled_border_color: Color,
+}
+
+/// The default look of check boxes, as Compose's `CheckboxDefaults`.
+pub struct CheckboxDefaults;
+
+impl CheckboxDefaults {
+    /// The side of a check box given no size of its own, in logical pixels.
+    pub const SIZE: f32 = 16.0;
+
+    /// The colors of a check box in the theme: filled in its primary color with the mark in
+    /// the color on it while ticked, outlined in its outline color while clear, as
+    /// `CheckboxDefaults.colors()`.
+    pub fn colors() -> CheckboxColors {
+        let theme = color_scheme();
+        CheckboxColors {
+            checked_checkmark_color: theme.on_primary,
+            checked_box_color: theme.primary,
+            unchecked_box_color: Color::TRANSPARENT,
+            checked_border_color: theme.primary,
+            unchecked_border_color: theme.outline,
+            disabled_checked_box_color: with_alpha(theme.on_surface, 0.38),
+            disabled_border_color: with_alpha(theme.on_surface, 0.38),
+        }
+    }
+}
+
+/// `color` at `alpha` of its own opacity.
+fn with_alpha(color: Color, alpha: f32) -> Color {
+    Color::rgba(
+        color.r,
+        color.g,
+        color.b,
+        (f32::from(color.a) * alpha).round() as u8,
+    )
+}
+
+/// Emits a check box with every part of its look given, as Compose's
+/// `Checkbox(checked, onCheckedChange, modifier, enabled, colors)`: see [`tri_state_checkbox`].
+/// `on_checked_change` is called with the opposite of `checked` when it is clicked; with
+/// `None` the box does not answer the pointer itself, for a box inside a larger control that
+/// does.
+#[track_caller]
+pub fn checkbox_with(
+    modifier: Modifier,
+    checked: bool,
+    on_checked_change: Option<Box<dyn Fn(bool)>>,
+    enabled: bool,
+    colors: CheckboxColors,
+) {
+    let on_click =
+        on_checked_change.map(|change| -> Box<dyn Fn()> { Box::new(move || change(!checked)) });
+    tri_state_checkbox(
+        modifier,
+        ToggleableState::from(checked),
+        on_click,
+        enabled,
+        colors,
+    );
+}
+
+/// Emits a check box that is ticked, clear or dashed, as Compose's
+/// `TriStateCheckbox(state, onClick, modifier, enabled, colors)`. The box fills the size its
+/// `modifier` gives it, [`CheckboxDefaults::SIZE`] square otherwise, with corners rounded by a
+/// quarter of its side, and the mark takes three quarters of it. `on_click` runs when it is
+/// clicked, unless it is `None` or the box is not `enabled`.
+#[track_caller]
+pub fn tri_state_checkbox(
+    modifier: Modifier,
+    state: ToggleableState,
+    on_click: Option<Box<dyn Fn()>>,
+    enabled: bool,
+    colors: CheckboxColors,
+) {
+    let marked = state != ToggleableState::Off;
+    let (fill, outline) = match (marked, enabled) {
+        (true, true) => (colors.checked_box_color, colors.checked_border_color),
+        (true, false) => (
+            colors.disabled_checked_box_color,
+            colors.disabled_border_color,
+        ),
+        (false, true) => (colors.unchecked_box_color, colors.unchecked_border_color),
+        (false, false) => (colors.unchecked_box_color, colors.disabled_border_color),
+    };
+    let mark = match state {
+        ToggleableState::On => Some(phosphor::bold::CHECK),
+        ToggleableState::Indeterminate => Some(phosphor::bold::MINUS),
+        ToggleableState::Off => None,
+    };
+    let ink = colors.checked_checkmark_color;
+    let mut modifier = modifier
+        .size(CheckboxDefaults::SIZE, CheckboxDefaults::SIZE)
+        .semantics(Semantics::new(Role::CheckBox).toggled(marked));
+    if let (Some(on_click), true) = (on_click, enabled) {
+        modifier = modifier.clickable(on_click);
+    }
+    canvas(modifier, move |canvas| {
+        let side = canvas.width().min(canvas.height());
+        let corner = side / 4.0;
+        let (width, height) = (canvas.width(), canvas.height());
+        canvas.rounded_rect(0.0, 0.0, width, height, corner, fill);
+        canvas.stroke_rect(0.0, 0.0, width, height, corner, 1.0, outline);
+        if let Some(mark) = &mark {
+            let size = side * 0.75;
+            canvas.path(
+                mark,
+                (width - size) / 2.0,
+                (height - size) / 2.0,
+                size,
+                size,
+                ink,
+            );
+        }
+    });
+}
+
+/// The colors of a switch, as Compose's `SwitchColors`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SwitchColors {
+    /// The knob while on.
+    pub checked_thumb_color: Color,
+    /// The track while on.
+    pub checked_track_color: Color,
+    /// The knob while off.
+    pub unchecked_thumb_color: Color,
+    /// The track while off.
+    pub unchecked_track_color: Color,
+}
+
+/// The default look of switches, as Compose's `SwitchDefaults`.
+pub struct SwitchDefaults;
+
+impl SwitchDefaults {
+    /// The width of a switch given no size of its own, in logical pixels.
+    pub const WIDTH: f32 = 36.0;
+    /// The height of a switch given no size of its own, in logical pixels.
+    pub const HEIGHT: f32 = 20.0;
+
+    /// The colors of a switch in the theme: a primary track with the color on it as the knob
+    /// while on, a surface variant track with the color on the surface as the knob while off,
+    /// as `SwitchDefaults.colors()`.
+    pub fn colors() -> SwitchColors {
+        let theme = color_scheme();
+        SwitchColors {
+            checked_thumb_color: theme.on_primary,
+            checked_track_color: theme.primary,
+            unchecked_thumb_color: theme.on_surface,
+            unchecked_track_color: theme.surface_variant,
+        }
+    }
+}
+
+/// Emits a switch with every part of its look given, as Compose's
+/// `Switch(checked, onCheckedChange, modifier, enabled, colors)`. The switch fills the size its
+/// `modifier` gives it, [`SwitchDefaults::WIDTH`] by [`SwitchDefaults::HEIGHT`] otherwise: a
+/// fully rounded track with a round knob two pixels inside it, which slides to the end while
+/// on. `on_checked_change` is called with the opposite of `checked` when it is clicked, unless
+/// it is `None` (for a switch inside a larger control that answers the pointer) or the switch
+/// is not `enabled`, which also draws it at 38% opacity.
+#[track_caller]
+pub fn switch_with(
+    modifier: Modifier,
+    checked: bool,
+    on_checked_change: Option<Box<dyn Fn(bool)>>,
+    enabled: bool,
+    colors: SwitchColors,
+) {
+    const INSET: f32 = 2.0;
+    let travel = animate_float_as_state(if checked { 1.0 } else { 0.0 }, tween(140));
+    let (track, knob) = if checked {
+        (colors.checked_track_color, colors.checked_thumb_color)
+    } else {
+        (colors.unchecked_track_color, colors.unchecked_thumb_color)
+    };
+    let mut modifier = modifier
+        .size(SwitchDefaults::WIDTH, SwitchDefaults::HEIGHT)
+        .semantics(Semantics::new(Role::Switch).toggled(checked));
+    match (on_checked_change, enabled) {
+        (Some(change), true) => modifier = modifier.clickable(move || change(!checked)),
+        (_, false) => modifier = modifier.alpha(0.38),
+        (None, true) => {}
+    }
+    let along = travel.get();
+    canvas(modifier, move |canvas| {
+        let (width, height) = (canvas.width(), canvas.height());
+        canvas.rounded_rect(0.0, 0.0, width, height, height / 2.0, track);
+        let side = (height - 2.0 * INSET).max(0.0);
+        let x = INSET + (width - side - 2.0 * INSET).max(0.0) * along;
+        canvas.rounded_rect(x, INSET, side, side, side / 2.0, knob);
+    });
 }
 
 /// Emits a switch that is on or off and calls `on_change` with the opposite

@@ -285,6 +285,7 @@ impl ShapeModifier for Modifier {
         match shape.uniform_radius() {
             Some(radius) => self.border(width, color, radius),
             None => self.draw_with_content(move |canvas| {
+                canvas.draw_content();
                 let (w, h) = (canvas.width(), canvas.size().height);
                 canvas.path(&shape.ring(w, h, width), 0.0, 0.0, w, h, color);
             }),
@@ -303,6 +304,24 @@ impl ShapeModifier for Modifier {
             ),
             Shape::Cut(_) => self.clip(),
         }
+    }
+}
+
+/// The width and color of a border, as Compose's `BorderStroke`, for the widgets that take
+/// one, such as [`surface_custom`](crate::surface_custom) and
+/// [`outlined_card`](crate::outlined_card).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BorderStroke {
+    /// How thick the border is, in logical pixels.
+    pub width: f32,
+    /// Its color.
+    pub color: Color,
+}
+
+impl BorderStroke {
+    /// A border `width` thick in `color`.
+    pub fn new(width: f32, color: Color) -> Self {
+        Self { width, color }
     }
 }
 

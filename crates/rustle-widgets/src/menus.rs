@@ -4,10 +4,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use rustle_foundation::{
-    Alignment, Arrangement, LOCAL_TEXT_STYLE, Modifier, Role, Semantics, column, column_with,
-    row_arranged, spacer, stack_with, text, text_styled,
+    Alignment, Arrangement, DropdownMenuPositionProvider, LOCAL_TEXT_STYLE, Modifier,
+    PopupProperties, Role, Semantics, column, column_with, popup_with, row_arranged, spacer,
+    stack_with, text, text_styled,
 };
-use rustle_geometry::{Rect, Size};
+use rustle_geometry::{Offset, Rect, Size};
 use rustle_icons::{Icon, phosphor};
 use rustle_runtime::key;
 
@@ -51,6 +52,38 @@ pub fn dropdown_menu_at(
             },
         );
     });
+}
+
+/// Emits a menu of `content` while `expanded`, anchored to the layout it is declared in:
+/// below it, or above it and to its end where the window has no room, moved by `offset`,
+/// over everything. A press outside it, or Escape, calls `on_dismiss_request`: Compose's
+/// `DropdownMenu(expanded, onDismissRequest, modifier, offset, properties)`, declared in the
+/// box that holds the control opening it.
+#[track_caller]
+pub fn dropdown_menu_anchored(
+    expanded: bool,
+    on_dismiss_request: impl Fn() + 'static,
+    modifier: Modifier,
+    offset: Offset,
+    properties: PopupProperties,
+    content: impl FnOnce(),
+) {
+    if !expanded {
+        return;
+    }
+    popup_with(
+        DropdownMenuPositionProvider {
+            content_offset: offset,
+            ..DropdownMenuPositionProvider::default()
+        },
+        Some(Rc::new(on_dismiss_request)),
+        properties,
+        || {
+            card(modifier.width_in(112.0, 280.0), || {
+                column_with(Modifier::new().padding_xy(0.0, 8.0), content);
+            });
+        },
+    );
 }
 
 /// Emits one entry of a menu showing `label` that runs `on_click` when clicked.
