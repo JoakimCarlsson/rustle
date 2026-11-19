@@ -44,9 +44,6 @@ fn beside(connection: &Connection, surface: NonNull<c_void>) -> Option<WlSurface
     WlSurface::from_id(connection, id).ok()
 }
 
-/// How far the shadow of a quad fades, as a share of its blur radius, as the renderer draws it.
-const SOFTNESS: f32 = 1.3;
-
 /// A rectangle in logical pixels, from the top left corner of the window.
 #[derive(Clone, Copy, PartialEq)]
 struct Rect {
@@ -201,7 +198,7 @@ impl Strips {
 
     /// A buffer `width` by `height` pixels holding `pixels`, premultiplied ARGB in the byte order of the machine; `None` when its memory could not be had.
     fn buffer(&self, pixels: &[u8], width: i32, height: i32) -> Option<WlBuffer> {
-        let fd = memfd_create("pandemonium-shadow", MemfdFlags::CLOEXEC).ok()?;
+        let fd = memfd_create("rustle-shadow", MemfdFlags::CLOEXEC).ok()?;
         let mut file = File::from(fd);
         file.write_all(pixels).ok()?;
         let handle = self.queue.handle();
@@ -346,39 +343,58 @@ fn straight(
     (most + shadow.radius, length + least - shadow.radius)
 }
 
-/// How opaque `shadow` of a window `frame` logical pixels across is at the logical point `x`, `y`, from 0 to 255: every layer of it laid over the others, each the rounded frame moved, grown and faded at its edge as the renderer draws it.
+/// How opaque `shadow` of a window `frame` logical pixels across is at the logical point `x`, `y`, from 0 to 255: every layer of it laid over the others, each the rounded frame moved, grown and blurred by a Gaussian with half its blur as standard deviation, as the renderer draws a shadow.
 fn opacity(x: f32, y: f32, frame: (f32, f32), shadow: &WindowShadow) -> u8 {
     let clear = shadow.layers.iter().fold(1.0, |clear, layer| {
-        let radius = (shadow.radius + layer.spread).max(0.0);
-        let distance = rounded_distance(
-            x - layer.x,
-            y - layer.y,
-            (-layer.spread, -layer.spread),
-            (frame.0 + layer.spread, frame.1 + layer.spread),
-            radius,
-        );
-        let softness = (layer.blur * SOFTNESS).max(f32::EPSILON);
-        let coverage = 1.0 - smoothstep(-softness, softness, distance);
+        let half = (frame.0 * 0.5 + layer.spread, frame.1 * 0.5 + layer.spread);
+        let point = (x - layer.x - frame.0 * 0.5, y - layer.y - frame.1 * 0.5);
+        let radius = (shadow.radius + layer.spread)
+            .max(0.0)
+            .min(half.0)
+            .min(half.1);
+        let sigma = (layer.blur * 0.5).max(f32::EPSILON);
+        let coverage = blurred_box(point, half, radius, sigma);
         clear * (1.0 - layer.alpha * coverage)
     });
     ((1.0 - clear) * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// How far the point `x`, `y` is outside the rectangle from `from` to `to` with corners rounded by `radius`; negative inside.
-fn rounded_distance(x: f32, y: f32, from: (f32, f32), to: (f32, f32), radius: f32) -> f32 {
-    let half = ((to.0 - from.0) * 0.5, (to.1 - from.1) * 0.5);
-    let centre = (from.0 + half.0, from.1 + half.1);
-    let radius = radius.min(half.0).min(half.1);
-    let qx = (x - centre.0).abs() - half.0 + radius;
-    let qy = (y - centre.1).abs() - half.1 + radius;
-    let outside = qx.max(0.0).hypot(qy.max(0.0));
-    outside + qx.max(qy).min(0.0) - radius
+/// How much of a rounded box with half size `half` and corners rounded by `corner`, centred on the origin and blurred by a Gaussian of deviation `sigma`, covers `point`, from 0 to 1: the box integrated along each of a few rows near the point, weighted by the Gaussian, as the renderer's shader does.
+fn blurred_box(point: (f32, f32), half: (f32, f32), corner: f32, sigma: f32) -> f32 {
+    let low = point.1 - half.1;
+    let high = point.1 + half.1;
+    let start = (-3.0 * sigma).clamp(low, high);
+    let end = (3.0 * sigma).clamp(low, high);
+    let step = (end - start) / 4.0;
+    let total: f32 = (0..4)
+        .map(|index| {
+            let y = start + step * (index as f32 + 0.5);
+            blur_along_x(point.0, point.1 - y, sigma, corner, half) * gaussian(y, sigma) * step
+        })
+        .sum();
+    total.clamp(0.0, 1.0)
 }
 
-/// Hermite interpolation of `value` from 0 at `low` to 1 at `high`.
-fn smoothstep(low: f32, high: f32, value: f32) -> f32 {
-    let t = ((value - low) / (high - low)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+/// How much of a Gaussian of deviation `sigma` centred on the row at `y` falls on the rounded box with half size `half` and corners rounded by `corner`, integrated along the row, at `x`.
+fn blur_along_x(x: f32, y: f32, sigma: f32, corner: f32, half: (f32, f32)) -> f32 {
+    let delta = (half.1 - corner - y.abs()).min(0.0);
+    let curved = half.0 - corner + (corner * corner - delta * delta).max(0.0).sqrt();
+    let scale = std::f32::consts::FRAC_1_SQRT_2 / sigma;
+    0.5 * (erf((x + curved) * scale) - erf((x - curved) * scale))
+}
+
+/// The Gaussian of deviation `sigma` at `value`.
+fn gaussian(value: f32, sigma: f32) -> f32 {
+    (-(value * value) / (2.0 * sigma * sigma)).exp() / (std::f32::consts::TAU.sqrt() * sigma)
+}
+
+/// The error function of `value`, to about four decimal places.
+fn erf(value: f32) -> f32 {
+    let magnitude = value.abs();
+    let denominator =
+        1.0 + (0.278_393 + (0.230_389 + 0.078_108 * magnitude * magnitude) * magnitude) * magnitude;
+    let squared = denominator * denominator;
+    value.signum() * (1.0 - 1.0 / (squared * squared))
 }
 
 /// The bytes of a black pixel `alpha` opaque, premultiplied ARGB in the byte order of the machine.
@@ -425,3 +441,31 @@ delegate_noop!(Held: ignore WlShm);
 delegate_noop!(Held: ignore WlShmPool);
 delegate_noop!(Held: ignore WpViewporter);
 delegate_noop!(Held: ignore WpViewport);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ShadowLayer;
+
+    /// A shadow of one solid layer, blurred over 8 pixels, around a frame 200 pixels across.
+    fn shadow() -> WindowShadow {
+        WindowShadow {
+            margin: 24.0,
+            radius: 8.0,
+            layers: vec![ShadowLayer::new(0.0, 0.0, 8.0, 0.0, 1.0)],
+        }
+    }
+
+    /// The strips fade as a Gaussian, as the renderer draws a shadow: half covered on the
+    /// frame's edge, lighter at a corner than at a side the same distance out.
+    #[test]
+    fn the_strips_fade_as_a_gaussian() {
+        let frame = (200.0, 200.0);
+        let edge = opacity(0.0, 100.0, frame, &shadow());
+        assert!(edge.abs_diff(128) <= 3, "on the edge: {edge}");
+        let side = opacity(-4.0, 100.0, frame, &shadow());
+        let corner = opacity(-0.485, -0.485, frame, &shadow());
+        assert!(corner < side, "side {side}, corner {corner}");
+        assert_eq!(opacity(-24.0, 100.0, frame, &shadow()), 0);
+    }
+}

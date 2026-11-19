@@ -74,12 +74,12 @@ impl App {
     /// Waits for the next long press that is due, or for the next event.
     pub(crate) fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.sync_windows(event_loop);
-        let Some((due, _, _)) = &self.ui.long_press else {
+        let Some((due, ..)) = &self.ui.long_press else {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         };
         if Instant::now() >= *due {
-            if let Some((_, on_long_press, _)) = self.ui.long_press.take() {
+            if let Some((_, on_long_press, ..)) = self.ui.long_press.take() {
                 // The press has become a long press, so it is no longer a click.
                 self.ui.pressed = None;
                 on_long_press();
@@ -99,7 +99,8 @@ impl App {
         if self.composition.recompose() {
             self.relayout_all();
         }
-        self.ui.apply_focus_request();
+        self.follow_phases();
+        self.apply_focus_request();
         self.apply_effects();
         self.request_redraw_for_frames();
     }
@@ -256,7 +257,7 @@ impl App {
             }
             _ => {}
         }
-        self.ui.apply_focus_request();
+        self.apply_focus_request();
         self.apply_effects();
     }
 

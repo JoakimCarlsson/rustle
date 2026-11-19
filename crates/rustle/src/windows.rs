@@ -50,6 +50,38 @@ impl App {
         self.active = index;
     }
 
+    /// Moves focus as the application asked, in the window the asked-for area was painted
+    /// in (the active one when none painted it), after taking it from what the application
+    /// asked to free in whichever window holds that, so a focus requested for a control of
+    /// another window is given there and not to the window that happens to be active.
+    pub(crate) fn apply_focus_request(&mut self) {
+        let release = rustle_ui::take_focus_release();
+        let request = rustle_ui::take_focus_request();
+        let before = self.active;
+        if let Some(freed) = release {
+            for index in 0..self.slots.len() {
+                self.activate(index);
+                self.ui.apply_focus(Some(freed), None);
+            }
+            self.activate(before);
+        }
+        let Some(focus) = request else {
+            return;
+        };
+        let target = (0..self.slots.len())
+            .find(|&index| {
+                if index == self.active {
+                    self.ui.shows_focus(&focus)
+                } else {
+                    self.slots[index].ui.shows_focus(&focus)
+                }
+            })
+            .unwrap_or(before);
+        self.activate(target);
+        self.ui.apply_focus(None, Some(focus));
+        self.activate(before);
+    }
+
     /// The window in slot `index`, if it is open.
     pub(crate) fn slot_window(&self, index: usize) -> Option<&WindowState> {
         if index == self.active {
@@ -92,6 +124,20 @@ impl App {
         for index in 0..self.slots.len() {
             self.activate(index);
             self.relayout();
+        }
+        self.activate(before);
+    }
+
+    /// Paints every window again from the tree it laid out last, without composing or
+    /// measuring, and asks each for a redraw.
+    pub(crate) fn repaint_all(&mut self) {
+        let before = self.active;
+        for index in 0..self.slots.len() {
+            self.activate(index);
+            self.ui.repaint();
+            if let Some(state) = &self.window {
+                state.window.request_redraw();
+            }
         }
         self.activate(before);
     }

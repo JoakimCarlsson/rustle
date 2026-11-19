@@ -444,6 +444,13 @@ impl WindowHandle {
         REGISTRY.with(|r| r.borrow_mut().cancel_press.push(self.key));
     }
 
+    /// The native window, while it is open, for what this handle does not offer, such as
+    /// its level among other windows, asking for the user's attention, the input method's
+    /// caret area or the window's id among the events of the event loop.
+    pub fn native(self) -> Option<Arc<dyn Window>> {
+        REGISTRY.with(|r| r.borrow().entries.get(&self.key)?.window.clone())
+    }
+
     /// Minimizes the window.
     pub fn minimize(self) {
         self.with_window(|w| w.set_minimized(true));

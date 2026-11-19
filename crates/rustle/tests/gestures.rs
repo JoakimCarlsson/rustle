@@ -8,7 +8,10 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use rustle::prelude::*;
-use rustle::{Embedded, Offset, PointerButton, PointerId};
+use rustle::{
+    Embedded, LOCAL_SCROLLBAR_STYLE, Offset, PointerButton, PointerId, ScrollbarStyle,
+    ScrollbarVisibility,
+};
 
 /// A headless interface of 400 by 400 logical pixels with `root` composed in it.
 fn rig(root: impl FnMut() + 'static) -> Embedded {
@@ -288,7 +291,7 @@ fn anchored_draggable_picking_up_stops_the_settling() {
         &mut ui,
         Offset::new(100.0, 10.0),
         Offset::new(80.0, 10.0),
-        4,
+        2,
     );
     assert!(
         !state.is_settling(),
@@ -1138,4 +1141,153 @@ fn a_draggable_that_moves_with_its_own_offset_keeps_receiving_the_drag() {
         5,
     );
     assert!((state.offset() - 100.0).abs() < 0.01, "{}", state.offset());
+}
+
+/// A press on a scrollbar drawn over a clickable row drags the bar alone: the row is not
+/// clicked, and the state says its bar is held until the button is released.
+#[test]
+fn a_press_on_a_scrollbar_belongs_to_the_scrollbar() {
+    let clicks = Rc::new(Cell::new(0));
+    let state = ScrollState::new(0.0);
+    state.set_scrollbar(ScrollbarStyle {
+        visibility: ScrollbarVisibility::Always,
+        ..ScrollbarStyle::default()
+    });
+    let (counted, shown) = (Rc::clone(&clicks), state.clone());
+    let mut ui = rig(move || {
+        let counted = Rc::clone(&counted);
+        column_with(
+            Modifier::new().size(200.0, 200.0).vertical_scroll(&shown),
+            move || {
+                for _ in 0..10 {
+                    let counted = Rc::clone(&counted);
+                    spacer(
+                        Modifier::new()
+                            .fill_max_width()
+                            .height(100.0)
+                            .clickable(move || counted.set(counted.get() + 1)),
+                    );
+                }
+            },
+        );
+    });
+    ui.update();
+    press_and_move(
+        &mut ui,
+        Offset::new(195.0, 20.0),
+        Offset::new(195.0, 120.0),
+        4,
+    );
+    assert!(state.is_scrollbar_dragged());
+    ui.pointer_button(PointerButton::Primary, false);
+    ui.update();
+    assert!(!state.is_scrollbar_dragged());
+    assert!(state.offset() > 0.0);
+    assert_eq!(clicks.get(), 0);
+    ui.pointer_moved(Offset::new(50.0, 50.0));
+    ui.pointer_button(PointerButton::Primary, true);
+    ui.pointer_button(PointerButton::Primary, false);
+    assert_eq!(
+        clicks.get(),
+        1,
+        "a press beside the bar still clicks the row"
+    );
+}
+
+/// A scrolling area whose state was given no style takes the `LOCAL_SCROLLBAR_STYLE` around
+/// it, and one given a style with `set_scrollbar` keeps its own.
+#[test]
+fn a_scrollbar_takes_the_local_style_unless_given_its_own() {
+    let local = ScrollbarStyle {
+        thickness: 4.0,
+        visibility: ScrollbarVisibility::Always,
+        ..ScrollbarStyle::default()
+    };
+    let own = ScrollbarStyle {
+        thickness: 9.0,
+        ..ScrollbarStyle::default()
+    };
+    let (plain, styled) = (ScrollState::new(0.0), ScrollState::new(0.0));
+    styled.set_scrollbar(own);
+    let (shown_plain, shown_styled) = (plain.clone(), styled.clone());
+    let _ui = rig(move || {
+        let (plain, styled) = (shown_plain.clone(), shown_styled.clone());
+        LOCAL_SCROLLBAR_STYLE.provide(local, || {
+            column_with(
+                Modifier::new().size(100.0, 100.0).vertical_scroll(&plain),
+                || {
+                    spacer(Modifier::new().size(100.0, 400.0));
+                },
+            );
+            column_with(
+                Modifier::new().size(100.0, 100.0).vertical_scroll(&styled),
+                || {
+                    spacer(Modifier::new().size(100.0, 400.0));
+                },
+            );
+        });
+    });
+    assert_eq!(plain.scrollbar(), local);
+    assert_eq!(styled.scrollbar(), own);
+}
+
+/// A draggable takes its slop from the view configuration provided around it: with a slop
+/// of 30 pixels, a drag of 20 moves nothing and one of 50 moves it.
+#[test]
+fn draggable_takes_the_touch_slop_provided_around_it() {
+    let state = slot();
+    let out = state.clone();
+    let configuration = rustle::ViewConfiguration {
+        touch_slop: 30.0,
+        ..rustle::ViewConfiguration::default()
+    };
+    let mut ui = rig(move || {
+        rustle::LOCAL_VIEW_CONFIGURATION.provide(configuration, || {
+            let drag = remember_draggable_state();
+            *out.borrow_mut() = Some(drag.clone());
+            stack_with(
+                Modifier::new()
+                    .size(100.0, 100.0)
+                    .draggable(&drag, Axis::Vertical),
+                || {},
+            );
+        });
+    });
+    let state: DraggableState = get(&state);
+    drag(&mut ui, Offset::new(50.0, 10.0), Offset::new(50.0, 30.0), 2);
+    assert_eq!(state.offset(), 0.0);
+    drag(&mut ui, Offset::new(50.0, 10.0), Offset::new(50.0, 60.0), 5);
+    assert!(state.offset() > 0.0, "{}", state.offset());
+}
+
+/// Presses are counted into double clicks by the double-tap timeout of the view
+/// configuration of the area pressed: with none, a second press at once is a first again.
+#[test]
+fn presses_count_by_the_double_tap_timeout_provided_around_them() {
+    for timeout in [300, 0] {
+        let counts = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&counts);
+        let configuration = rustle::ViewConfiguration {
+            double_tap_timeout_millis: timeout,
+            ..rustle::ViewConfiguration::default()
+        };
+        let mut ui = rig(move || {
+            let seen = Rc::clone(&seen);
+            rustle::LOCAL_VIEW_CONFIGURATION.provide(configuration, || {
+                stack_with(
+                    Modifier::new()
+                        .size(100.0, 100.0)
+                        .on_press(move |press| seen.borrow_mut().push(press.click_count)),
+                    || {},
+                );
+            });
+        });
+        for _ in 0..2 {
+            ui.pointer_moved(Offset::new(50.0, 50.0));
+            ui.pointer_button(PointerButton::Primary, true);
+            ui.pointer_button(PointerButton::Primary, false);
+        }
+        let expected = if timeout > 0 { vec![1, 2] } else { vec![1, 1] };
+        assert_eq!(*counts.borrow(), expected);
+    }
 }

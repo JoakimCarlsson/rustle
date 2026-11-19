@@ -181,7 +181,7 @@ impl App {
         for path in paths {
             self.ui.file_dropped_at(at, path);
         }
-        self.ui.apply_focus_request();
+        self.apply_focus_request();
         self.apply_effects();
     }
 }

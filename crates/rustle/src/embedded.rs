@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use rustle_foundation::{KeyEvent, Modifiers};
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::DrawCommand;
+use rustle_runtime::Phase;
 use rustle_ui::{
     Composition, CursorIcon, DisplayOptions, PixelRounding, PointerButton, PointerId,
     PointerInputPhase, PointerKind,
@@ -16,6 +17,7 @@ use rustle_ui::{
 use rustle_unit::Constraints;
 use rustle_wgpu::{Renderer, TextMetrics};
 
+use crate::UpdateTiming;
 use crate::app::provided;
 use crate::input;
 use crate::interface::Interface;
@@ -77,6 +79,7 @@ pub struct Embedded {
     clock: Option<Clock>,
     dark: Rc<Cell<bool>>,
     wake: Waker,
+    timing: UpdateTiming,
 }
 
 /// A composition of `root` that calls `wake` when state changed or a frame was requested.
@@ -132,6 +135,7 @@ impl Embedded {
         let mut composition = composition_of(root, &dark, &wake);
         composition.compose();
         let mut ui = Interface::new();
+        ui.phases = Some(composition.phase_observer());
         ui.apply_focus_request();
         Self {
             composition,
@@ -144,6 +148,7 @@ impl Embedded {
             clock: None,
             dark,
             wake,
+            timing: UpdateTiming::default(),
         }
     }
 
@@ -160,6 +165,7 @@ impl Embedded {
         composition.compose();
         self.composition = composition;
         self.ui.clear();
+        self.ui.phases = Some(self.composition.phase_observer());
         self.started = Instant::now();
         self.lay_out();
         self.ui.after_input();
@@ -220,22 +226,50 @@ impl Embedded {
     }
 
     /// Runs what animations asked for at this frame and composes and lays out again what state
-    /// changes dirtied. Call it once per frame and whenever the `wake` given to
+    /// changes dirtied: a change to state read only while measuring lays the interface out
+    /// again without composing it, and one to state read only while drawing paints it again
+    /// without measuring it. Call it once per frame and whenever the `wake` given to
     /// [`new`](Embedded::new) was called.
     ///
     /// Returns whether the interface needs to be drawn again: it changed, input changed how it
     /// looks, or an animation wants another frame.
     pub fn update(&mut self) -> bool {
+        let started = Instant::now();
         if self.composition.has_pending_frame() {
             self.composition.run_frame(self.frame_time());
         }
         let changed = self.composition.recompose();
-        if changed {
+        self.timing = UpdateTiming {
+            compose: started.elapsed(),
+            layout: Duration::ZERO,
+        };
+        let phases = self.composition.phase_observer();
+        let relayout = phases.take_relayout();
+        let repaint = phases.take_redraw();
+        if changed || relayout {
             self.lay_out();
+        } else if repaint {
+            self.ui.repaint();
         }
         self.ui.after_input();
         let redraw = self.ui.take_redraw();
-        changed || redraw || self.composition.has_pending_frame()
+        changed || relayout || redraw || self.composition.has_pending_frame()
+    }
+
+    /// How long the latest [`update`](Embedded::update) spent composing and laying out, for a
+    /// host that measures its frames. Both are zero before the first update, and layout is
+    /// zero for an update that changed nothing.
+    pub fn update_timing(&self) -> UpdateTiming {
+        self.timing
+    }
+
+    /// Paints the laid-out interface again without composing or measuring it, so drawing
+    /// closures (`canvas`, `draw_behind` and the like) run again and see what changed outside
+    /// composition, such as a caret's blink driven by the host's clock or a focus kept in a
+    /// `Cell` and read with `interaction_focused_with`. The next [`update`](Embedded::update)
+    /// returns true.
+    pub fn repaint(&mut self) {
+        self.ui.repaint();
     }
 
     /// Sets the clock that gives the time of each frame [`update`](Embedded::update) runs,
@@ -367,6 +401,27 @@ impl Embedded {
         used || (self.ui.focused.is_some() && typed)
     }
 
+    /// Whether the area has a file drop area at `position`, in logical pixels from its top-left
+    /// corner, so a host following a drag of files from another application can tell the
+    /// desktop whether letting go there would do anything.
+    pub fn takes_files_at(&self, position: Offset) -> bool {
+        self.ui.display.file_drop_at(position).is_some()
+    }
+
+    /// Files a drag from another application let go of at `position`, handed to the file drop
+    /// area there one by one. Returns whether there was one to take them.
+    pub fn files_dropped(&mut self, position: Offset, paths: Vec<std::path::PathBuf>) -> bool {
+        if !self.takes_files_at(position) {
+            return false;
+        }
+        for path in paths {
+            self.ui.file_dropped_at(position, path);
+        }
+        self.ui.apply_focus_request();
+        self.ui.after_input();
+        true
+    }
+
     /// The input method is composing `text`, with the part it highlights at the byte range
     /// `cursor`. The focused text field shows it at its caret, underlined, and keeps it out
     /// of its value. An empty `text` ends the composition.
@@ -396,6 +451,37 @@ impl Embedded {
     /// the game.
     pub fn has_focus(&self) -> bool {
         self.ui.focused.is_some()
+    }
+
+    /// The first area named `tag` with [`Modifier::test_tag`](crate::Modifier::test_tag) in
+    /// what was laid out last, in logical pixels from the area's top-left corner: Compose's
+    /// `onNodeWithTag(tag)`, whose `bounds` are its `boundsInRoot`. Ask after
+    /// [`update`](Embedded::update).
+    pub fn node_with_tag(&self, tag: &str) -> Option<crate::TaggedNode> {
+        self.ui.display.node_with_tag(tag)
+    }
+
+    /// Every area named `tag` in what was laid out last, in paint order: Compose's
+    /// `onAllNodesWithTag(tag)`.
+    pub fn nodes_with_tag(&self, tag: &str) -> Vec<crate::TaggedNode> {
+        self.ui.display.nodes_with_tag(tag)
+    }
+
+    /// Every area named for tests in what was laid out last, in paint order.
+    pub fn tagged_nodes(&self) -> &[crate::TaggedNode] {
+        &self.ui.display.test_tags
+    }
+
+    /// Gives keyboard focus to the area named `tag` (its focusable, or the one around it), as
+    /// Compose's `onNodeWithTag(tag).requestFocus()` does, and says whether there was one.
+    /// The next [`update`](Embedded::update) composes what the focus changed.
+    pub fn request_focus_on_tag(&mut self, tag: &str) -> bool {
+        let Some(focus) = self.ui.display.focus_with_tag(tag) else {
+            return false;
+        };
+        self.ui.set_focus(Some(focus));
+        self.ui.redraw = true;
+        true
     }
 
     /// The cursor the area under the pointer asks for.
@@ -431,6 +517,23 @@ impl Embedded {
         renderer.render_into(encoder, view, size, &commands, self.scale_factor, clear)
     }
 
+    /// Draws the interface once into a picture the size given to [`resize`](Embedded::resize),
+    /// in physical pixels, and returns its width, height and straight RGBA pixels, row by row
+    /// from the top. For snapshots and tests: the renderer must draw RGBA, as one made with
+    /// [`Renderer::offscreen`](rustle_wgpu::Renderer::offscreen) does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface was made without a renderer, the renderer does not
+    /// draw RGBA, or the picture could not be drawn or read back.
+    pub fn snapshot(&mut self) -> Result<(u32, u32, Vec<u8>), Box<dyn std::error::Error>> {
+        let Backend::Drawing(renderer) = &mut self.backend else {
+            return Err("this interface was made without a renderer".into());
+        };
+        let commands = self.ui.commands().into_owned();
+        renderer.snapshot(&commands, self.scale_factor)
+    }
+
     /// Lays the latest tree out for the area's size, again if laying out changed state.
     fn lay_out(&mut self) {
         let constraints = Constraints::loose(self.size);
@@ -438,6 +541,7 @@ impl Embedded {
             let Some(tree) = self.composition.output().cloned() else {
                 return;
             };
+            let measuring = Instant::now();
             let measure: &mut dyn rustle_text::TextMeasurer = match &mut self.backend {
                 Backend::Drawing(renderer) => renderer.as_mut(),
                 Backend::Metrics(metrics) => metrics,
@@ -446,13 +550,15 @@ impl Embedded {
                 rounding: self.pixel_rounding,
                 scale: self.scale_factor,
             };
-            self.ui.show(rustle_ui::LaidOut::new(
-                &tree,
-                constraints,
-                measure,
-                options,
-            ));
-            if !self.composition.recompose() {
+            let laid_out = self.composition.phase_observer().run(Phase::Layout, || {
+                rustle_ui::LaidOut::new(&tree, constraints, measure, options)
+            });
+            self.ui.show(laid_out);
+            self.timing.layout += measuring.elapsed();
+            let composing = Instant::now();
+            let recomposed = self.composition.recompose();
+            self.timing.compose += composing.elapsed();
+            if !recomposed && !self.composition.phase_observer().take_relayout() {
                 break;
             }
         }

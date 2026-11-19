@@ -68,8 +68,26 @@ pub(crate) fn modifiers(state: ModifiersState) -> Modifiers {
     }
 }
 
-/// Turns winit's key event into Rustle's, with the modifiers held as `modifiers`.
+/// Turns winit's key event into Rustle's, with the modifiers held as `modifiers`, less
+/// those the keyboard layout spent composing the character the key typed, such as
+/// Option turning `a` into `å` on a Mac or AltGr turning `2` into `@` elsewhere, so the
+/// character is typed rather than taken for a shortcut.
 pub(crate) fn key_event(event: &WinitKeyEvent, modifiers: Modifiers) -> KeyEvent {
+    let composed = modifiers.alt
+        && matches!(
+            (&event.logical_key, &event.key_without_modifiers),
+            (WinitKey::Character(typed), WinitKey::Character(bare))
+                if !typed.eq_ignore_ascii_case(bare)
+        );
+    let modifiers = if composed {
+        Modifiers {
+            alt: false,
+            ctrl: false,
+            ..modifiers
+        }
+    } else {
+        modifiers
+    };
     let key = match &event.logical_key {
         WinitKey::Named(named) => match named {
             NamedKey::Backspace => Key::Backspace,

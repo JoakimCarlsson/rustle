@@ -66,6 +66,14 @@ impl Host {
         self.app.window_event_for(event_loop, window_id, event);
     }
 
+    /// Composes the root again, and the windows it opens, for what the root reads that is
+    /// not rustle state, such as a model the caller keeps and changes outside composition.
+    /// The event loop is woken through the proxy, so the next [`wake`](Host::wake) composes,
+    /// lays out and redraws.
+    pub fn invalidate(&mut self) {
+        self.app.composition.invalidate();
+    }
+
     /// Whether `window_id` is one of the host's windows.
     pub fn owns_window(&self, window_id: WindowId) -> bool {
         self.app.slot_of(window_id).is_some()

@@ -7,6 +7,7 @@ mod accessibility;
 mod accessibility_tests;
 mod app;
 mod contact;
+mod drag_and_drop;
 mod embedded;
 mod file_drops;
 mod focus;
@@ -31,9 +32,11 @@ pub use app::{
     external_waker, run, run_with, set_close_handler, set_external_handler, set_pixel_rounding,
 };
 pub use embedded::Embedded;
-pub use frame_timing::{FrameTiming, set_frame_observer};
+pub use frame_timing::{FrameTiming, UpdateTiming, set_frame_observer};
 pub use host::Host;
-pub use preview::{preview, preview_window};
+pub use preview::{
+    PreviewOptions, preview, preview_pixels, preview_pixels_composing, preview_window,
+};
 pub use shadow::{ShadowLayer, WindowShadow};
 pub use window::{ResizeEdge, WindowHandle, WindowOptions, WindowTheme, current_window, window};
 
@@ -49,12 +52,20 @@ pub use rustle_charts::{
 };
 pub use rustle_foundation::{
     Alignment, Arrangement, BoxAlignment, Canvas, ContentScale, ItemAlign,
-    LOCAL_TEXT_SELECTION_COLORS, LOCAL_TEXT_STYLE, LazyContent, LazyListState, Modifier,
-    ScrollState, ScrollbarStyle, ScrollbarVisibility, TextSelectionColors, backdrop, canvas,
-    column, column_arranged, column_with, floating, floating_above, flow_row, image, lazy_column,
-    lazy_list, lazy_list_keyed, lazy_row, lazy_vertical_grid, mask_image, remember_lazy_list_state,
-    reveal, rich_text, rich_text_with, row, row_arranged, row_with, spacer, stack, stack_aligned,
-    stack_with, text, text_styled, text_with, viewport, viewport_with,
+    LOCAL_PINNABLE_CONTAINER, LOCAL_SCROLLBAR_STYLE, LOCAL_TEXT_SELECTION_COLORS, LOCAL_TEXT_STYLE,
+    LazyContent, LazyListItemInfo, LazyListLayoutInfo, LazyListState, Modifier, PinnableContainer,
+    PinnedHandle, ScrollState, ScrollbarStyle, ScrollbarVisibility, TextSelectionColors, backdrop,
+    canvas, column, column_arranged, column_with, floating, floating_above, flow_row, image,
+    lazy_column, lazy_list, lazy_list_keyed, lazy_row, lazy_vertical_grid, mask_image,
+    remember_lazy_list_state, reveal, rich_text, rich_text_with, row, row_arranged, row_with,
+    spacer, stack, stack_aligned, stack_propagating, stack_with, text, text_styled, text_with,
+    viewport, viewport_with,
+};
+pub use rustle_foundation::{
+    AlignmentOffsetPositionProvider, BasicTooltipState, DropdownMenuPositionProvider,
+    POPUP_Z_INDEX, PlainTooltipPositionProvider, PopupPositionProvider, PopupProperties,
+    PositionAtPoint, basic_tooltip_box, popup_position_provider_at_position, popup_with,
+    remember_basic_tooltip_state, tooltip_area,
 };
 pub use rustle_foundation::{
     Anchor, BarrierDirection, ChainStyle, ChildConstraints, ConstraintSet, Dimension, FlowOptions,
@@ -68,6 +79,17 @@ pub use rustle_foundation::{
     remember_scrollable_state, remember_transformable_state,
 };
 pub use rustle_foundation::{
+    BasicTextFieldOptions, ByValue, ChangeList, DEFAULT_OBFUSCATION_CHARACTER, ImeAction,
+    InputTransformation, KeyboardActionHandler, KeyboardOptions, KeyboardType, MaxLength,
+    OutputTransformation, TextFieldBuffer, TextFieldDecorator, TextFieldLineLimits,
+    TextObfuscationMode, TextRange, Then, UndoState, basic_secure_text_field,
+    basic_text_field_with,
+};
+pub use rustle_foundation::{
+    CARET_WIDTH, CaretShape, MarkPaint, MarkedTextOptions, TextMark, draw_text_caret,
+    draw_text_underline, marked_text, text_ellipsized,
+};
+pub use rustle_foundation::{
     Focus, Key, KeyCode, KeyEvent, KeyLocation, LOCAL_LAYOUT_DIRECTION, LOCAL_SYSTEM_DARK,
     LayoutDirection, Modifiers, PhysicalKey, PointerButton, PointerEvent, PointerPhase, Preedit,
     PressEvent, Role, Semantics, TextFieldOptions, TextFieldState, TextFieldValue, basic_text_area,
@@ -78,6 +100,7 @@ pub use rustle_foundation::{
     SelectionPoint, SelectionState, basic_text_area_no_wrap, remember_selection_state,
     selection_container, selection_container_with,
 };
+pub use rustle_foundation::{TextOverflow, basic_text, disable_selection};
 pub use rustle_foundation::{
     lazy_horizontal_list, lazy_horizontal_list_keyed, lazy_horizontal_list_with,
     lazy_horizontal_staggered_grid, lazy_list_with, lazy_sticky_list, lazy_vertical_grid_spanned,
@@ -86,7 +109,8 @@ pub use rustle_foundation::{
 pub use rustle_geometry::{Offset, Rect, Size};
 pub use rustle_graphics::TextWrap;
 pub use rustle_graphics::{
-    BlendMode, Color, ColorFilter, ImageData, ImageKey, LayerEffect, ShaderBrush, TextAlign,
+    BlendMode, Color, ColorFilter, DrawCommand, ImageData, ImageKey, LayerEffect, ShaderBrush,
+    TextAlign,
 };
 pub use rustle_graphics::{FillRule, Path, PathCommand};
 pub use rustle_macros::composable;
@@ -96,17 +120,23 @@ pub use rustle_runtime::{
     group, key, launched_effect, memo, produce_state, remember, remember_saveable,
     remember_state_list, remember_state_map, remember_updated_state, side_effect,
 };
-pub use rustle_runtime::{Saver, Subcomposition, set_saver};
+pub use rustle_runtime::{Saver, Subcomposition, is_composing, mutable_state, set_saver};
 pub use rustle_text::{
     Affinity, Caret, Cluster, FontFamily, FontWeight, LineLayout, TextLayout, TextSpan, TextStyle,
-    font_families, layout_spans, layout_text, register_font,
+    WrappedLine, ellipsize, font_epoch, font_families, layout_spans, layout_text,
+    monospace_font_families, register_font, wrap_at_spaces,
 };
+pub use rustle_ui::{Children, Layout, LayoutResult, Node, collect, compose, emit, layout};
 pub use rustle_ui::{
     Clipboard, ClipboardImage, CursorIcon, DisplayOptions, Interaction, InteractionColors,
     IntrinsicSize, Measurable, PixelRounding, Placement, SubcomposeResult, SubcomposeScope,
-    clipboard, restartable, skippable, subcompose_layout,
+    TaggedNode, clipboard, restartable, set_clipboard, skippable, subcompose_layout,
 };
-pub use rustle_unit::{Dp, dp};
+pub use rustle_ui::{
+    DragAndDropEvent, DragAndDropTarget, DragAndDropTransferData, LOCAL_VIEW_CONFIGURATION,
+    ViewConfiguration,
+};
+pub use rustle_unit::{Constraints, Dp, dp};
 pub use rustle_widgets::{
     BadgeStyle, ButtonColors, ButtonDefaults, ButtonStyle, ColorScheme, ContentTransform,
     CornerSizes, EnterTransition, ExitTransition, Icon, MenuItem, PagerState, RippleConfiguration,
@@ -115,16 +145,29 @@ pub use rustle_widgets::{
     animated_content, animated_visibility, avatar, badge, bottom_sheet, button, button_custom,
     button_with, calendar, card, card_header, checkbox, chip, circular_progress_indicator,
     circular_progress_indicator_indeterminate, color_scheme, content_color, content_color_for,
-    crossfade, dark_color_scheme, days_in_month, dialog, divider, dropdown_menu,
+    crossfade, dark_color_scheme, dashed_spinner, days_in_month, dialog, divider, dropdown_menu,
     dropdown_menu_item, first_weekday, floating_action_button, horizontal_pager, icon, icon_button,
     light_color_scheme, linear_progress_indicator, list_item, menu, muted, muted_sized,
-    navigation_bar, outlined_button, page_indicator, phosphor, pill, popup, provide_content_color,
-    provide_ripple_configuration, radio_button, range_slider, remember_pager_state,
-    remember_shared_elements, ripple_configuration, scaffold, segmented_control, select,
-    select_field, separator, shapes, shared_element, slider, snackbar, styled_button, surface,
-    surface_elevated, surface_with, swipe_to_dismiss, switch, tab_row, table_cell, table_row,
-    tabs_list, text_area, text_button, text_field, text_field_focused, theme, title, tooltip,
-    top_app_bar, typography,
+    navigation_bar, outlined_button, page_indicator, phosphor, pill, popup, progress_rings,
+    provide_content_color, provide_ripple_configuration, radio_button, range_slider,
+    remember_pager_state, remember_shared_elements, ripple_configuration, scaffold,
+    segmented_control, select, select_field, separator, shapes, shared_element, slider, snackbar,
+    styled_button, surface, surface_elevated, surface_with, swipe_to_dismiss, switch, tab_row,
+    table_cell, table_row, tabs_list, text_area, text_button, text_field, text_field_focused,
+    theme, title, tooltip, top_app_bar, typography,
+};
+pub use rustle_widgets::{
+    BorderStroke, CardColors, CardDefaults, CheckboxColors, CheckboxDefaults, DividerDefaults,
+    SwitchColors, SwitchDefaults, ToggleableState, checkbox_with, horizontal_divider,
+    outlined_card, surface_custom, switch_with, tri_state_checkbox, vertical_divider,
+};
+pub use rustle_widgets::{
+    DialogProperties, ProgressIndicatorDefaults, SegmentedButtonColors, SegmentedButtonDefaults,
+    dialog_with, linear_progress_indicator_with, segmented_button,
+    single_choice_segmented_button_row,
+};
+pub use rustle_widgets::{
+    TooltipDefaults, TooltipState, dropdown_menu_anchored, remember_tooltip_state, tooltip_box,
 };
 
 pub mod prelude {
@@ -170,11 +213,11 @@ pub mod prelude {
         viewport, window,
     };
     pub use crate::{
-        BlendMode, ColorFilter, FlowOptions, IntrinsicSize, LayerEffect, LazyContent, ShaderBrush,
-        flow_column, flow_column_with, flow_row_with, lazy_horizontal_list,
-        lazy_horizontal_list_keyed, lazy_horizontal_list_with, lazy_horizontal_staggered_grid,
-        lazy_list_keyed, lazy_list_with, lazy_sticky_list, lazy_vertical_grid_spanned,
-        lazy_vertical_staggered_grid, with_constraints,
+        BlendMode, ColorFilter, FlowOptions, IntrinsicSize, LayerEffect, LazyContent,
+        LazyListItemInfo, LazyListLayoutInfo, ShaderBrush, flow_column, flow_column_with,
+        flow_row_with, lazy_horizontal_list, lazy_horizontal_list_keyed, lazy_horizontal_list_with,
+        lazy_horizontal_staggered_grid, lazy_list_keyed, lazy_list_with, lazy_sticky_list,
+        lazy_vertical_grid_spanned, lazy_vertical_staggered_grid, with_constraints,
     };
 }
 

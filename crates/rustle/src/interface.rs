@@ -26,8 +26,9 @@ pub(crate) type FollowEntry = (Rect, Rc<dyn Fn(Option<Offset>)>);
 /// An area the pointer is over, and what to tell it when the pointer leaves.
 pub(crate) type HoverEntry = (Rect, Rc<dyn Fn(bool)>);
 
-/// A press that becomes a long press if it is held: when, what, and where it began.
-pub(crate) type LongPress = (Instant, Rc<dyn Fn()>, Offset);
+/// A press that becomes a long press if it is held: when, what, where it began, and how far
+/// the pointer may move from there before it is not a long press.
+pub(crate) type LongPress = (Instant, Rc<dyn Fn()>, Offset, f32);
 
 /// Something picked up by a drag source: what it carries, where the press began, and
 /// whether the pointer has moved far enough for it to count as a drag.
@@ -40,6 +41,8 @@ pub(crate) struct Carrying {
     /// Where the picked-up area is, and which of the display list's commands draw it.
     pub(crate) rect: Rect,
     pub(crate) commands: std::ops::Range<usize>,
+    /// How far the pointer moves from `began` before the area is picked up.
+    pub(crate) touch_slop: f32,
 }
 
 /// A drag in progress: its handler, and where its area's corner is.
@@ -58,6 +61,12 @@ pub(crate) struct Interface {
     pub(crate) pointer: Option<Offset>,
     /// What has keyboard focus.
     pub(crate) focused: Option<Focus>,
+    /// What asked to be told when the focus held now goes: the focus-change observers of the
+    /// area holding it, as the last display painted them.
+    pub(crate) focus_observers: Vec<Rc<dyn Fn(bool)>>,
+    /// Whether focus was given to an area not painted yet, whose observers are still to be
+    /// told when it is.
+    pub(crate) focus_unseen: bool,
     /// Text a key press just typed, so the same text arriving again from an input method is not typed twice.
     pub(crate) typed: Option<(Instant, String)>,
     /// Whether to print the input received (`RUSTLE_DEBUG_INPUT`).
@@ -72,6 +81,9 @@ pub(crate) struct Interface {
     pub(crate) dragging: Option<Drag>,
     /// What was picked up with `drag_source`, and where, until the button is released.
     pub(crate) carrying: Option<Carrying>,
+    /// The press on a `drag_and_drop_source` and the drag it became, until the button is
+    /// released.
+    pub(crate) drag_and_drop: Option<crate::drag_and_drop::DragAndDrop>,
     pub(crate) modifiers: Modifiers,
     /// When and where the primary button last went down, and how many in a row.
     pub(crate) last_press: Option<(Instant, Offset, u32)>,
@@ -91,6 +103,9 @@ pub(crate) struct Interface {
     pub(crate) redraw: bool,
     /// Whether focus moved since the owner last looked, so it can tell the input method.
     pub(crate) focus_changed: bool,
+    /// The composition whose tree is shown, through which painting counts the state it
+    /// reads as read while drawing, so a change to it draws again without composing.
+    pub(crate) phases: Option<rustle_runtime::PhaseObserver>,
 }
 
 impl Interface {
@@ -110,12 +125,15 @@ impl Interface {
         mem::swap(&mut self.pressed_at, &mut other.pressed_at);
         mem::swap(&mut self.pointer, &mut other.pointer);
         mem::swap(&mut self.focused, &mut other.focused);
+        mem::swap(&mut self.focus_observers, &mut other.focus_observers);
+        mem::swap(&mut self.focus_unseen, &mut other.focus_unseen);
         mem::swap(&mut self.typed, &mut other.typed);
         mem::swap(&mut self.long_press, &mut other.long_press);
         mem::swap(&mut self.hovered, &mut other.hovered);
         mem::swap(&mut self.following, &mut other.following);
         mem::swap(&mut self.dragging, &mut other.dragging);
         mem::swap(&mut self.carrying, &mut other.carrying);
+        mem::swap(&mut self.drag_and_drop, &mut other.drag_and_drop);
         mem::swap(&mut self.last_press, &mut other.last_press);
         mem::swap(&mut self.pointers, &mut other.pointers);
         mem::swap(&mut self.primary_contact, &mut other.primary_contact);
@@ -132,6 +150,7 @@ impl Interface {
             modifiers: self.modifiers,
             debug_input: self.debug_input,
             redraw: true,
+            phases: self.phases.take(),
             ..Self::default()
         };
     }
@@ -139,8 +158,18 @@ impl Interface {
     /// Shows `laid_out`, a tree just measured, painting its interactive areas in the state
     /// the pointer and focus put them in now.
     pub(crate) fn show(&mut self, laid_out: LaidOut) {
-        self.display = laid_out.paint(self.pointer_state());
+        self.display = self.paint(&laid_out, self.pointer_state());
         self.laid_out = Some(laid_out);
+        self.follow_focused_area();
+    }
+
+    /// Paints `laid_out` with its interactive areas in the state `pointer` puts them in,
+    /// counting the state the drawing reads as read while drawing the composition shown.
+    fn paint(&self, laid_out: &LaidOut, pointer: PointerState) -> DisplayList {
+        match &self.phases {
+            Some(phases) => phases.run(rustle_runtime::Phase::Drawing, || laid_out.paint(pointer)),
+            None => laid_out.paint(pointer),
+        }
     }
 
     /// Where the pointer is and where the primary button went down, for interactive areas.
@@ -159,7 +188,17 @@ impl Interface {
         if let Some(laid_out) = &self.laid_out
             && self.display.interactions_changed(pointer)
         {
-            self.display = laid_out.paint(pointer);
+            self.display = self.paint(laid_out, pointer);
+            self.redraw = true;
+        }
+    }
+
+    /// Paints the shown tree again, without composing or measuring it, so drawing closures
+    /// that read something outside composition, such as a clock the host keeps, run again,
+    /// and asks for a redraw.
+    pub(crate) fn repaint(&mut self) {
+        if let Some(laid_out) = &self.laid_out {
+            self.display = self.paint(laid_out, self.pointer_state());
             self.redraw = true;
         }
     }
@@ -250,7 +289,7 @@ impl Interface {
             if amount != 0.0
                 && let Some(region) = self.display.scroll_at(pointer, vertical)
             {
-                region.state.scroll_by(-amount);
+                region.state.scroll_drawn_by(-amount);
                 taken = true;
             }
         }

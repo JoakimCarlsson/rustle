@@ -459,3 +459,212 @@ fn key_for_code(code: KeyCode) -> Key {
         other => logical_key(other).unwrap_or(Key::Other),
     }
 }
+
+/// How [`preview_pixels`] draws a composable: its size, scale and appearance, the time on
+/// its frame clock, where the pointer rests and how edges are rounded, like the clock and
+/// the input a Compose screenshot test sets before it captures its root.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewOptions {
+    /// Width and height in logical pixels.
+    pub size: (f32, f32),
+    /// Physical pixels per logical pixel.
+    pub scale: f32,
+    /// Whether the dark appearance is used.
+    pub dark: bool,
+    /// The time on the frame clock the picture is drawn at, so animations and anything
+    /// that waits on time show as they do then, the same on every run.
+    pub clock: std::time::Duration,
+    /// Where the pointer rests, in logical pixels, so hover styles and what shows on
+    /// hovering are drawn.
+    pub pointer: Option<Offset>,
+    /// Whether what is not drawn stays see-through instead of the clear color.
+    pub transparent: bool,
+    /// How the edges of areas are rounded to pixels.
+    pub rounding: rustle_ui::PixelRounding,
+    /// The area named with this [`test_tag`](crate::Modifier::test_tag) that holds keyboard
+    /// focus once the root is composed, as a screenshot test calls
+    /// `onNodeWithTag(tag).requestFocus()` before it captures, so its focus ring and caret
+    /// are drawn.
+    pub focused_tag: Option<String>,
+}
+
+impl Default for PreviewOptions {
+    /// 800 by 600 logical pixels at scale one, dark, at the start of the clock, with no
+    /// pointer, opaque and unrounded.
+    fn default() -> Self {
+        Self {
+            size: (800.0, 600.0),
+            scale: 1.0,
+            dark: true,
+            clock: std::time::Duration::ZERO,
+            pointer: None,
+            transparent: false,
+            rounding: rustle_ui::PixelRounding::None,
+            focused_tag: None,
+        }
+    }
+}
+
+/// Composes `root` and draws it once into pixels as `options` say, with no window: the
+/// picture's width and height in physical pixels and its straight RGBA bytes, row by row
+/// from the top.
+///
+/// The root is composed and laid out, focus given to the area named `focused_tag`, the
+/// pointer moved to where it rests, and the root
+/// composed twice more, so what depends on the frame before (a scrollbar shown once an
+/// area was found to scroll, something shown while the pointer is over an area) is drawn.
+/// Needs a GPU adapter but no display.
+///
+/// # Errors
+///
+/// Returns an error when no GPU adapter can be opened or the picture cannot be read back.
+pub fn preview_pixels(
+    root: impl FnMut() + 'static,
+    options: PreviewOptions,
+) -> Result<(u32, u32, Vec<u8>), Box<dyn std::error::Error>> {
+    draw_preview(root, options, None)
+}
+
+/// Like [`preview_pixels`], with an input method composing `preedit` in whatever holds
+/// keyboard focus once the root is composed, such as a text field the root asked focus
+/// for, so the composition shows as it does while someone types.
+///
+/// # Errors
+///
+/// As [`preview_pixels`].
+pub fn preview_pixels_composing(
+    root: impl FnMut() + 'static,
+    options: PreviewOptions,
+    preedit: &rustle_ui::Preedit,
+) -> Result<(u32, u32, Vec<u8>), Box<dyn std::error::Error>> {
+    draw_preview(root, options, Some(preedit))
+}
+
+/// Draws `root` as [`preview_pixels`] does, with `preedit` composed in what holds focus
+/// after the first composition when it is given.
+fn draw_preview(
+    root: impl FnMut() + 'static,
+    options: PreviewOptions,
+    preedit: Option<&rustle_ui::Preedit>,
+) -> Result<(u32, u32, Vec<u8>), Box<dyn std::error::Error>> {
+    let physical = (
+        (options.size.0 * options.scale).round().max(1.0) as u32,
+        (options.size.1 * options.scale).round().max(1.0) as u32,
+    );
+    let mut renderer = Renderer::offscreen(physical.0, physical.1)?;
+    renderer.set_transparent(options.transparent);
+    let mut ui = crate::Embedded::new(root, renderer, || {});
+    ui.set_pixel_rounding(options.rounding);
+    ui.set_dark(options.dark);
+    let clock = options.clock;
+    ui.set_clock(move || clock);
+    ui.resize(physical, options.scale);
+    ui.update();
+    if let Some(tag) = &options.focused_tag
+        && ui.request_focus_on_tag(tag)
+    {
+        ui.update();
+    }
+    if let Some(at) = options.pointer {
+        ui.pointer_moved(at);
+    }
+    if let Some(preedit) = preedit {
+        ui.update();
+        ui.preedit(&preedit.text, preedit.cursor);
+    }
+    ui.invalidate();
+    ui.update();
+    ui.invalidate();
+    ui.update();
+    ui.snapshot()
+}
+
+#[cfg(test)]
+mod pixel_tests {
+    use super::*;
+
+    /// A preview draws at its scale, sees the frame time it was given, and shows what the
+    /// pointer resting on an area turns on.
+    #[test]
+    fn a_preview_draws_at_its_clock_with_the_pointer_resting() {
+        use rustle_foundation::{Modifier, stack_with};
+        use rustle_graphics::Color;
+        use rustle_runtime::remember;
+
+        let root = || {
+            let hovered = remember(|| false);
+            let hover = hovered.clone();
+            let elapsed = remember(|| std::time::Duration::ZERO);
+            let seen = elapsed.clone();
+            rustle_runtime::frame_clock().request_frame(move |time| {
+                if seen.get() != time {
+                    seen.set(time);
+                }
+            });
+            let shade = if elapsed.get() >= std::time::Duration::from_millis(500) {
+                255
+            } else {
+                0
+            };
+            let color = if hovered.get() {
+                Color::rgb(0, shade, 255)
+            } else {
+                Color::rgb(0, shade, 0)
+            };
+            stack_with(
+                Modifier::new()
+                    .size(20.0, 20.0)
+                    .background(color)
+                    .on_hover(move |over| hover.set(over)),
+                || {},
+            );
+        };
+        let options = PreviewOptions {
+            size: (20.0, 20.0),
+            scale: 2.0,
+            clock: std::time::Duration::from_millis(700),
+            pointer: Some(Offset::new(10.0, 10.0)),
+            ..PreviewOptions::default()
+        };
+        let Ok((width, height, pixels)) = preview_pixels(root, options) else {
+            return;
+        };
+        assert_eq!((width, height), (40, 40));
+        assert_eq!(&pixels[..4], &[0, 255, 255, 255]);
+    }
+
+    /// A preview gives focus to the area named by `focused_tag` before it draws, so what
+    /// shows while it holds focus is drawn.
+    #[test]
+    fn a_preview_focuses_the_tagged_area() {
+        use rustle_foundation::{Modifier, stack_with};
+        use rustle_graphics::Color;
+        use rustle_ui::remember_focus;
+
+        let root = || {
+            let focus = remember_focus();
+            let color = if focus.is_focused() {
+                Color::rgb(255, 0, 0)
+            } else {
+                Color::rgb(0, 0, 0)
+            };
+            stack_with(
+                Modifier::new()
+                    .size(20.0, 20.0)
+                    .background(color)
+                    .test_tag("box")
+                    .focus_target(&focus),
+                || {},
+            );
+        };
+        let options = PreviewOptions {
+            size: (20.0, 20.0),
+            focused_tag: Some("box".to_owned()),
+            ..PreviewOptions::default()
+        };
+        let Ok((_, _, pixels)) = preview_pixels(root, options) else {
+            return;
+        };
+        assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
+    }
+}

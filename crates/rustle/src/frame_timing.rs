@@ -13,6 +13,17 @@ pub struct FrameTiming {
     pub render: Duration,
 }
 
+/// How long the latest [`Embedded::update`](crate::Embedded::update) took, measured on the CPU:
+/// what a host reads to see where a frame of an embedded interface went.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UpdateTiming {
+    /// Running the frame clock and composing what state changes dirtied, including the passes
+    /// that state changed during layout asked for.
+    pub compose: Duration,
+    /// Measuring the composed tree and turning it into draw commands and regions.
+    pub layout: Duration,
+}
+
 /// A callback told of each frame's timing.
 type FrameObserver = Rc<dyn Fn(FrameTiming)>;
 

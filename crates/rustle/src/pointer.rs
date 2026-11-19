@@ -65,8 +65,8 @@ impl Interface {
         self.update_following();
         if let Some(carrying) = &mut self.carrying
             && !carrying.active
-            && ((carrying.began.x - pointer.x).abs() > 6.0
-                || (carrying.began.y - pointer.y).abs() > 6.0)
+            && (carrying.began.x - pointer.x).hypot(carrying.began.y - pointer.y)
+                > carrying.touch_slop
         {
             carrying.active = true;
         }
@@ -78,12 +78,13 @@ impl Interface {
             self.redraw = true;
         }
         // Moving away from where the press began is not a long press.
-        if let Some((_, _, began)) = &self.long_press
-            && ((began.x - pointer.x).abs() > 8.0 || (began.y - pointer.y).abs() > 8.0)
+        if let Some((_, _, began, slop)) = &self.long_press
+            && (began.x - pointer.x).hypot(began.y - pointer.y) > *slop
         {
             self.long_press = None;
         }
         self.update_hover();
+        self.move_drag_and_drop(pointer);
         self.pointer_input_move(PointerId::MOUSE, pointer, MOUSE_PRESSURE);
         self.drag_buttons(pointer);
         if let Some((on_drag, origin, _)) = self.dragging.clone() {
@@ -114,6 +115,12 @@ impl Interface {
             return;
         };
         if pressed {
+            if button == PointerButton::Primary && self.grab_scrollbar(pointer) {
+                return;
+            }
+            for dismiss in self.display.popups_dismissed_by_press_at(pointer) {
+                dismiss();
+            }
             if button == PointerButton::Primary {
                 self.primary_button(true);
                 if mouse {
@@ -218,6 +225,7 @@ impl Interface {
             active: false,
             rect: region.rect,
             commands: region.commands.clone(),
+            touch_slop: region.touch_slop,
         })
     }
 
@@ -281,6 +289,24 @@ impl Interface {
         }
     }
 
+    /// Starts dragging the scrollbar at `pointer`, if a press there belongs to one alone, as
+    /// a scrollbar drawn over its content takes the pointer before the content in Compose;
+    /// says whether it did. Nothing beneath is pressed, focused or clicked.
+    fn grab_scrollbar(&mut self, pointer: Offset) -> bool {
+        let Some(region) = self
+            .display
+            .drag_at(pointer)
+            .filter(|region| region.takes_pointer)
+        else {
+            return false;
+        };
+        let (on_drag, origin) = (Rc::clone(&region.on_drag), region.origin);
+        on_drag(Offset::new(pointer.x - origin.x, pointer.y - origin.y));
+        self.dragging = Some((on_drag, origin, region.on_end.clone()));
+        self.redraw = true;
+        true
+    }
+
     /// The primary button, or a finger, went down or up where the pointer is.
     pub(crate) fn primary_button(&mut self, pressed: bool) {
         if self.debug_input {
@@ -304,7 +330,7 @@ impl Interface {
         if !pressed {
             self.pressed_at = None;
             // Something carried over a drop target is dropped on it.
-            if self.finish_carrying(PointerButton::Primary) {
+            if self.finish_carrying(PointerButton::Primary) | self.finish_drag_and_drop() {
                 self.pressed = None;
             }
             // A click is a press and a release on the same region.
@@ -327,17 +353,31 @@ impl Interface {
         self.pressed = target;
         self.pressed_at = self.pointer;
         self.carrying = self.begin_carrying(PointerButton::Primary);
+        if let Some(pointer) = self.pointer {
+            self.press_drag_and_drop(pointer);
+        }
         self.long_press = self.pointer.and_then(|pointer| {
             let region = self.display.long_press_at(pointer)?;
             Some((
-                Instant::now() + std::time::Duration::from_millis(500),
+                Instant::now()
+                    + std::time::Duration::from_millis(
+                        region.view_configuration.long_press_timeout_millis,
+                    ),
                 Rc::clone(&region.on_long_press),
                 pointer,
+                region.view_configuration.touch_slop,
             ))
         });
         let focus = self
             .pointer
             .and_then(|pointer| self.display.focus_at(pointer))
+            .filter(|region| {
+                region.takes_press
+                    || self
+                        .focused
+                        .as_ref()
+                        .is_some_and(|held| held.id() == region.focus.id())
+            })
             .map(|region| region.focus.clone());
         self.set_focus(focus);
         let Some(pointer) = self.pointer else {
@@ -361,14 +401,22 @@ impl Interface {
         }
     }
 
-    /// How many presses in a row this is: later ones close in time and place add up.
+    /// How many presses in a row this is: later ones add up when they come within the
+    /// [`double_tap_timeout_millis`](rustle_ui::ViewConfiguration::double_tap_timeout_millis)
+    /// and [`touch_slop`](rustle_ui::ViewConfiguration::touch_slop) of the one before, as the
+    /// view configuration of the area pressed says, or the default where no area counts presses.
     pub(crate) fn count_click(&mut self, at: Offset) -> u32 {
         let now = Instant::now();
+        let configuration = self
+            .display
+            .press_at(at)
+            .map(|region| region.view_configuration)
+            .unwrap_or_default();
+        let timeout = std::time::Duration::from_millis(configuration.double_tap_timeout_millis);
         let count = match self.last_press {
             Some((time, place, count))
-                if now.duration_since(time) < std::time::Duration::from_millis(450)
-                    && (place.x - at.x).abs() < 5.0
-                    && (place.y - at.y).abs() < 5.0 =>
+                if now.duration_since(time) < timeout
+                    && (place.x - at.x).hypot(place.y - at.y) < configuration.touch_slop =>
             {
                 count % 3 + 1
             }

@@ -228,11 +228,15 @@ impl App {
         // Animations ask for frames; only then does the loop keep redrawing.
         crate::window::set_wake(Rc::new(wake.clone()));
         composition.on_frame_request(wake);
+        let phases = composition.phase_observer();
         Self {
             dark,
             composition,
             started: Instant::now(),
-            ui: Interface::new(),
+            ui: Interface {
+                phases: Some(phases),
+                ..Interface::new()
+            },
             options,
             requests,
             requested,
@@ -269,12 +273,18 @@ impl App {
             size.width as f32 / scale_factor,
             size.height as f32 / scale_factor,
         ));
-        self.ui.show(rustle_ui::LaidOut::new(
-            tree,
-            constraints,
-            &mut state.renderer,
-            display_options(scale_factor),
-        ));
+        let laid_out = self
+            .composition
+            .phase_observer()
+            .run(rustle_runtime::Phase::Layout, || {
+                rustle_ui::LaidOut::new(
+                    tree,
+                    constraints,
+                    &mut state.renderer,
+                    display_options(scale_factor),
+                )
+            });
+        self.ui.show(laid_out);
         self.ui.redraw = false;
         state.window.request_redraw();
         self.ui.update_hover();
@@ -298,6 +308,20 @@ impl App {
         }
         if self.composition.recompose() {
             self.relayout_all();
+        }
+        self.follow_phases();
+    }
+
+    /// Lays every window out again, or draws every window again, when state read only while
+    /// laying out or drawing changed since the windows were last laid out or drawn.
+    pub(crate) fn follow_phases(&mut self) {
+        let phases = self.composition.phase_observer();
+        let relayout = phases.take_relayout();
+        let redraw = phases.take_redraw();
+        if relayout {
+            self.relayout_all();
+        } else if redraw {
+            self.repaint_all();
         }
     }
 
