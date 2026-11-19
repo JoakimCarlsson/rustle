@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::kept::kept_layout;
 use crate::{StyledSpan, TextLayout, TextSpan, TextStyle};
 
 /// Shapes text and knows the fonts. The renderer implements this and installs it
@@ -16,6 +17,12 @@ pub trait TextEngine {
 
     /// The names of the installed and registered font families, sorted, without repeats.
     fn font_families(&self) -> Vec<String>;
+
+    /// The names of the installed and registered families whose letters are all one width,
+    /// sorted, without repeats. None unless the engine knows.
+    fn monospace_font_families(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     /// Adds the font file in `data` (TrueType, OpenType or a collection of them) and
     /// returns the family names it provides.
@@ -73,12 +80,13 @@ pub fn layout_text(content: &str, style: &TextStyle, max_width: Option<f32>) -> 
 
 /// Like [`layout_text`] for rich text: runs that differ in color, weight, family,
 /// slant, size and letter spacing, set one after another.
+///
+/// Layouts are kept per thread while the runs, the style, the width and the fonts stay the
+/// same, so laying out text that has not changed again, as every frame that composes or
+/// paints it does, does not shape it again.
 pub fn layout_spans(spans: &[TextSpan], style: &TextStyle, max_width: Option<f32>) -> TextLayout {
-    let Some(engine) = engine() else {
-        return TextLayout::empty();
-    };
     let resolved: Vec<StyledSpan> = spans.iter().map(|span| span.resolve(style)).collect();
-    engine.layout(&resolved, style, max_width)
+    layout_resolved(resolved, style, max_width)
 }
 
 /// Like [`layout_spans`] for spans whose style is already resolved.
@@ -87,10 +95,22 @@ pub fn layout_styled(
     style: &TextStyle,
     max_width: Option<f32>,
 ) -> TextLayout {
-    match engine() {
-        Some(engine) => engine.layout(spans, style, max_width),
-        None => TextLayout::empty(),
-    }
+    layout_resolved(spans.to_vec(), style, max_width)
+}
+
+/// `spans` laid out by the thread's engine, or kept from when they were laid out before;
+/// empty while there is no engine.
+fn layout_resolved(
+    spans: Vec<StyledSpan>,
+    style: &TextStyle,
+    max_width: Option<f32>,
+) -> TextLayout {
+    let Some(engine) = engine() else {
+        return TextLayout::empty();
+    };
+    kept_layout(spans, style, max_width, font_epoch(), |spans| {
+        engine.layout(spans, style, max_width)
+    })
 }
 
 /// The names of the installed system font families and registered ones, sorted.
@@ -98,6 +118,14 @@ pub fn layout_styled(
 pub fn font_families() -> Vec<String> {
     engine()
         .map(|engine| engine.font_families())
+        .unwrap_or_default()
+}
+
+/// The names of the installed and registered font families whose letters are all one
+/// width, sorted, for a choice of code font. Empty before a renderer exists.
+pub fn monospace_font_families() -> Vec<String> {
+    engine()
+        .map(|engine| engine.monospace_font_families())
         .unwrap_or_default()
 }
 

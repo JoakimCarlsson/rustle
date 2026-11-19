@@ -6,7 +6,9 @@
 //! composable or a `canvas` closure asks where lines break and where a caret goes.
 
 mod engine;
+mod kept;
 mod layout;
+mod wrap;
 
 use rustle_geometry::Size;
 use rustle_graphics::Color;
@@ -14,9 +16,10 @@ pub use rustle_graphics::{FontFamily, StyledSpan, TextAlign, TextWrap};
 
 pub use engine::{
     TextEngine, font_epoch, font_families, install_text_engine, layout_spans, layout_styled,
-    layout_text, register_font, take_pending_fonts,
+    layout_text, monospace_font_families, register_font, take_pending_fonts,
 };
 pub use layout::{Affinity, Caret, Cluster, LineLayout, TextLayout};
+pub use wrap::{WrappedLine, ellipsize, wrap_at_spaces};
 
 /// How heavy the strokes of a font are, from 100 (thin) to 900 (black).
 #[derive(Debug, Clone, Copy, PartialEq)]

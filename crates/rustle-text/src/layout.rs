@@ -77,7 +77,7 @@ pub struct TextLayout {
     text: Rc<str>,
     spans: Rc<Vec<StyledSpan>>,
     base_font_size: f32,
-    lines: Vec<LineLayout>,
+    lines: Rc<[LineLayout]>,
     size: Size,
 }
 
@@ -179,7 +179,7 @@ impl TextLayout {
             text: text.into(),
             spans: Rc::new(spans),
             base_font_size,
-            lines,
+            lines: lines.into(),
             size: Size::new(width, height),
         }
     }
@@ -426,7 +426,7 @@ impl TextLayout {
         fade: &dyn Fn(Color) -> Color,
     ) -> Vec<DrawCommand> {
         let mut commands = Vec::new();
-        for line in &self.lines {
+        for line in self.lines.iter() {
             self.runs(line, |span, left, right| {
                 if let Some(color) = self.spans.get(span).and_then(|s| s.background) {
                     commands.push(rect_command(
@@ -452,7 +452,7 @@ impl TextLayout {
         fade: &dyn Fn(Color) -> Color,
     ) -> Vec<DrawCommand> {
         let mut commands = Vec::new();
-        for line in &self.lines {
+        for line in self.lines.iter() {
             self.runs(line, |index, left, right| {
                 let Some(span) = self.spans.get(index) else {
                     return;
