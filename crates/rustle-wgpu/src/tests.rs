@@ -83,6 +83,20 @@ fn a_rectangle_is_drawn_where_it_is() {
 }
 
 #[test]
+fn a_transparent_renderer_leaves_what_is_not_drawn_see_through() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    renderer.set_transparent(true);
+    let picture = draw(&mut renderer, &[fill(area(8.0, 8.0, 16.0, 16.0), RED)]);
+    picture.expect(16, 16, [255, 0, 0, 255], 2);
+    picture.expect(40, 40, [0, 0, 0, 0], 2);
+    renderer.set_transparent(false);
+    let picture = draw(&mut renderer, &[]);
+    picture.expect(40, 40, BACKGROUND, 2);
+}
+
+#[test]
 fn a_shader_that_does_not_compile_is_skipped_and_the_frame_goes_on() {
     let Some(mut renderer) = renderer(64) else {
         return;
@@ -305,8 +319,8 @@ fn an_effect_inside_an_effect_composes_both() {
     );
     let pixel = picture.at(32, 32);
     assert!(
-        pixel[0].abs_diff(138) < 8,
-        "quarter strength in linear light: {pixel:?}"
+        pixel[0].abs_diff(81) < 8,
+        "quarter strength in stored values: {pixel:?}"
     );
 }
 
@@ -737,7 +751,7 @@ fn a_large_blur_is_smooth() {
     for x in 30..100 {
         let value = picture.at(x, 64)[0];
         assert!(
-            value <= last.max(value) && last.saturating_sub(value) < 12,
+            value <= last.max(value) && last.saturating_sub(value) < 16,
             "step at {x}: {last} to {value}"
         );
         last = value;
@@ -929,4 +943,47 @@ fn a_picture_at_its_pixel_size_lands_on_whole_pixels() {
         };
         picture.expect(11 + column, 12, expected, 2);
     }
+}
+
+/// Renderers blend colors as they are stored, in sRGB-encoded values, not in linear light:
+/// half-transparent white over black lands halfway in stored values.
+#[test]
+fn colors_blend_as_they_are_stored() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    renderer.set_transparent(false);
+    let picture = draw(
+        &mut renderer,
+        &[
+            fill(area(0.0, 0.0, 64.0, 64.0), Color::rgb(0, 0, 0)),
+            fill(area(0.0, 0.0, 64.0, 64.0), Color::rgba(255, 255, 255, 128)),
+        ],
+    );
+    let pixel = picture.at(32, 32);
+    assert!(
+        pixel[0].abs_diff(128) < 4,
+        "halfway in stored values: {pixel:?}"
+    );
+}
+
+/// A shadow is a Gaussian blur of its rounded rectangle, so a corner is lighter than a side
+/// the same distance out.
+#[test]
+fn a_shadow_lightens_its_corners() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    renderer.set_transparent(true);
+    let picture = draw(
+        &mut renderer,
+        &[DrawCommand::Shadow {
+            rect: area(16.0, 16.0, 32.0, 32.0),
+            corner_radius: 0.0,
+            blur: 8.0,
+            color: Color::rgb(0, 0, 0),
+        }],
+    );
+    let (side, corner) = (picture.at(32, 51)[3], picture.at(50, 50)[3]);
+    assert!(corner < side, "side {side}, corner {corner}");
 }

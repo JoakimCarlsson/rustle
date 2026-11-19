@@ -90,7 +90,7 @@ impl Renderer {
             .formats
             .iter()
             .copied()
-            .find(wgpu::TextureFormat::is_srgb)
+            .find(|format| !format.is_srgb())
             .or_else(|| caps.formats.first().copied())
             .ok_or("surface supports no texture formats")?;
         let surface_config = wgpu::SurfaceConfiguration {
@@ -110,7 +110,7 @@ impl Renderer {
             .find(|mode| caps.alpha_modes.contains(mode))
             .unwrap_or_else(|| caps.alpha_modes.first().copied().unwrap_or_default()),
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: crate::frame_latency(),
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &surface_config);
@@ -130,6 +130,25 @@ impl Renderer {
         Ok(renderer)
     }
 
+    /// Clears each frame to nothing instead of the background color, so what is not drawn
+    /// stays see-through, as in a window with rounded corners or a shadow around it; or to
+    /// the background color again.
+    pub fn set_transparent(&mut self, transparent: bool) {
+        self.clear = if transparent {
+            wgpu::Color::TRANSPARENT
+        } else {
+            let [r, g, b] = BACKGROUND.map(|channel| {
+                let value = f32::from(channel) / 255.0;
+                f64::from(if self.format.is_srgb() {
+                    srgb_to_linear(value)
+                } else {
+                    value
+                })
+            });
+            wgpu::Color { r, g, b, a: 1.0 }
+        };
+    }
+
     /// Creates a renderer with no window, drawing into pictures on request
     /// through [`Renderer::snapshot`]. It needs a GPU but no display.
     pub fn offscreen(width: u32, height: u32) -> Result<Self> {
@@ -138,7 +157,7 @@ impl Renderer {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let format = wgpu::TextureFormat::Rgba8Unorm;
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -147,7 +166,7 @@ impl Renderer {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Opaque,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: crate::frame_latency(),
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         Ok(Self::build(
@@ -166,8 +185,10 @@ impl Renderer {
     ///
     /// For a host with its own renderer, such as a game engine, that composites the
     /// interface over its own frame. `format` is the format of every texture the renderer
-    /// will draw into, and `size` their size in physical pixels. The renderer creates no
-    /// surface and no instance, and never presents.
+    /// will draw into, and `size` their size in physical pixels. Windows and offscreen
+    /// renderers draw into formats that are not sRGB, so colors blend as they are stored,
+    /// in sRGB-encoded values, as Compose's Skia does; pass such a format to match them.
+    /// The renderer creates no surface and no instance, and never presents.
     pub fn with_device(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -182,7 +203,7 @@ impl Renderer {
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: wgpu::CompositeAlphaMode::Opaque,
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: crate::frame_latency(),
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         Self::build(None, device, queue, format, surface_config, None, None)
@@ -199,7 +220,12 @@ impl Renderer {
     ) -> Self {
         let (font_system, font_generation) = shared_fonts();
         let cache = Cache::new(&device);
-        let atlas = TextAtlas::new(&device, &queue, &cache, format);
+        let color_mode = if format.is_srgb() {
+            glyphon::ColorMode::Accurate
+        } else {
+            glyphon::ColorMode::Web
+        };
+        let atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, color_mode);
         let quads = Quads::new(&device, format);
         let images = Images::new(&device, format, quads.viewport_layout());
         let paths = Paths::new(&device, format, quads.viewport_layout());

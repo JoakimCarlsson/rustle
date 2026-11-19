@@ -28,6 +28,8 @@ mod tests;
 mod text;
 mod uniforms;
 
+pub use text::set_legible_text;
+
 use blur::Blur;
 use composite::Composite;
 use image::Images;
@@ -44,6 +46,21 @@ type SurfaceFactory = Box<
 >;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+/// How many frames a window surface made from now on may queue; see [`set_frame_latency`].
+static FRAME_LATENCY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2);
+
+/// Sets how many frames window surfaces configured from now on may hold queued for display,
+/// at least one. Two, the default, favors throughput; one shortens the time from drawing a
+/// frame to showing it on hardware that keeps up. Set it before the first renderer is made.
+pub fn set_frame_latency(frames: u32) {
+    FRAME_LATENCY.store(frames.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many frames a window surface configured now may queue.
+pub(crate) fn frame_latency() -> u32 {
+    FRAME_LATENCY.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Decodes an sRGB channel in 0..=1 to linear light.
 fn srgb_to_linear(value: f32) -> f32 {

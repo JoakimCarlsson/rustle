@@ -1,6 +1,7 @@
 //! Text: shaping with glyphon, drawing it, and measuring it for layout.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use glyphon::cosmic_text::{
@@ -15,7 +16,6 @@ use rustle_graphics::{FontFamily, StyledSpan, TextAlign, TextWrap};
 use rustle_text::{TextLayout, TextMeasurer, TextStyle};
 
 use crate::composite::Canvas;
-use crate::engine::layout_spans;
 
 use std::hash::{Hash, Hasher};
 
@@ -118,13 +118,10 @@ impl TextMeasurer for Renderer {
         size
     }
 
+    /// Lays out rich text through the thread's text engine, which keeps layouts of text laid
+    /// out before with the same runs, style, width and fonts.
     fn layout(&mut self, spans: &[StyledSpan], style: &TextStyle, max_width: f32) -> TextLayout {
-        layout_spans(
-            &mut self.font_system.borrow_mut(),
-            spans,
-            style,
-            max_width.is_finite().then_some(max_width),
-        )
+        rustle_text::layout_styled(spans, style, max_width.is_finite().then_some(max_width))
     }
 }
 
@@ -319,13 +316,35 @@ fn size_of_buffer(buffer: &Buffer, line_height: f32, at_least: u32) -> Size {
 /// [`Renderer`] made on the thread.
 pub struct TextMetrics {
     font_system: Rc<RefCell<FontSystem>>,
+    /// Sizes of text measured for layout, keyed by a hash of what was measured and the font
+    /// epoch, as a renderer keeps them; dropped all at once when [`METRICS_KEPT`] are held.
+    measured: HashMap<u64, Size>,
 }
+
+/// How many measured sizes a [`TextMetrics`] keeps before it starts over.
+const METRICS_KEPT: usize = 16_384;
 
 impl TextMetrics {
     /// A measurer using the fonts of this thread, which are loaded the first time one is needed.
     pub fn new() -> Self {
         let (font_system, _) = crate::device::shared_fonts();
-        Self { font_system }
+        Self {
+            font_system,
+            measured: HashMap::new(),
+        }
+    }
+
+    /// The size kept under `key`, or the one `measure` finds, which is then kept.
+    fn kept(&mut self, key: u64, measure: impl FnOnce(&mut FontSystem) -> Size) -> Size {
+        if let Some(size) = self.measured.get(&key) {
+            return *size;
+        }
+        let size = measure(&mut self.font_system.borrow_mut());
+        if self.measured.len() >= METRICS_KEPT {
+            self.measured.clear();
+        }
+        self.measured.insert(key, size);
+        size
     }
 }
 
@@ -336,26 +355,24 @@ impl Default for TextMetrics {
 }
 
 impl TextMeasurer for TextMetrics {
+    /// Measures plain text, reusing the size measured before for the same text, style, width
+    /// and fonts.
     fn measure(&mut self, content: &str, style: &TextStyle, max_width: f32) -> Size {
-        measure_plain(
-            &mut self.font_system.borrow_mut(),
-            content,
-            style,
-            max_width,
-        )
+        let key = plain_measure_key(content, style, max_width, rustle_text::font_epoch());
+        self.kept(key, |fonts| measure_plain(fonts, content, style, max_width))
     }
 
+    /// Measures rich text, reusing the size measured before for the same runs, style, width
+    /// and fonts.
     fn measure_spans(&mut self, spans: &[StyledSpan], style: &TextStyle, max_width: f32) -> Size {
-        measure_rich(&mut self.font_system.borrow_mut(), spans, style, max_width)
+        let key = rich_measure_key(spans, style, max_width, rustle_text::font_epoch());
+        self.kept(key, |fonts| measure_rich(fonts, spans, style, max_width))
     }
 
+    /// Lays out rich text through the thread's text engine, which keeps layouts of text laid
+    /// out before with the same runs, style, width and fonts.
     fn layout(&mut self, spans: &[StyledSpan], style: &TextStyle, max_width: f32) -> TextLayout {
-        layout_spans(
-            &mut self.font_system.borrow_mut(),
-            spans,
-            style,
-            max_width.is_finite().then_some(max_width),
-        )
+        rustle_text::layout_styled(spans, style, max_width.is_finite().then_some(max_width))
     }
 }
 
@@ -384,8 +401,23 @@ pub(super) enum Content<'a> {
     Rich(&'a [StyledSpan]),
 }
 
-/// Whether text in `color` sits on a light surface.
+/// Whether dark text is drawn black and heavier; see [`set_legible_text`].
+static LEGIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Sets whether dark text is drawn pure black and at least semibold, which is on by default:
+/// dark text is taken to sit on a light surface, where it blends thinner than light text on a
+/// dark one. An application whose palette sets grey text on dark surfaces turns it off, so text
+/// is drawn in exactly its color and weight. It applies to every renderer in the program and to
+/// measuring, so set it before the first frame is laid out.
+pub fn set_legible_text(on: bool) {
+    LEGIBLE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether text in `color` sits on a light surface, and so is drawn legibly.
 fn is_dark(color: rustle_graphics::Color) -> bool {
+    if !LEGIBLE.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
     let luminance =
         0.2126 * f32::from(color.r) + 0.7152 * f32::from(color.g) + 0.0722 * f32::from(color.b);
     luminance < 110.0

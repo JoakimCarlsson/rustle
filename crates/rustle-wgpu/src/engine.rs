@@ -39,6 +39,17 @@ impl TextEngine for Engine {
         names.into_iter().collect()
     }
 
+    fn monospace_font_families(&self) -> Vec<String> {
+        let font_system = self.font_system.borrow();
+        let names: BTreeSet<String> = font_system
+            .db()
+            .faces()
+            .filter(|face| face.monospaced)
+            .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
+            .collect();
+        names.into_iter().collect()
+    }
+
     fn register_font(&self, data: Vec<u8>) -> Vec<String> {
         let mut font_system = self.font_system.borrow_mut();
         let known: BTreeSet<_> = font_system.db().faces().map(|face| face.id).collect();
@@ -76,6 +87,13 @@ pub(super) fn layout_spans(
     );
     let lines = lines_of(&buffer, &text, style);
     TextLayout::new(text, spans.to_vec(), style.font_size, lines)
+}
+
+/// Where the text of `run` starts in the whole text, its paragraph starting
+/// at `first`; the space a line wrapped at is left at the end of the line
+/// before, so the next line starts at its first glyph.
+fn next_start(run: &glyphon::LayoutRun<'_>, first: usize) -> Option<usize> {
+    run.glyphs.iter().map(|glyph| first + glyph.start).min()
 }
 
 /// The visual lines of a shaped buffer, with offsets into the whole text.
@@ -137,7 +155,8 @@ fn lines_of(buffer: &Buffer, text: &str, style: &TextStyle) -> Vec<LineLayout> {
             let end = if last {
                 first + length
             } else {
-                clusters.iter().map(|c| c.end).max().unwrap_or(start)
+                next_start(mine[index + 1], first)
+                    .unwrap_or_else(|| clusters.iter().map(|c| c.end).max().unwrap_or(start))
             };
             lines.push(LineLayout {
                 start,
@@ -210,6 +229,20 @@ mod tests {
             Some(120.0),
         );
         assert_eq!(none.line_count(), 1);
+    }
+
+    #[test]
+    fn a_wrapped_line_keeps_the_space_it_wrapped_at() {
+        let style = TextStyle::default();
+        let text = "the quick brown fox jumps over the lazy dog and keeps running far away";
+        let wrapped = layout(text, &style, Some(120.0));
+        for line in &wrapped.lines()[1..] {
+            assert!(
+                !text[line.start..].starts_with(' '),
+                "line at {} starts with a space",
+                line.start
+            );
+        }
     }
 
     #[test]
@@ -360,6 +393,11 @@ mod tests {
         assert!(
             families.windows(2).all(|pair| pair[0] < pair[1]),
             "sorted, no repeats"
+        );
+        let monospace = engine.monospace_font_families();
+        assert!(
+            monospace.iter().all(|name| families.contains(name)),
+            "monospaced families are among all families"
         );
         let Ok(data) = std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf") else {
             return;

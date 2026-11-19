@@ -191,8 +191,8 @@ pub enum DrawCommand {
         start: f32,
         sweep: f32,
     },
-    /// A soft shadow of a rounded rectangle: a Gaussian blur with `blur / 2` pixels of
-    /// standard deviation, so it fades out over about `blur` pixels.
+    /// A soft shadow of a rounded rectangle that fades out over about `blur` pixels: the
+    /// rectangle blurred by a Gaussian with `blur / 2` pixels of standard deviation.
     Shadow {
         rect: Rect,
         corner_radius: f32,
@@ -292,6 +292,53 @@ pub enum DrawCommand {
 }
 
 impl DrawCommand {
+    /// This command drawn at `alpha` of its opacity, from 0 (invisible) to 1 (as is): every
+    /// color it paints is faded, and a shader or effect is faded as a whole.
+    pub fn faded(mut self, alpha: f32) -> Self {
+        if alpha >= 1.0 {
+            return self;
+        }
+        let fade = |color: &mut Color| {
+            color.a = (f32::from(color.a) * alpha.max(0.0)).round() as u8;
+        };
+        match &mut self {
+            Self::Rect { color, border, .. } => {
+                fade(color);
+                if let Some(border) = border {
+                    fade(&mut border.color);
+                }
+            }
+            Self::Gradient { from, to, .. }
+            | Self::RadialGradient { from, to, .. }
+            | Self::SweepGradient { from, to, .. } => {
+                fade(from);
+                fade(to);
+            }
+            Self::Arc { color, .. }
+            | Self::Shadow { color, .. }
+            | Self::Text { color, .. }
+            | Self::Mask { color, .. }
+            | Self::Line { color, .. }
+            | Self::Path { color, .. } => fade(color),
+            Self::RichText { spans, .. } => {
+                for span in spans {
+                    fade(&mut span.color);
+                }
+            }
+            Self::Image { opacity, .. } => *opacity *= alpha.max(0.0),
+            Self::PushEffect { effect, .. } => effect.alpha *= alpha.max(0.0),
+            Self::PushLayer { alpha: layer, .. } => *layer *= alpha.max(0.0),
+            Self::Shader { .. }
+            | Self::BackdropBlur { .. }
+            | Self::PushClip { .. }
+            | Self::PushRoundedClip { .. }
+            | Self::PopClip
+            | Self::PopLayer
+            | Self::PopEffect => {}
+        }
+        self
+    }
+
     /// This command moved by (`dx`, `dy`).
     pub fn translated(mut self, dx: f32, dy: f32) -> Self {
         let shift = |rect: &mut Rect| {
