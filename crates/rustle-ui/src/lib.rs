@@ -9,13 +9,16 @@ use rustle_text::{TextSpan, TextStyle};
 
 mod canvas;
 mod cursor;
+mod drag_and_drop;
 mod gesture;
 mod input;
 mod interaction;
 mod layout;
 mod modifier;
+mod popup;
 mod scroll;
 mod semantics;
+mod view_configuration;
 
 #[cfg(test)]
 mod restartable_tests;
@@ -26,6 +29,10 @@ mod skippable_tests;
 
 pub use canvas::Canvas;
 pub use cursor::CursorIcon;
+pub use drag_and_drop::{
+    DragAndDropEvent, DragAndDropSourceRegion, DragAndDropTarget, DragAndDropTargetRegion,
+    DragAndDropTransferData, ShouldStartFn, TransferDataFn,
+};
 pub use gesture::{
     AnchoredDraggableState, Axis, DraggableState, NestedScrollConnection, PointerId, PointerInput,
     PointerInputHandler, PointerInputPhase, PointerKind, PointerSample, ScrollableState,
@@ -35,7 +42,7 @@ pub use gesture::{
 pub use input::{
     Clipboard, ClipboardImage, DropHandler, Focus, Key, KeyCode, KeyEvent, KeyHandler, KeyLocation,
     Modifiers, PhysicalKey, PointerButton, PointerEvent, PointerPhase, Preedit, PressEvent,
-    clipboard, remember_focus, set_clipboard, take_focus_request,
+    clipboard, remember_focus, set_clipboard, take_focus_release, take_focus_request,
 };
 pub use interaction::{Interaction, InteractionColors, PointerState};
 pub use layout::ContentScale;
@@ -43,13 +50,21 @@ pub use layout::{
     BoxAlignment, ButtonRegion, Children, CursorRegion, DisplayList, DisplayOptions, DragRegion,
     DragSourceRegion, DropTargetRegion, FileDropRegion, FocusRegion, HitRegion, HoverRegion,
     ImeCaretRegion, InteractionRegion, IntrinsicSize, KeyRegion, LaidOut, Layout, LayoutResult,
-    Measurable, Overlay, PixelRounding, Placement, PointerInputRegion, PressRegion, ScrollRegion,
-    SemanticsNode, SubcomposeResult, SubcomposeScope, display_list, display_list_with,
-    subcompose_layout,
+    Measurable, Overlay, PixelRounding, Placement, PointerInputRegion, PopupRegion, PressRegion,
+    ScrollRegion, SemanticsNode, SubcomposeResult, SubcomposeScope, TaggedNode, display_list,
+    display_list_with, subcompose_layout,
 };
 pub use modifier::Modifier;
-pub use scroll::{ScrollState, ScrollbarStyle, ScrollbarVisibility, remember_scroll_state};
+pub use popup::{
+    AlignmentOffsetPositionProvider, DropdownMenuPositionProvider, PlainTooltipPositionProvider,
+    PopupPlacement, PopupPositionProvider, PopupProperties, PositionAtPoint,
+    popup_position_provider_at_position,
+};
+pub use scroll::{
+    LOCAL_SCROLLBAR_STYLE, ScrollState, ScrollbarStyle, ScrollbarVisibility, remember_scroll_state,
+};
 pub use semantics::{CustomAction, LiveRegion, Role, ScrollDirection, Semantics};
+pub use view_configuration::{LOCAL_VIEW_CONFIGURATION, ViewConfiguration};
 
 /// Which way layouts run: the start of a row is on the left in `Ltr` and on the right in `Rtl`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

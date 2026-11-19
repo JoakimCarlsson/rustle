@@ -63,9 +63,23 @@ impl Children<'_> {
             .elements
             .iter()
             .find_map(|element| match element {
-                Element::Weight(weight) => Some(*weight),
+                Element::Weight { weight, .. } => Some(*weight),
                 _ => None,
             })
+    }
+
+    /// Whether child `index` is made exactly as long as its weighted share, as Compose's
+    /// `weight(weight, fill = true)` is, rather than at most that long; true without a weight.
+    pub fn weight_fills(&self, index: usize) -> bool {
+        self.node(index)
+            .modifier
+            .elements
+            .iter()
+            .find_map(|element| match element {
+                Element::Weight { fill, .. } => Some(*fill),
+                _ => None,
+            })
+            .unwrap_or(true)
     }
 
     /// The `align` modifier of child `index`, if it has one.
@@ -78,6 +92,16 @@ impl Children<'_> {
                 Element::Align(alignment) => Some(*alignment),
                 _ => None,
             })
+    }
+
+    /// Whether child `index` is sized to its stack with
+    /// [`Modifier::match_parent_size`](crate::Modifier::match_parent_size).
+    pub fn matches_parent_size(&self, index: usize) -> bool {
+        self.node(index)
+            .modifier
+            .elements
+            .iter()
+            .any(|element| matches!(element, Element::MatchParentSize))
     }
 
     /// Measures child `index` within `constraints` and returns its size.

@@ -60,6 +60,21 @@ pub(super) enum Paint {
         focused: FocusedFn,
         inner: Box<Measured>,
     },
+    InteractionGroup {
+        inner: Box<Measured>,
+    },
+    KeepInWindow {
+        inner: Box<Measured>,
+    },
+    InWindow {
+        at: Offset,
+        inner: Box<Measured>,
+    },
+    /// A popup, painted where its provider puts it against the anchor it is declared in.
+    Popup {
+        placement: crate::popup::PopupPlacement,
+        inner: Box<Measured>,
+    },
     Fill {
         fill: Fill,
         inner: Box<Measured>,
@@ -104,8 +119,13 @@ pub(super) enum Paint {
         on_placed: Rc<dyn Fn(Rect, Size)>,
         inner: Box<Measured>,
     },
+    PlacedVisible {
+        on_visible: Rc<dyn Fn(Rect)>,
+        inner: Box<Measured>,
+    },
     LongPress {
         on_long_press: Rc<dyn Fn()>,
+        view_configuration: crate::ViewConfiguration,
         inner: Box<Measured>,
     },
     PointerMove {
@@ -123,10 +143,21 @@ pub(super) enum Paint {
     DragSource {
         payload: Rc<dyn std::any::Any>,
         button: PointerButton,
+        touch_slop: f32,
         inner: Box<Measured>,
     },
     DropTarget {
         on_drop: DropHandler,
+        inner: Box<Measured>,
+    },
+    DragAndDropSource {
+        transfer_data: crate::drag_and_drop::TransferDataFn,
+        touch_slop: f32,
+        inner: Box<Measured>,
+    },
+    DragAndDropTarget {
+        should_start: crate::drag_and_drop::ShouldStartFn,
+        target: Rc<dyn crate::drag_and_drop::DragAndDropTarget>,
         inner: Box<Measured>,
     },
     PointerInput {
@@ -146,6 +177,12 @@ pub(super) enum Paint {
         alpha: f32,
         rotation: f32,
         scale: f32,
+        inner: Box<Measured>,
+    },
+    /// Content drawn as one layer turned by the angle, in degrees, `degrees` gives when it is
+    /// painted.
+    RotateWith {
+        degrees: Rc<dyn Fn() -> f32>,
         inner: Box<Measured>,
     },
     BorderBottom {
@@ -191,6 +228,7 @@ pub(super) enum Paint {
     },
     Press {
         on_press: Rc<dyn Fn(PressEvent)>,
+        view_configuration: crate::ViewConfiguration,
         inner: Box<Measured>,
     },
     Button {
@@ -210,6 +248,15 @@ pub(super) enum Paint {
     Focusable {
         focus: Focus,
         on_key: KeyHandler,
+        takes_press: bool,
+        inner: Box<Measured>,
+    },
+    FocusChanged {
+        on_focus_changed: Rc<dyn Fn(bool)>,
+        inner: Box<Measured>,
+    },
+    TestTag {
+        tag: Rc<str>,
         inner: Box<Measured>,
     },
 }

@@ -62,6 +62,15 @@ impl Modifier {
         self.graphics_layer(1.0, degrees, 1.0)
     }
 
+    /// Turns the content clockwise about the center of the area by the angle, in degrees,
+    /// `degrees` returns when the area is drawn, as Compose's `graphicsLayer { rotationZ = ... }`
+    /// block does: state it reads is read while drawing, so an angle that keeps changing, such
+    /// as a spinner's, draws the area again without composing or measuring anything. See
+    /// [`Modifier::graphics_layer`].
+    pub fn rotate_with(self, degrees: impl Fn() -> f32 + 'static) -> Self {
+        self.then(Element::RotateWith(Rc::new(degrees)))
+    }
+
     /// Scales the content by `factor` about the center of the area. See [`Modifier::graphics_layer`].
     pub fn scale(self, factor: f32) -> Self {
         self.graphics_layer(1.0, 0.0, factor)
@@ -210,6 +219,16 @@ impl Modifier {
     /// given in composition does.
     pub fn interaction_focused(self, focused: bool) -> Self {
         self.then(Element::InteractionFocused(Rc::new(move || focused)))
+    }
+
+    /// Makes the area a group for the interactive drawing inside it (see
+    /// [`draw_behind_interactive`](Self::draw_behind_interactive)): while the pointer is inside
+    /// the area's visible rectangle, everything inside it is painted with
+    /// [`Interaction::group_hovered`](crate::Interaction::group_hovered) set, such as a button
+    /// in a row that only shows while the row is hovered. Resolved when painting, so hovering
+    /// the group repaints without composing.
+    pub fn interaction_group(self) -> Self {
+        self.then(Element::InteractionGroup)
     }
 
     /// Like [`interaction_focused`](Self::interaction_focused), with the focused state read by

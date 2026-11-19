@@ -74,6 +74,17 @@ pub(crate) enum Element {
     InteractiveDraw(InteractiveDrawFn),
     /// A focused flag for the interactive drawing inside.
     InteractionFocused(FocusedFn),
+    /// An area whose hover the interactive drawing inside reports as `group_hovered`.
+    InteractionGroup,
+    /// An area moved, when it is painted, as far as it takes to lie inside the window.
+    KeepInWindow,
+    /// A child of a stack sized to the stack after its other children set the stack's size.
+    MatchParentSize,
+    /// An area painted with its top left at this point of the window, wherever layout put it.
+    InWindow(f32, f32),
+    /// An area painted where a popup position provider puts it against the layout it is
+    /// declared in, told when it should be dismissed.
+    Popup(crate::popup::PopupPlacement),
     Fill(Fill),
     Effect(LayerEffect),
     Padding {
@@ -126,6 +137,8 @@ pub(crate) enum Element {
         rotation: f32,
         scale: f32,
     },
+    /// A layer turned by the angle, in degrees, the closure gives when the area is drawn.
+    RotateWith(Rc<dyn Fn() -> f32>),
     BorderBottom {
         width: f32,
         color: Color,
@@ -148,19 +161,31 @@ pub(crate) enum Element {
     /// Where text input goes, in the area's coordinates, while its focus is held.
     ImeCaret(Rect),
     Placed(Rc<dyn Fn(Rect, Size)>),
+    /// Told the part of the area left visible by the clips around it, each time the display is built.
+    PlacedVisible(Rc<dyn Fn(Rect)>),
     SizeChanged(Rc<dyn Fn(Size)>),
     /// Told the shaped text of the node's own text content after layout.
     TextLayout(Rc<dyn Fn(Rc<rustle_text::TextLayout>)>),
-    LongPress(Rc<dyn Fn()>),
+    /// What a long press runs, and the view configuration it is recognized by.
+    LongPress(Rc<dyn Fn()>, crate::ViewConfiguration),
     PointerMove(Rc<dyn Fn(Option<Offset>)>),
     FileDrop(Rc<dyn Fn(PathBuf)>),
     DragEnd(Rc<dyn Fn()>),
     DragSource {
         payload: Rc<dyn std::any::Any>,
         button: PointerButton,
+        /// How far the pointer moves before the area is picked up.
+        touch_slop: f32,
     },
     PointerInput(PointerInputHandler),
     DropTarget(DropHandler),
+    /// Where a drag and drop starts, what it carries and how far the pointer moves first.
+    DragAndDropSource(crate::drag_and_drop::TransferDataFn, f32),
+    /// An area that takes part in drags and drops.
+    DragAndDropTarget(
+        crate::drag_and_drop::ShouldStartFn,
+        Rc<dyn crate::drag_and_drop::DragAndDropTarget>,
+    ),
     Pinch(Rc<dyn Fn(f32)>),
     BlocksPointer,
     Clip,
@@ -171,7 +196,8 @@ pub(crate) enum Element {
     },
     Clickable(Rc<dyn Fn()>, bool),
     Semantics(Semantics),
-    Press(Rc<dyn Fn(PressEvent)>),
+    /// What a press runs, and the view configuration its presses are counted by.
+    Press(Rc<dyn Fn(PressEvent)>, crate::ViewConfiguration),
     Button {
         button: PointerButton,
         on_event: Rc<dyn Fn(&PointerEvent)>,
@@ -184,12 +210,23 @@ pub(crate) enum Element {
     Focusable {
         focus: Focus,
         on_key: KeyHandler,
+        /// Whether a press of the primary button on the area gives it focus.
+        takes_press: bool,
     },
+    /// Told whether the nearest focus target inside holds focus, each time that changes.
+    FocusChanged(Rc<dyn Fn(bool)>),
+    /// Names the area for tests that look it up.
+    TestTag(Rc<str>),
     IntrinsicWidth(IntrinsicSize),
     IntrinsicHeight(IntrinsicSize),
     Layout(Rc<LayoutFn>),
     /// Read by rows and columns; ignored when measuring the node itself.
-    Weight(f32),
+    Weight {
+        /// The area's part of the space left, against the other weighted children.
+        weight: f32,
+        /// Whether the area is made exactly as long as its share, not at most that long.
+        fill: bool,
+    },
     /// Read by stacks; ignored when measuring the node itself.
     Align(BoxAlignment),
 }
@@ -201,6 +238,15 @@ pub(crate) enum Element {
 #[derive(Clone, Default)]
 pub struct Modifier {
     pub(crate) elements: Vec<Element>,
+}
+
+impl std::fmt::Debug for Modifier {
+    /// How many elements the chain holds, so types that keep a modifier can derive `Debug`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Modifier")
+            .field("elements", &self.elements.len())
+            .finish()
+    }
 }
 
 impl Modifier {

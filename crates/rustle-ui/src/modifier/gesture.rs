@@ -25,8 +25,10 @@ impl Modifier {
 
     /// Lets the area be dragged along `axis`: `state` records how far (see
     /// [`DraggableState::offset`]), how fast it was let go and whether a drag is going on.
-    /// A drag starts once the pointer moved a few pixels along the axis. Use the offset
-    /// to place the content, for instance with [`offset`](Self::offset).
+    /// A drag starts once the pointer moved the
+    /// [`touch_slop`](crate::ViewConfiguration::touch_slop) of the
+    /// [`LOCAL_VIEW_CONFIGURATION`](crate::LOCAL_VIEW_CONFIGURATION) along the axis, as an
+    /// anchored drag and a drag that scrolls do. Use the offset to place the content, for instance with [`offset`](Self::offset).
     pub fn draggable(self, state: &DraggableState, axis: Axis) -> Self {
         self.draggable_inner(state, axis, true, Rc::new(|_| {}), Rc::new(|_| {}))
     }
@@ -54,10 +56,11 @@ impl Modifier {
         on_stopped: Rc<dyn Fn(f32)>,
     ) -> Self {
         let state = state.clone();
+        let touch_slop = crate::view_configuration::current_view_configuration().touch_slop;
         self.pointer_input(move |event| {
             let recognizer = Rc::clone(&state.recognizer);
             state.hooks_apply(auto_apply, &*on_delta, &*on_stopped, |hooks| {
-                recognizer.handle(event, axis, hooks)
+                recognizer.handle(event, axis, touch_slop, hooks)
             });
             false
         })
@@ -68,6 +71,7 @@ impl Modifier {
     /// [`AnchoredDraggableState::offset`].
     pub fn anchored_draggable(self, state: &AnchoredDraggableState, axis: Axis) -> Self {
         let state = state.clone();
+        let touch_slop = crate::view_configuration::current_view_configuration().touch_slop;
         self.pointer_input(move |event| {
             let recognizer = state.recognizer();
             let started = || state.set_dragging(true);
@@ -79,6 +83,7 @@ impl Modifier {
             recognizer.handle(
                 event,
                 axis,
+                touch_slop,
                 &crate::gesture::drag_hooks(&|| {}, &started, &delta, &stopped),
             );
             false
@@ -137,6 +142,7 @@ impl Modifier {
         parent: Option<NestedScrollConnection>,
     ) -> Self {
         let state = state.clone();
+        let touch_slop = crate::view_configuration::current_view_configuration().touch_slop;
         self.pointer_input(move |event| {
             let parent = parent.clone();
             if event.phase == PointerInputPhase::Scroll {
@@ -161,6 +167,7 @@ impl Modifier {
             state.core.recognizer.handle(
                 event,
                 axis,
+                touch_slop,
                 &crate::gesture::drag_hooks(&pressed, &started, &delta, &stopped),
             )
         })

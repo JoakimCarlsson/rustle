@@ -28,7 +28,8 @@ pub use paint::{DisplayOptions, LaidOut, PixelRounding, display_list, display_li
 pub use regions::{
     ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
     FileDropRegion, FocusRegion, HitRegion, HoverRegion, ImeCaretRegion, InteractionRegion,
-    KeyRegion, PointerInputRegion, PressRegion, ScrollRegion, SemanticsNode,
+    KeyRegion, PointerInputRegion, PopupRegion, PressRegion, ScrollRegion, SemanticsNode,
+    TaggedNode,
 };
 
 /// Decides how a node sizes and places its children.

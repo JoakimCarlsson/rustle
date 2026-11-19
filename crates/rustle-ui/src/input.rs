@@ -440,6 +440,24 @@ impl KeyEvent {
         }
     }
 
+    /// The character the key typed, with Shift and the keyboard layout applied: Compose's
+    /// `KeyEvent.utf16CodePoint`. It is the first character of [`text`](Self::text) that is
+    /// not a control character, or, for a character key that typed no text (such as one
+    /// pressed with Control), the first character of the key's own text. `None` for keys
+    /// that type nothing, such as the arrows.
+    pub fn code_point(&self) -> Option<char> {
+        let typed = self
+            .text
+            .as_deref()
+            .and_then(|text| text.chars().next())
+            .filter(|character| !character.is_control());
+        match &self.key {
+            Key::Character(bare) => typed.or_else(|| bare.chars().next()),
+            Key::Other => typed,
+            _ => None,
+        }
+    }
+
     /// Whether this is a press (not a release, but a repeat counts) of the logical `key`
     /// with exactly `modifiers` held. Letters match whatever their case.
     ///
@@ -550,6 +568,7 @@ pub type KeyHandler = Rc<dyn Fn(&KeyEvent) -> bool>;
 thread_local! {
     static NEXT_FOCUS_ID: Cell<u64> = const { Cell::new(1) };
     static FOCUS_REQUEST: RefCell<Option<Focus>> = const { RefCell::new(None) };
+    static FOCUS_RELEASE: Cell<Option<u64>> = const { Cell::new(None) };
     static CLIPBOARD: RefCell<Option<Rc<dyn Clipboard>>> = const { RefCell::new(None) };
 }
 
@@ -595,6 +614,25 @@ impl Focus {
     pub fn request_focus(&self) {
         FOCUS_REQUEST.with(|request| *request.borrow_mut() = Some(self.clone()));
     }
+
+    /// Asks the host to take focus away from this at its next opportunity, if it has it
+    /// then, so nothing has focus: Compose's `FocusRequester.freeFocus`. A request for
+    /// focus made after this one, for this or anything else, wins over it.
+    pub fn free_focus(&self) {
+        FOCUS_RELEASE.with(|release| release.set(Some(self.id)));
+        FOCUS_REQUEST.with(|request| {
+            let mut request = request.borrow_mut();
+            if request.as_ref().is_some_and(|asked| asked.id == self.id) {
+                *request = None;
+            }
+        });
+    }
+}
+
+/// The focus the application asked to free with [`Focus::free_focus`], by its
+/// [`id`](Focus::id), if it asked.
+pub fn take_focus_release() -> Option<u64> {
+    FOCUS_RELEASE.with(Cell::take)
 }
 
 /// The focus the application asked for with [`Focus::request_focus`], if any.
@@ -658,6 +696,30 @@ mod tests {
             physical_key: PhysicalKey::Code(code),
             ..KeyEvent::press(key, modifiers)
         }
+    }
+
+    /// The code point is the typed text with Shift applied, the key's own text when the
+    /// key typed none, and nothing for keys that type nothing.
+    #[test]
+    fn the_code_point_is_what_the_key_typed() {
+        let shifted = KeyEvent {
+            text: Some("A".into()),
+            ..KeyEvent::press(Key::Character("a".into()), Modifiers::SHIFT)
+        };
+        assert_eq!(shifted.code_point(), Some('A'));
+        let chord = KeyEvent {
+            text: Some("\u{1}".into()),
+            ..KeyEvent::press(Key::Character("a".into()), Modifiers::CTRL)
+        };
+        assert_eq!(chord.code_point(), Some('a'));
+        assert_eq!(
+            KeyEvent::press(Key::ArrowUp, Modifiers::NONE).code_point(),
+            None
+        );
+        assert_eq!(
+            KeyEvent::typed("é", Modifiers::NONE).code_point(),
+            Some('é')
+        );
     }
 
     #[test]

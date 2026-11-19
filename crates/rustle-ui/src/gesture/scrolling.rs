@@ -5,7 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-use rustle_runtime::{FrameClock, frame_clock, group, remember};
+use rustle_runtime::{FrameClock, frame_clock, group, is_composing, remember};
 
 use super::DragRecognizer;
 
@@ -19,19 +19,29 @@ pub(crate) struct ScrollableCore {
     generation: Cell<u64>,
     active: Cell<bool>,
     scrolling: Cell<bool>,
-    clock: FrameClock,
+    /// The frame clock flings run on: the composition's that made the core, or that of
+    /// the first composition to show a core made outside one.
+    clock: std::cell::RefCell<Option<FrameClock>>,
     pub(crate) recognizer: DragRecognizer,
 }
 
 impl ScrollableCore {
-    /// A core that runs flings on the current frame clock.
+    /// A core that runs flings on the current frame clock, or, made outside composition,
+    /// on the clock it is given later with [`attach_clock`](Self::attach_clock).
     pub(crate) fn new() -> Self {
         Self {
             generation: Cell::new(0),
             active: Cell::new(false),
             scrolling: Cell::new(false),
-            clock: frame_clock(),
+            clock: std::cell::RefCell::new(is_composing().then(frame_clock)),
             recognizer: DragRecognizer::default(),
+        }
+    }
+
+    /// Takes the frame clock of the composition being composed, if it has none yet.
+    pub(crate) fn attach_clock(&self) {
+        if self.clock.borrow().is_none() && is_composing() {
+            *self.clock.borrow_mut() = Some(frame_clock());
         }
     }
 }
@@ -168,7 +178,10 @@ impl ScrollableState {
         last: Option<Duration>,
     ) {
         let this = self.clone();
-        self.core.clock.request_frame(move |now| {
+        let Some(clock) = self.core.clock.borrow().clone() else {
+            return;
+        };
+        clock.request_frame(move |now| {
             if this.core.generation.get() != generation {
                 return;
             }

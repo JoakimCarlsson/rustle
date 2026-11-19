@@ -149,6 +149,18 @@ pub(super) fn measure_modified(
             draw: Rc::clone(draw),
             inner,
         }),
+        Element::KeepInWindow => wrap(next(constraints), |inner| Paint::KeepInWindow { inner }),
+        Element::Popup(placement) => wrap(next(constraints), |inner| Paint::Popup {
+            placement: placement.clone(),
+            inner,
+        }),
+        Element::InWindow(x, y) => wrap(next(constraints), |inner| Paint::InWindow {
+            at: Offset::new(*x, *y),
+            inner,
+        }),
+        Element::InteractionGroup => {
+            wrap(next(constraints), |inner| Paint::InteractionGroup { inner })
+        }
         Element::InteractionFocused(focused) => {
             wrap(next(constraints), |inner| Paint::InteractionFocused {
                 focused: Rc::clone(focused),
@@ -199,17 +211,34 @@ pub(super) fn measure_modified(
             on_event: Rc::clone(on_event),
             inner,
         }),
-        Element::DragSource { payload, button } => {
-            wrap(next(constraints), |inner| Paint::DragSource {
-                payload: Rc::clone(payload),
-                button: *button,
-                inner,
-            })
-        }
+        Element::DragSource {
+            payload,
+            button,
+            touch_slop,
+        } => wrap(next(constraints), |inner| Paint::DragSource {
+            payload: Rc::clone(payload),
+            button: *button,
+            touch_slop: *touch_slop,
+            inner,
+        }),
         Element::DropTarget(on_drop) => wrap(next(constraints), |inner| Paint::DropTarget {
             on_drop: Rc::clone(on_drop),
             inner,
         }),
+        Element::DragAndDropSource(transfer_data, touch_slop) => {
+            wrap(next(constraints), |inner| Paint::DragAndDropSource {
+                transfer_data: Rc::clone(transfer_data),
+                touch_slop: *touch_slop,
+                inner,
+            })
+        }
+        Element::DragAndDropTarget(should_start, target) => {
+            wrap(next(constraints), |inner| Paint::DragAndDropTarget {
+                should_start: Rc::clone(should_start),
+                target: Rc::clone(target),
+                inner,
+            })
+        }
         Element::FileDrop(on_drop) => wrap(next(constraints), |inner| Paint::FileDrop {
             on_drop: Rc::clone(on_drop),
             inner,
@@ -223,10 +252,13 @@ pub(super) fn measure_modified(
             on_move: Rc::clone(on_move),
             inner,
         }),
-        Element::LongPress(on_long_press) => wrap(next(constraints), |inner| Paint::LongPress {
-            on_long_press: Rc::clone(on_long_press),
-            inner,
-        }),
+        Element::LongPress(on_long_press, view_configuration) => {
+            wrap(next(constraints), |inner| Paint::LongPress {
+                on_long_press: Rc::clone(on_long_press),
+                view_configuration: *view_configuration,
+                inner,
+            })
+        }
         Element::TextLayout(_) => next(constraints),
         Element::SizeChanged(on_size_changed) => {
             let inner = next(constraints);
@@ -249,6 +281,12 @@ pub(super) fn measure_modified(
             on_placed: Rc::clone(on_placed),
             inner,
         }),
+        Element::PlacedVisible(on_visible) => {
+            wrap(next(constraints), |inner| Paint::PlacedVisible {
+                on_visible: Rc::clone(on_visible),
+                inner,
+            })
+        }
         Element::ZIndex(z_index) => wrap(next(constraints), |inner| Paint::ZIndex {
             z_index: *z_index,
             clipped: true,
@@ -267,6 +305,10 @@ pub(super) fn measure_modified(
             alpha: *alpha,
             rotation: *rotation,
             scale: *scale,
+            inner,
+        }),
+        Element::RotateWith(degrees) => wrap(next(constraints), |inner| Paint::RotateWith {
+            degrees: Rc::clone(degrees),
             inner,
         }),
         Element::Alpha(alpha) => wrap(next(constraints), |inner| Paint::Alpha {
@@ -313,10 +355,8 @@ pub(super) fn measure_modified(
         Element::Scroll { state, vertical } => {
             let mut unbounded = constraints;
             if *vertical {
-                unbounded.min_height = 0.0;
                 unbounded.max_height = f32::INFINITY;
             } else {
-                unbounded.min_width = 0.0;
                 unbounded.max_width = f32::INFINITY;
             }
             let inner = next(unbounded);
@@ -332,7 +372,7 @@ pub(super) fn measure_modified(
                 paint: Paint::Scroll {
                     state: state.clone(),
                     vertical: *vertical,
-                    offset: state.offset().clamp(0.0, state.max_offset()),
+                    offset: state.drawn_offset(),
                     inner: Box::new(inner),
                 },
             }
@@ -348,10 +388,13 @@ pub(super) fn measure_modified(
             semantics: semantics.clone(),
             inner,
         }),
-        Element::Press(on_press) => wrap(next(constraints), |inner| Paint::Press {
-            on_press: Rc::clone(on_press),
-            inner,
-        }),
+        Element::Press(on_press, view_configuration) => {
+            wrap(next(constraints), |inner| Paint::Press {
+                on_press: Rc::clone(on_press),
+                view_configuration: *view_configuration,
+                inner,
+            })
+        }
         Element::Button { button, on_event } => wrap(next(constraints), |inner| Paint::Button {
             button: *button,
             on_event: Rc::clone(on_event),
@@ -366,9 +409,24 @@ pub(super) fn measure_modified(
             on_drag: Rc::clone(on_drag),
             inner,
         }),
-        Element::Focusable { focus, on_key } => wrap(next(constraints), |inner| Paint::Focusable {
+        Element::Focusable {
+            focus,
+            on_key,
+            takes_press,
+        } => wrap(next(constraints), |inner| Paint::Focusable {
             focus: focus.clone(),
             on_key: Rc::clone(on_key),
+            takes_press: *takes_press,
+            inner,
+        }),
+        Element::FocusChanged(on_focus_changed) => {
+            wrap(next(constraints), |inner| Paint::FocusChanged {
+                on_focus_changed: Rc::clone(on_focus_changed),
+                inner,
+            })
+        }
+        Element::TestTag(tag) => wrap(next(constraints), |inner| Paint::TestTag {
+            tag: Rc::clone(tag),
             inner,
         }),
         Element::IntrinsicWidth(size) => {
@@ -424,8 +482,24 @@ pub(super) fn measure_modified(
                 paint: Paint::Children(vec![(placement.offset, inner)]),
             }
         }
-        Element::Weight(_) | Element::Align(_) => next(constraints),
+        Element::Weight { .. } | Element::Align(_) | Element::MatchParentSize => next(constraints),
     }
+}
+
+/// The text shaped and broken into lines at `max_width`, laid out from its start side:
+/// alignment only matters for text wider than its content.
+fn flowing_layout(
+    content: &str,
+    style: &TextStyle,
+    max_width: f32,
+    text: &mut dyn TextMeasurer,
+) -> Rc<TextLayout> {
+    let flow = TextStyle {
+        align: TextAlign::Start,
+        ..*style
+    };
+    let spans = [TextSpan::new(content).resolve(&flow)];
+    Rc::new(text.layout(&spans, &flow, max_width))
 }
 
 /// The text shaped and broken into lines at `max_width`, with where the boundary before
@@ -436,13 +510,7 @@ fn character_boundaries(
     max_width: f32,
     text: &mut dyn TextMeasurer,
 ) -> (Rc<TextLayout>, Vec<CharPosition>) {
-    // The text is laid out from its start side; alignment only matters for text wider than its content.
-    let flow = TextStyle {
-        align: TextAlign::Start,
-        ..*style
-    };
-    let spans = [TextSpan::new(content).resolve(&flow)];
-    let layout = Rc::new(text.layout(&spans, &flow, max_width));
+    let layout = flowing_layout(content, style, max_width, text);
     let boundaries = layout
         .char_positions()
         .into_iter()
@@ -558,7 +626,7 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
             });
             tell_text_layout(node, || match &editing {
                 Some((editing, _)) => editing.layout.borrow().clone(),
-                None => Some(character_boundaries(content, style, constraints.max_width, text).0),
+                None => Some(flowing_layout(content, style, constraints.max_width, text)),
             });
             Measured {
                 size: constraints.constrain(text.measure(content, style, constraints.max_width)),

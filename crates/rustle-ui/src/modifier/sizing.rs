@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use rustle_geometry::{Offset, Size};
 use rustle_unit::{Constraints, Dp};
 
 use super::Element;
@@ -145,6 +146,67 @@ impl Modifier {
         })
     }
 
+    /// Lets the element be as narrow as its content wants, below the least width its parent
+    /// asks for, and, when `unbounded`, wider than the room its parent has, placing it by the
+    /// horizontal part of `alignment` within the width it then takes: Compose's
+    /// `wrapContentWidth(align, unbounded)`. Content wider than the room runs out of the
+    /// element on the side its alignment leaves, for a parent that clips it.
+    pub fn wrap_content_width(self, alignment: BoxAlignment, unbounded: bool) -> Self {
+        let (factor, _) = alignment.factors();
+        let factor = if crate::is_rtl() {
+            1.0 - factor
+        } else {
+            factor
+        };
+        self.layout(move |content, constraints| {
+            let size = content.measure(Constraints {
+                min_width: 0.0,
+                max_width: if unbounded {
+                    f32::INFINITY
+                } else {
+                    constraints.max_width
+                },
+                ..constraints
+            });
+            let width = size
+                .width
+                .min(constraints.max_width)
+                .max(constraints.min_width);
+            Placement::new(
+                Size::new(width, size.height),
+                Offset::new((width - size.width) * factor, 0.0),
+            )
+        })
+    }
+
+    /// Lets the element be as short as its content wants, below the least height its parent
+    /// asks for, and, when `unbounded`, taller than the room its parent has, placing it by the
+    /// vertical part of `alignment` within the height it then takes: Compose's
+    /// `wrapContentHeight(align, unbounded)`. Content taller than the room keeps its height
+    /// and runs out of the element on the side its alignment leaves, for a parent that clips it.
+    pub fn wrap_content_height(self, alignment: BoxAlignment, unbounded: bool) -> Self {
+        let (_, factor) = alignment.factors();
+        self.layout(move |content, constraints| {
+            let size = content.measure(Constraints {
+                min_height: 0.0,
+                max_height: if unbounded {
+                    f32::INFINITY
+                } else {
+                    constraints.max_height
+                },
+                ..constraints
+            });
+            let height = size
+                .height
+                .min(constraints.max_height)
+                .max(constraints.min_height);
+            Placement::new(
+                Size::new(size.width, height),
+                Offset::new(0.0, (height - size.height) * factor),
+            )
+        })
+    }
+
     /// Sizes the element's width to its content's intrinsic width, the
     /// smallest that does not cut it off ([`IntrinsicSize::Min`]) or the one
     /// it wants with room to spare ([`IntrinsicSize::Max`]), within the
@@ -174,14 +236,71 @@ impl Modifier {
     }
 
     /// Shares the space left in a row or column with the other weighted
-    /// children, in proportion to `weight`. Ignored anywhere else.
+    /// children, in proportion to `weight`, and is made exactly as long as its
+    /// share: Compose's `weight(weight)`. Ignored anywhere else.
     pub fn weight(self, weight: f32) -> Self {
-        self.then(Element::Weight(weight))
+        self.weight_with(weight, true)
     }
 
-    /// Places the element within a stack. Ignored anywhere else.
+    /// Like [`weight`](Self::weight), made exactly as long as its share when `fill`, else at
+    /// most that long and as long as its content wants within it, the rest left to the
+    /// arrangement: Compose's `weight(weight, fill)`. Ignored anywhere else.
+    pub fn weight_with(self, weight: f32, fill: bool) -> Self {
+        self.then(Element::Weight { weight, fill })
+    }
+
+    /// Places the element within a stack, or across a row or column (the vertical part of the
+    /// alignment in a row, the horizontal part in a column). Ignored anywhere else.
     pub fn align(self, alignment: BoxAlignment) -> Self {
         self.then(Element::Align(alignment))
+    }
+
+    /// In a stack, makes the area exactly as large as the stack once its other children have
+    /// set the stack's size, without counting toward that size: a backdrop, an outline or an
+    /// overlay over what the stack holds: Compose's `matchParentSize` in a `Box`. Ignored
+    /// anywhere else.
+    pub fn match_parent_size(self) -> Self {
+        self.then(Element::MatchParentSize)
+    }
+
+    /// Moves the area, with everything in it, as far as it takes to lie inside the window when
+    /// layout put it partly outside, as far left and up as it can go when it is larger than the
+    /// window. Decided when painting, so a popup placed next to what opened it, such as a menu
+    /// under a button near the window's edge, stays on screen; pointer input follows it.
+    pub fn keep_in_window(self) -> Self {
+        self.then(Element::KeepInWindow)
+    }
+
+    /// Paints the area with its top-left corner at (`x`, `y`) in the window, in logical pixels,
+    /// wherever layout put it, without changing the space it takes there. For a menu opened
+    /// where the pointer was: pair it with [`z_index_unclipped`](Self::z_index_unclipped) so
+    /// the clips around where it is declared do not cut it, and with
+    /// [`keep_in_window`](Self::keep_in_window) after it to keep it on screen.
+    pub fn in_window(self, x: impl Into<Dp>, y: impl Into<Dp>) -> Self {
+        self.then(Element::InWindow(x.into().0, y.into().0))
+    }
+
+    /// Paints the area as a popup: where `provider` puts it, against the bounds of the layout
+    /// it is declared in (its anchor) and the window, wherever layout put it and without
+    /// taking room there; moved inside the window when `properties.clipping_enabled`. While
+    /// it is painted, a press outside it calls `on_dismiss_request` when
+    /// `properties.dismiss_on_click_outside`, and so does Escape when it is focusable and
+    /// `properties.dismiss_on_back_press`. It takes the presses that land on it, and when it
+    /// is focusable those outside it too. The building block of Compose's
+    /// `Popup(popupPositionProvider, onDismissRequest, properties)`: pair it with
+    /// [`z_index_unclipped`](Self::z_index_unclipped) before it so it is drawn over
+    /// everything and not cut by the clips around where it is declared.
+    pub fn popup_placement(
+        self,
+        provider: impl crate::PopupPositionProvider + 'static,
+        properties: crate::PopupProperties,
+        on_dismiss_request: Option<Rc<dyn Fn()>>,
+    ) -> Self {
+        self.then(Element::Popup(crate::PopupPlacement {
+            provider: Rc::new(provider),
+            properties,
+            on_dismiss_request,
+        }))
     }
 
     /// Paints the area over everything with a lower `z_index`, whatever its
@@ -241,9 +360,24 @@ impl Modifier {
 
     /// Lets the content scroll vertically, however tall it is.
     ///
+    /// The content keeps the least width and height the area was given, with no bound on
+    /// its height, as Compose's `verticalScroll` does, so content shorter than a sized
+    /// area still fills it.
+    ///
     /// The area is described to assistive technology as a group that can be asked
     /// to scroll up or down.
     pub fn vertical_scroll(self, state: &ScrollState) -> Self {
+        self.vertical_scroll_with(state, false)
+    }
+
+    /// Like [`vertical_scroll`](Self::vertical_scroll); with `reverse_scrolling` the
+    /// offset counts from the end of the content, so an offset of 0 shows the end and the
+    /// end stays in view as content grows there, as Compose's
+    /// `verticalScroll(state, reverseScrolling = true)` does, for a conversation.
+    pub fn vertical_scroll_with(self, state: &ScrollState, reverse_scrolling: bool) -> Self {
+        state.attach_clock();
+        state.follow_local_scrollbar();
+        state.set_reverse_scrolling(reverse_scrolling);
         self.semantics(state.semantics(true)).then(Element::Scroll {
             state: state.clone(),
             vertical: true,
@@ -255,6 +389,16 @@ impl Modifier {
     /// The area is described to assistive technology as a group that can be asked
     /// to scroll left or right.
     pub fn horizontal_scroll(self, state: &ScrollState) -> Self {
+        self.horizontal_scroll_with(state, false)
+    }
+
+    /// Like [`horizontal_scroll`](Self::horizontal_scroll); with `reverse_scrolling` the
+    /// offset counts from the end of the content, so an offset of 0 shows the end, as
+    /// Compose's `horizontalScroll(state, reverseScrolling = true)` does.
+    pub fn horizontal_scroll_with(self, state: &ScrollState, reverse_scrolling: bool) -> Self {
+        state.attach_clock();
+        state.follow_local_scrollbar();
+        state.set_reverse_scrolling(reverse_scrolling);
         self.semantics(state.semantics(false))
             .then(Element::Scroll {
                 state: state.clone(),

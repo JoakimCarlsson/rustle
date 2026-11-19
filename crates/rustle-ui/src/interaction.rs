@@ -28,6 +28,10 @@ pub struct Interaction {
     /// else the focus of the nearest [`focusable`](crate::Modifier::focusable) around it or in
     /// its own chain of modifiers.
     pub focused: bool,
+    /// The pointer is inside the visible rectangle of the nearest area around this one marked
+    /// with [`Modifier::interaction_group`](crate::Modifier::interaction_group), as CSS's
+    /// `group-hover` reads it. False outside any group.
+    pub group_hovered: bool,
 }
 
 impl Interaction {
@@ -80,20 +84,23 @@ impl InteractionColors {
 
 /// Resolves what `pointer` does to an area whose visible rectangle is `rect`. `covered`
 /// says whether something painted later that takes clicks is over the pointer, `flag` is the
-/// focused state given from outside, if any, and `focus` the area's focus otherwise.
+/// focused state given from outside, if any, and `focus` the area's focus otherwise; `group`
+/// is the visible rectangle of the interaction group around the area, if any.
 pub(crate) fn resolve(
     rect: Rect,
     focus: Option<&Focus>,
     flag: Option<bool>,
+    group: Option<Rect>,
     pointer: PointerState,
     covered: bool,
 ) -> Interaction {
-    let inside = |point: Offset| {
+    let within = |rect: Rect, point: Offset| {
         point.x >= rect.origin.x
             && point.y >= rect.origin.y
             && point.x < rect.origin.x + rect.size.width
             && point.y < rect.origin.y + rect.size.height
     };
+    let inside = |point: Offset| within(rect, point);
     let pointer_inside = pointer.position.is_some_and(inside);
     let hovered = pointer_inside && !covered;
     Interaction {
@@ -101,5 +108,8 @@ pub(crate) fn resolve(
         pointer_inside,
         pressed: hovered && pointer.pressed_at.is_some_and(inside),
         focused: flag.unwrap_or_else(|| focus.is_some_and(Focus::is_focused)),
+        group_hovered: group
+            .zip(pointer.position)
+            .is_some_and(|(group, point)| within(group, point)),
     }
 }

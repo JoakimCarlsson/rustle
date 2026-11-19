@@ -1,12 +1,14 @@
 //! Scroll state shared between a scrolling modifier and the code driving it,
 //! and the overlay scrollbar that goes with it.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use rustle_graphics::Color;
-use rustle_runtime::{FrameClock, State, frame_clock, group, remember};
+use rustle_runtime::{
+    FrameClock, State, frame_clock, group, is_composing, mutable_state, remember,
+};
 
 use crate::gesture::{NestedScrollConnection, ScrollableCore, ScrollableState};
 use crate::semantics::{Role, ScrollDirection, Semantics};
@@ -34,20 +36,36 @@ pub enum ScrollbarVisibility {
 /// takes no space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollbarStyle {
+    /// When it shows.
     pub visibility: ScrollbarVisibility,
-    /// The color of the thumb while at rest. Its alpha is also the most
-    /// opaque the thumb gets when not hovered or dragged.
+    /// The color of the thumb while the pointer is not over it, Compose's `unhoverColor`.
+    /// Its alpha is also the most opaque a fading thumb gets.
     pub color: Color,
-    /// The color of the thumb while the pointer is over it or it is dragged.
+    /// The color of the thumb while the pointer is over it or it is dragged, Compose's
+    /// `hoverColor`.
     pub active_color: Color,
     /// The thickness of the thumb, in logical pixels.
     pub thickness: f32,
     /// The thickness of the strip that reacts to the pointer, at least as
     /// much as `thickness`.
     pub hit_thickness: f32,
-    /// The shortest the thumb gets, however long the content.
+    /// The shortest the thumb gets, however long the content, Compose's `minimalHeight`.
     pub min_length: f32,
+    /// The radius of the thumb's corners, in logical pixels, Compose's `shape`.
+    pub corner_radius: f32,
+    /// How long the thumb takes to change between its two colors when the pointer comes
+    /// onto it or leaves it, Compose's `hoverDurationMillis`.
+    pub hover_duration: Duration,
 }
+
+/// The look of the scrollbars of scrolling areas composed below it, as Compose Desktop's
+/// `LocalScrollbarStyle`: an area whose [`ScrollState`] was not given a style of its own with
+/// [`ScrollState::set_scrollbar`] takes the one in effect where it is shown with
+/// [`Modifier::vertical_scroll`](crate::Modifier::vertical_scroll) or
+/// [`Modifier::horizontal_scroll`](crate::Modifier::horizontal_scroll). A design system
+/// provides it once at its root.
+pub static LOCAL_SCROLLBAR_STYLE: rustle_runtime::CompositionLocal<ScrollbarStyle> =
+    rustle_runtime::CompositionLocal::new(ScrollbarStyle::default);
 
 impl Default for ScrollbarStyle {
     fn default() -> Self {
@@ -59,6 +77,27 @@ impl Default for ScrollbarStyle {
             thickness: 6.0,
             hit_thickness: 14.0,
             min_length: 28.0,
+            corner_radius: 3.0,
+            hover_duration: Duration::from_millis(300),
+        }
+    }
+}
+
+impl Bar {
+    /// A bar at rest, redrawn through `tick`, fading on `clock` once it has one.
+    fn new(tick: State<u32>, clock: Option<FrameClock>) -> Self {
+        Self {
+            style: Cell::new(ScrollbarStyle::default()),
+            styled: Cell::new(false),
+            last_active: Cell::new(None),
+            hovering: Cell::new(false),
+            grab: Cell::new(None),
+            reverse: Cell::new(false),
+            hover_changed: Cell::new(None),
+            ticking: Cell::new(false),
+            tick,
+            clock: RefCell::new(clock),
+            core: Rc::new(ScrollableCore::new()),
         }
     }
 }
@@ -66,16 +105,25 @@ impl Default for ScrollbarStyle {
 /// What a scrolling area remembers about its scrollbar.
 struct Bar {
     style: Cell<ScrollbarStyle>,
+    /// The style was given with [`ScrollState::set_scrollbar`], so the
+    /// [`LOCAL_SCROLLBAR_STYLE`] around the area does not replace it.
+    styled: Cell<bool>,
     last_active: Cell<Option<Instant>>,
     /// The pointer is over the scrollbar's strip.
     hovering: Cell<bool>,
     /// Where on the thumb a drag took hold, from the thumb's start.
     grab: Cell<Option<f32>>,
+    /// Whether the offset counts from the end of the content, as an area shown with
+    /// `reverse_scrolling` counts it.
+    reverse: Cell<bool>,
+    /// When the pointer last came onto the strip or left it, for the change of color.
+    hover_changed: Cell<Option<Instant>>,
     /// A frame callback is running to redraw while the bar fades.
     ticking: Cell<bool>,
     /// Changed on every frame of a fade, so the area is laid out again.
     tick: State<u32>,
-    clock: FrameClock,
+    /// The frame clock of the composition that shows the area, once one has.
+    clock: RefCell<Option<FrameClock>>,
     /// Fling and drag state shared with the [`ScrollableState`] this area hands out.
     core: Rc<ScrollableCore>,
 }
@@ -84,6 +132,10 @@ struct Bar {
 ///
 /// The offset is observable state, so changing it recomposes, which lets
 /// content depend on the scroll position. The extent is filled in by layout.
+///
+/// Like Compose's `ScrollState(initial)`, it can be made outside composition with
+/// [`ScrollState::new`], by a state holder that owns it, or remembered at a call site
+/// with [`remember_scroll_state`]. Two handles are equal when they are the same state.
 #[derive(Clone)]
 pub struct ScrollState {
     offset: State<f32>,
@@ -92,7 +144,86 @@ pub struct ScrollState {
     bar: Rc<Bar>,
 }
 
+impl PartialEq for ScrollState {
+    /// Whether both handles are the same state.
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.bar, &other.bar)
+    }
+}
+
+impl std::fmt::Debug for ScrollState {
+    /// The offset and the extent.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ScrollState")
+            .field("offset", &self.offset.get())
+            .field("extent", &self.extent.get())
+            .finish()
+    }
+}
+
+impl Default for ScrollState {
+    /// A state scrolled to the start.
+    fn default() -> Self {
+        Self::new(0.0)
+    }
+}
+
 impl ScrollState {
+    /// A state scrolled `initial` logical pixels from the start, which belongs to no
+    /// composition: Compose's `ScrollState(initial)`. The area that shows it, through
+    /// [`Modifier::vertical_scroll`](crate::Modifier::vertical_scroll) and the like,
+    /// keeps `initial` until its content is measured.
+    pub fn new(initial: f32) -> Self {
+        Self {
+            offset: mutable_state(initial.max(0.0)),
+            extent: mutable_state((0.0, 0.0)),
+            bar: Rc::new(Bar::new(mutable_state(0_u32), None)),
+        }
+    }
+
+    /// Whether the offset counts from the end of the content: the area that shows the
+    /// state was given `reverse_scrolling`, so an offset of 0 shows the end and scrolling
+    /// towards the start makes it larger, as Compose's `reverseScrolling` does.
+    pub fn reverse_scrolling(&self) -> bool {
+        self.bar.reverse.get()
+    }
+
+    /// Records whether the area that shows the state counts its offset from the end.
+    pub(crate) fn set_reverse_scrolling(&self, reverse: bool) {
+        self.bar.reverse.set(reverse);
+    }
+
+    /// How far the content is moved up (or left) from its start as drawn: the offset, or,
+    /// counted from the end, what is left of the room once it is taken away.
+    pub(crate) fn drawn_offset(&self) -> f32 {
+        let offset = self.offset().clamp(0.0, self.max_offset());
+        if self.reverse_scrolling() {
+            self.max_offset() - offset
+        } else {
+            offset
+        }
+    }
+
+    /// Scrolls by `delta` towards the end of the content as drawn, as the wheel does: the
+    /// offset grows, or, counted from the end, shrinks.
+    pub fn scroll_drawn_by(&self, delta: f32) {
+        if self.reverse_scrolling() {
+            self.scroll_by(-delta);
+        } else {
+            self.scroll_by(delta);
+        }
+    }
+
+    /// Gives the state the frame clock of the composition being composed, if it has
+    /// none yet, so its scrollbar can fade there.
+    pub(crate) fn attach_clock(&self) {
+        if self.bar.clock.borrow().is_none() && is_composing() {
+            *self.bar.clock.borrow_mut() = Some(frame_clock());
+        }
+        self.bar.core.attach_clock();
+    }
+
     /// Distance the content is scrolled, from 0 (at the start).
     pub fn offset(&self) -> f32 {
         self.offset.get()
@@ -141,10 +272,10 @@ impl ScrollState {
             let page = (this.viewport_length() * 0.8).max(1.0);
             match (vertical, direction) {
                 (true, ScrollDirection::Up) | (false, ScrollDirection::Left) => {
-                    this.scroll_by(-page)
+                    this.scroll_drawn_by(-page)
                 }
                 (true, ScrollDirection::Down) | (false, ScrollDirection::Right) => {
-                    this.scroll_by(page)
+                    this.scroll_drawn_by(page)
                 }
                 _ => {}
             }
@@ -193,9 +324,19 @@ impl ScrollState {
         self.scrollable().connection()
     }
 
-    /// Changes how the scrollbar looks and when it shows.
+    /// Changes how the scrollbar looks and when it shows. A style given here wins over the
+    /// [`LOCAL_SCROLLBAR_STYLE`] of the composition that shows the area.
     pub fn set_scrollbar(&self, style: ScrollbarStyle) {
         self.bar.style.set(style);
+        self.bar.styled.set(true);
+    }
+
+    /// Takes the [`LOCAL_SCROLLBAR_STYLE`] in effect as the scrollbar's look, while composing
+    /// and unless a style was given with [`set_scrollbar`](Self::set_scrollbar).
+    pub(crate) fn follow_local_scrollbar(&self) {
+        if !self.bar.styled.get() && rustle_runtime::is_composing() {
+            self.bar.style.set(LOCAL_SCROLLBAR_STYLE.current());
+        }
     }
 
     /// How the scrollbar looks and when it shows.
@@ -214,7 +355,12 @@ impl ScrollState {
     /// Asks for frames until the scrollbar has faded, so it is redrawn as it does.
     fn schedule_fade(&self) {
         let this = self.clone();
-        self.bar.clock.request_frame(move |_| {
+        let clock = self.bar.clock.borrow().clone();
+        let Some(clock) = clock else {
+            self.bar.ticking.set(false);
+            return;
+        };
+        clock.request_frame(move |_| {
             this.bar.tick.update(|tick| *tick = tick.wrapping_add(1));
             if this.fade_pending() {
                 this.schedule_fade();
@@ -226,13 +372,19 @@ impl ScrollState {
 
     /// Whether the scrollbar is still changing on its own.
     fn fade_pending(&self) -> bool {
-        !self.bar.hovering.get()
-            && self.bar.grab.get().is_none()
-            && self
-                .bar
-                .last_active
-                .get()
-                .is_some_and(|at| at.elapsed() < HOLD + FADE)
+        let recoloring = self
+            .bar
+            .hover_changed
+            .get()
+            .is_some_and(|at| at.elapsed() < self.bar.style.get().hover_duration);
+        recoloring
+            || !self.bar.hovering.get()
+                && self.bar.grab.get().is_none()
+                && self
+                    .bar
+                    .last_active
+                    .get()
+                    .is_some_and(|at| at.elapsed() < HOLD + FADE)
     }
 
     /// How opaque the scrollbar is right now, from 0 to 1.
@@ -252,6 +404,13 @@ impl ScrollState {
         }
     }
 
+    /// Whether the pointer holds the scrollbar's thumb, as Compose's
+    /// `interactionSource.collectIsDraggedAsState()` on a scrollbar tells: for a host that
+    /// handles presses itself and leaves the ones that went to a scrollbar alone.
+    pub fn is_scrollbar_dragged(&self) -> bool {
+        self.bar.grab.get().is_some()
+    }
+
     /// Whether the pointer is over the scrollbar or dragging it.
     pub(crate) fn scrollbar_active(&self) -> bool {
         self.bar.hovering.get() || self.bar.grab.get().is_some()
@@ -260,7 +419,36 @@ impl ScrollState {
     /// Records that the pointer entered or left the scrollbar's strip.
     pub(crate) fn set_scrollbar_hovered(&self, hovering: bool) {
         if self.bar.hovering.replace(hovering) != hovering {
+            self.bar.hover_changed.set(Some(Instant::now()));
             self.show_scrollbar();
+        }
+    }
+
+    /// The color of the thumb now: its resting color, its hover color while the pointer
+    /// is over it or it is dragged, and between the two while it changes.
+    pub(crate) fn scrollbar_color(&self) -> Color {
+        let style = self.bar.style.get();
+        let active = self.scrollbar_active();
+        let duration = style.hover_duration.as_secs_f32();
+        let done = self.bar.hover_changed.get().map_or(1.0, |at| {
+            if duration <= 0.0 {
+                1.0
+            } else {
+                (at.elapsed().as_secs_f32() / duration).clamp(0.0, 1.0)
+            }
+        });
+        let (from, to) = if active {
+            (style.color, style.active_color)
+        } else {
+            (style.active_color, style.color)
+        };
+        let mix =
+            |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * done).round() as u8;
+        Color {
+            r: mix(from.r, to.r),
+            g: mix(from.g, to.g),
+            b: mix(from.b, to.b),
+            a: mix(from.a, to.a),
         }
     }
 
@@ -271,7 +459,7 @@ impl ScrollState {
         let first = self.bar.grab.get().is_none();
         let (content, viewport) = self.extent.get();
         let min = self.bar.style.get().min_length;
-        let (start, length) = thumb(self.offset(), content, viewport, track, min);
+        let (start, length) = thumb(self.drawn_offset(), content, viewport, track, min);
         if first {
             let grab = if position >= start && position <= start + length {
                 position - start
@@ -281,13 +469,12 @@ impl ScrollState {
             self.bar.grab.set(Some(grab));
         }
         let grab = self.bar.grab.get().unwrap_or(length / 2.0);
-        self.scroll_to(offset_for_thumb(
-            position - grab,
-            content,
-            viewport,
-            track,
-            min,
-        ));
+        let drawn = offset_for_thumb(position - grab, content, viewport, track, min);
+        if self.reverse_scrolling() {
+            self.scroll_to(self.max_offset() - drawn);
+        } else {
+            self.scroll_to(drawn);
+        }
     }
 
     /// Ends a drag of the thumb.
@@ -350,18 +537,7 @@ pub fn remember_scroll_state() -> ScrollState {
         let offset = remember(|| 0.0);
         let extent = remember(|| (0.0, 0.0));
         let tick = remember(|| 0_u32);
-        let bar = remember(|| {
-            Rc::new(Bar {
-                style: Cell::new(ScrollbarStyle::default()),
-                last_active: Cell::new(None),
-                hovering: Cell::new(false),
-                grab: Cell::new(None),
-                ticking: Cell::new(false),
-                tick,
-                clock: frame_clock(),
-                core: Rc::new(ScrollableCore::new()),
-            })
-        });
+        let bar = remember(|| Rc::new(Bar::new(tick, Some(frame_clock()))));
         ScrollState {
             offset,
             extent,
@@ -373,6 +549,45 @@ pub fn remember_scroll_state() -> ScrollState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state made outside composition keeps its offset, cannot scroll past what layout
+    /// found, and is equal only to its own handles.
+    #[test]
+    fn a_state_made_outside_composition_keeps_its_offset() {
+        let state = ScrollState::new(50.0);
+        assert_eq!(state.offset(), 50.0);
+        state.set_extent(300.0, 100.0);
+        state.scroll_to(500.0);
+        assert_eq!(state.offset(), 200.0);
+        assert_eq!(state.clone(), state);
+        assert_ne!(state, ScrollState::new(50.0));
+    }
+
+    /// Counted from the end, the drawn offset is what is left of the room, and the wheel
+    /// towards the end makes the offset smaller.
+    #[test]
+    fn a_reversed_state_counts_from_the_end() {
+        let state = ScrollState::new(30.0);
+        state.set_reverse_scrolling(true);
+        state.set_extent(300.0, 100.0);
+        assert_eq!(state.drawn_offset(), 170.0);
+        state.scroll_drawn_by(20.0);
+        assert_eq!(state.offset(), 10.0);
+    }
+
+    /// The thumb's color moves from its resting color toward its hover color.
+    #[test]
+    fn the_thumb_takes_its_hover_color_over_the_hover_duration() {
+        let state = ScrollState::new(0.0);
+        let style = ScrollbarStyle {
+            hover_duration: Duration::ZERO,
+            ..ScrollbarStyle::default()
+        };
+        state.set_scrollbar(style);
+        assert_eq!(state.scrollbar_color(), style.color);
+        state.set_scrollbar_hovered(true);
+        assert_eq!(state.scrollbar_color(), style.active_color);
+    }
 
     #[test]
     fn thumb_covers_the_track_when_everything_fits() {

@@ -9,10 +9,16 @@ use crate::input::{Focus, PointerButton, PointerEvent, PointerPhase, PressEvent}
 use crate::semantics::Semantics;
 
 impl Modifier {
-    /// Runs `on_long_press` when the primary button is held down on the area for
-    /// about half a second without moving. The click that would follow is cancelled.
+    /// Runs `on_long_press` when the primary button is held down on the area without moving
+    /// for the [`long_press_timeout_millis`](crate::ViewConfiguration::long_press_timeout_millis)
+    /// of the [`LOCAL_VIEW_CONFIGURATION`](crate::LOCAL_VIEW_CONFIGURATION); moving it past the
+    /// [`touch_slop`](crate::ViewConfiguration::touch_slop) is not a long press. The click
+    /// that would follow is cancelled.
     pub fn on_long_press(self, on_long_press: impl Fn() + 'static) -> Self {
-        self.then(Element::LongPress(Rc::new(on_long_press)))
+        self.then(Element::LongPress(
+            Rc::new(on_long_press),
+            crate::view_configuration::current_view_configuration(),
+        ))
     }
 
     /// Calls `on_drop` with the path of each file dropped on the area from another application.
@@ -39,6 +45,7 @@ impl Modifier {
         self.then(Element::DragSource {
             payload: Rc::new(payload),
             button,
+            touch_slop: crate::view_configuration::current_view_configuration().touch_slop,
         })
     }
 
@@ -104,6 +111,15 @@ impl Modifier {
         self.then(Element::Placed(Rc::new(on_placed)))
     }
 
+    /// Calls `on_visible` with the part of the area the clips around it leave visible, in
+    /// window coordinates, each time the display is built; an area scrolled or clipped out of
+    /// sight is told an empty rectangle. For hit areas an application keeps itself, which must
+    /// not catch the pointer where the area cannot be seen. Not a place to change state; write
+    /// to a cell instead.
+    pub fn on_placed_visible(self, on_visible: impl Fn(Rect) + 'static) -> Self {
+        self.then(Element::PlacedVisible(Rc::new(on_visible)))
+    }
+
     /// Calls `on_globally_positioned` with the area's rectangle in the window,
     /// in logical pixels, each time the display is built. Like
     /// [`Modifier::on_placed`] without the window size. Not a place to
@@ -146,9 +162,15 @@ impl Modifier {
 
     /// Runs `on_press` as soon as the primary button goes down on the area, with
     /// the pointer position relative to the area's top-left corner and how many
-    /// presses in a row this is.
+    /// presses in a row this is: presses within the
+    /// [`double_tap_timeout_millis`](crate::ViewConfiguration::double_tap_timeout_millis) and
+    /// [`touch_slop`](crate::ViewConfiguration::touch_slop) of the
+    /// [`LOCAL_VIEW_CONFIGURATION`](crate::LOCAL_VIEW_CONFIGURATION) of each other add up.
     pub fn on_press(self, on_press: impl Fn(PressEvent) + 'static) -> Self {
-        self.then(Element::Press(Rc::new(on_press)))
+        self.then(Element::Press(
+            Rc::new(on_press),
+            crate::view_configuration::current_view_configuration(),
+        ))
     }
 
     /// Runs `on_double_click` on the second press in quick succession.
@@ -178,7 +200,42 @@ impl Modifier {
         self.then(Element::Focusable {
             focus: focus.clone(),
             on_key: Rc::new(on_key),
+            takes_press: true,
         })
+    }
+
+    /// Makes the area a focus target, Compose's `Modifier.focusTarget()` with
+    /// `focusRequester(focus)`: it can hold keyboard focus when Tab walks to it or `focus` is
+    /// requested with [`Focus::request_focus`], and while it does, key events bubble from it
+    /// through the [`on_key_event`](Self::on_key_event)s around it. As in Compose, a press of
+    /// the pointer does not give it focus: a press on it keeps focus where it is when the area
+    /// holds it, and otherwise takes focus away as a press anywhere else does.
+    pub fn focus_target(self, focus: &Focus) -> Self {
+        self.then(Element::Focusable {
+            focus: focus.clone(),
+            on_key: Rc::new(|_| false),
+            takes_press: false,
+        })
+    }
+
+    /// Calls `on_focus_changed` with whether the area's focus target holds keyboard focus,
+    /// each time that changes, Compose's `Modifier.onFocusChanged { it.isFocused }`. The focus
+    /// target is the first [`focusable`](Self::focusable) or [`focus_target`](Self::focus_target)
+    /// painted inside this modifier: put it before (outside) the one it observes.
+    ///
+    /// It is told `false` too when the focused area leaves the composition, which takes focus
+    /// away, as Compose clears focus from a removed node. It runs while the interface handles
+    /// input or applies a focus request; it may change state, which composes again.
+    pub fn on_focus_changed(self, on_focus_changed: impl Fn(bool) + 'static) -> Self {
+        self.then(Element::FocusChanged(Rc::new(on_focus_changed)))
+    }
+
+    /// Names the area `tag` for tests, Compose's `Modifier.testTag`: a test finds where the
+    /// area was laid out with [`DisplayList::nodes_with_tag`](crate::DisplayList::nodes_with_tag)
+    /// (and `Embedded::node_with_tag` in `rustle`). It changes nothing else.
+    pub fn test_tag(self, tag: impl Into<String>) -> Self {
+        let tag: String = tag.into();
+        self.then(Element::TestTag(Rc::from(tag)))
     }
 
     /// Runs `on_event` for each press, drag, release and click of `button` on the area,

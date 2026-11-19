@@ -9,14 +9,11 @@ use rustle_runtime::{State, group, remember};
 
 use super::{Axis, PointerId, PointerInput, PointerInputPhase, VelocityTracker};
 
-/// How far a pointer must move along the axis before a drag starts, in logical pixels.
-const SLOP: f32 = 4.0;
-
 /// What a drag tells whoever follows it.
 pub(crate) struct DragHooks<'a> {
     /// The pointer went down, before any drag started.
     pub pressed: &'a dyn Fn(),
-    /// The pointer moved past the slop.
+    /// The pointer moved past the touch slop.
     pub started: &'a dyn Fn(),
     /// The pointer moved by this much along the axis.
     pub delta: &'a dyn Fn(f32),
@@ -35,8 +32,15 @@ pub(crate) struct DragRecognizer {
 }
 
 impl DragRecognizer {
-    /// Feeds one event of the stream. Returns whether it was part of a drag that started.
-    pub(crate) fn handle(&self, event: &PointerInput, axis: Axis, hooks: &DragHooks) -> bool {
+    /// Feeds one event of the stream, starting a drag once the pointer has moved `touch_slop`
+    /// logical pixels along `axis`. Returns whether it was part of a drag that started.
+    pub(crate) fn handle(
+        &self,
+        event: &PointerInput,
+        axis: Axis,
+        touch_slop: f32,
+        hooks: &DragHooks,
+    ) -> bool {
         match event.phase {
             PointerInputPhase::Down => {
                 if let Some(held) = self.pointer.get()
@@ -65,7 +69,7 @@ impl DragRecognizer {
                     .add(event.time, event.window_position);
                 if !self.started.get() {
                     let moved = axis.of(event.window_position) - axis.of(self.start.get());
-                    if moved.abs() < SLOP {
+                    if moved.abs() < touch_slop {
                         return false;
                     }
                     self.started.set(true);

@@ -141,3 +141,19 @@ fn subcomposed_children_are_measured() {
         Size::new(48.0, 16.0)
     );
 }
+
+/// A scrolling area hands its content the least size it was given and an open length
+/// along its axis, as Compose's `verticalScroll` does, so content shorter than a sized
+/// area still fills it.
+#[test]
+fn a_scrolling_area_keeps_the_least_size_for_its_content() {
+    let state = crate::ScrollState::new(0.0);
+    let content = stack(Modifier::new(), vec![label(Modifier::new(), "row")]);
+    let area = stack(
+        Modifier::new().size(100.0, 60.0).vertical_scroll(&state),
+        vec![content],
+    );
+    assert_eq!(measure(&area), Size::new(100.0, 60.0));
+    assert_eq!(state.content_length(), 60.0);
+    assert_eq!(state.viewport_length(), 60.0);
+}

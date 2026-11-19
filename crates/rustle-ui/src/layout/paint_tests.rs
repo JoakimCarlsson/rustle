@@ -69,9 +69,13 @@ fn paint_once(measured: &Measured) -> DisplayList {
         window: measured.size,
         grid: None,
         focus: None,
+        focus_observers: Vec::new(),
+        key_scopes: Vec::new(),
         focused_flag: None,
+        group: None,
         pointer: PointerState::default(),
         resolved: None,
+        anchors: Vec::new(),
     };
     painter.paint(measured, Offset::default());
     painter.paint_deferred();
@@ -538,6 +542,7 @@ fn covered_areas_are_inside_but_not_hovered() {
         pointer_inside: true,
         pressed: false,
         focused: false,
+        group_hovered: false,
     };
     assert_eq!(list.interactions[0].interaction, expected);
     assert_eq!(seen.borrow().last(), Some(&expected));
@@ -584,6 +589,30 @@ fn interactive_drawing_sees_focus_and_an_outside_flag() {
     assert!(list.interactions[0].interaction.focused);
 }
 
+/// Inside an interaction group, an area sees the pointer over the group as group hover, even
+/// where the pointer is not over the area itself.
+#[test]
+fn interaction_groups_report_hover_to_what_is_inside() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let recorded = Rc::clone(&seen);
+    let root = square_at(
+        0.0,
+        0.0,
+        Modifier::new()
+            .interaction_group()
+            .draw_over_interactive(move |_, interaction| {
+                recorded.borrow_mut().push(interaction.group_hovered);
+            }),
+    );
+    let tree = laid_out(&root);
+    tree.paint(PointerState::default());
+    tree.paint(PointerState {
+        position: Some(Offset::new(5.0, 5.0)),
+        pressed_at: None,
+    });
+    assert_eq!(seen.borrow().as_slice(), &[false, true]);
+}
+
 /// Without interactive areas nothing changes with the pointer, so nothing is painted again.
 #[test]
 fn lists_without_interactive_areas_never_change() {
@@ -611,9 +640,94 @@ fn interaction_colors_pick_the_strongest_state() {
         pointer_inside: hovered,
         pressed,
         focused,
+        group_hovered: false,
     };
     assert_eq!(colors.color(state(false, false, false)), colors.idle);
     assert_eq!(colors.color(state(true, false, true)), colors.hovered);
     assert_eq!(colors.color(state(true, true, true)), colors.pressed);
     assert_eq!(colors.color(state(false, false, true)), colors.focused);
+}
+
+/// An area placed partly outside the window is painted moved back inside it.
+#[test]
+fn areas_kept_in_the_window_move_back_inside() {
+    let root = square_at(
+        80.0,
+        -10.0,
+        Modifier::new()
+            .keep_in_window()
+            .draw_behind_interactive(|_, _| {}),
+    );
+    let list = laid_out(&root).paint(PointerState::default());
+    let rect = list.interactions[0].rect;
+    assert_eq!((rect.origin.x, rect.origin.y), (60.0, 0.0));
+}
+
+/// An area painted at a point of the window goes there wherever layout put it.
+#[test]
+fn areas_painted_in_the_window_go_to_their_point() {
+    let root = square_at(
+        10.0,
+        10.0,
+        Modifier::new()
+            .in_window(30.0, 20.0)
+            .draw_behind_interactive(|_, _| {}),
+    );
+    let list = laid_out(&root).paint(PointerState::default());
+    let rect = list.interactions[0].rect;
+    assert_eq!((rect.origin.x, rect.origin.y), (30.0, 20.0));
+}
+
+/// An area half inside a clip is told the half that can be seen.
+#[test]
+fn placed_areas_are_told_what_their_clips_leave_visible() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let recorded = Rc::clone(&seen);
+    let child = square_at(
+        30.0,
+        0.0,
+        Modifier::new().on_placed_visible(move |rect| recorded.borrow_mut().push(rect)),
+    );
+    let root = Node {
+        modifier: Modifier::new().size(50.0, 50.0).clip(),
+        content: Content::Layout {
+            policy: Rc::new(crate::Overlay::default()),
+            children: Rc::new(vec![child]),
+        },
+    };
+    laid_out(&root).paint(PointerState::default());
+    let rect = seen.borrow()[0];
+    assert_eq!(
+        (
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height
+        ),
+        (30.0, 0.0, 20.0, 40.0)
+    );
+}
+
+/// What a canvas draws is faded by the alpha modifiers around it, as everything else is.
+#[test]
+fn canvases_are_faded_by_alpha_around_them() {
+    let node = Node {
+        modifier: Modifier::new().size(10.0, 10.0).alpha(0.5),
+        content: Content::Canvas {
+            draw: Rc::new(|_| {
+                vec![DrawCommand::Rect {
+                    rect: Rect::new(Offset::new(0.0, 0.0), Size::new(10.0, 10.0)),
+                    color: Color::rgba(255, 255, 255, 200),
+                    corner_radius: 0.0,
+                    border: None,
+                }]
+            }),
+        },
+    };
+    let list = laid_out(&node).paint(PointerState::default());
+    let faded = list
+        .commands
+        .iter()
+        .any(|command| matches!(command, DrawCommand::Rect { color, .. } if color.a == 100));
+    assert!(faded, "{:?}", list.commands);
 }

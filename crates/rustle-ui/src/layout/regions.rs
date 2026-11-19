@@ -21,6 +21,8 @@ pub struct DisplayList {
     pub scrolls: Vec<ScrollRegion>,
     /// Areas that take keyboard focus, in paint order, which is also tab order.
     pub focusables: Vec<FocusRegion>,
+    /// Areas named for tests, in paint order. See [`Modifier::test_tag`](crate::Modifier::test_tag).
+    pub test_tags: Vec<TaggedNode>,
     /// Areas that react to a press, in paint order.
     pub presses: Vec<PressRegion>,
     /// Areas that react to a pointer button other than (or as well as) the primary one, in paint order.
@@ -42,6 +44,12 @@ pub struct DisplayList {
     pub drag_sources: Vec<DragSourceRegion>,
     /// Areas something dragged can be dropped on, in paint order.
     pub drop_targets: Vec<DropTargetRegion>,
+    /// Areas a drag and drop starts from, in paint order. See
+    /// [`Modifier::drag_and_drop_source`](crate::Modifier::drag_and_drop_source).
+    pub drag_and_drop_sources: Vec<crate::DragAndDropSourceRegion>,
+    /// Areas that take part in drags and drops, in paint order. See
+    /// [`Modifier::drag_and_drop_target`](crate::Modifier::drag_and_drop_target).
+    pub drag_and_drop_targets: Vec<crate::DragAndDropTargetRegion>,
     /// Areas files can be dropped on, in paint order.
     pub file_drops: Vec<FileDropRegion>,
     /// Areas that see the raw pointer stream, in paint order.
@@ -61,6 +69,28 @@ pub struct DisplayList {
     pub interactions: Vec<InteractionRegion>,
     /// What the areas mean, in paint order, for assistive technology.
     pub semantics: Vec<SemanticsNode>,
+    /// The popups shown, in paint order, so later ones are on top. See
+    /// [`Modifier::popup_placement`](crate::Modifier::popup_placement).
+    pub popups: Vec<PopupRegion>,
+}
+
+/// A popup shown in the window: where it was painted and how it is dismissed.
+pub struct PopupRegion {
+    /// Where the popup was painted, in the window.
+    pub rect: Rect,
+    /// How the popup behaves.
+    pub properties: crate::PopupProperties,
+    /// What to call when the popup should be dismissed, if anything.
+    pub on_dismiss_request: Option<Rc<dyn Fn()>>,
+}
+
+impl PopupRegion {
+    /// Whether a press at `point` is outside the popup and asks to dismiss it.
+    pub fn dismissed_by_press_at(&self, point: Offset) -> bool {
+        self.properties.dismiss_on_click_outside
+            && self.on_dismiss_request.is_some()
+            && !contains(self.rect, point)
+    }
 }
 
 /// An area drawn according to its interaction state, cut to what is visible, with what
@@ -75,6 +105,9 @@ pub struct InteractionRegion {
     /// [`Modifier::interaction_focused_with`](crate::Modifier::interaction_focused_with); it
     /// wins over `focus`.
     pub focused: Option<Rc<dyn Fn() -> bool>>,
+    /// The visible rectangle of the interaction group around the area, given with
+    /// [`Modifier::interaction_group`](crate::Modifier::interaction_group).
+    pub group: Option<Rect>,
     /// How many clickable regions were painted when this area and what is inside it had been.
     pub covered_after: usize,
     /// The state the area was painted in.
@@ -112,6 +145,51 @@ pub struct FocusRegion {
     pub rect: Rect,
     pub focus: Focus,
     pub on_key: KeyHandler,
+    /// Whether a press of the primary button on it gives it focus: true for
+    /// [`Modifier::focusable`](crate::Modifier::focusable), false for
+    /// [`Modifier::focus_target`](crate::Modifier::focus_target).
+    pub takes_press: bool,
+    /// What [`Modifier::on_focus_changed`](crate::Modifier::on_focus_changed) asked to be
+    /// told when its focus comes or goes.
+    pub on_focus_changed: Vec<Rc<dyn Fn(bool)>>,
+}
+
+/// An area named for tests with [`Modifier::test_tag`](crate::Modifier::test_tag): Compose's
+/// semantics node found by `onNodeWithTag`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaggedNode {
+    /// The tag it was given.
+    pub tag: Rc<str>,
+    /// Where it was laid out in the window, whether or not it can be seen: Compose's
+    /// `boundsInRoot`.
+    pub bounds: Rect,
+    /// The part of it the clips around it leave visible; empty when it is scrolled or
+    /// clipped out of sight.
+    pub visible: Rect,
+    /// The area that takes focus for it, as an index into [`DisplayList::focusables`]: the
+    /// first focusable painted inside it, or else the one around it.
+    pub focusable: Option<usize>,
+}
+
+impl TaggedNode {
+    /// Whether any of it can be seen: Compose's `assertIsDisplayed`.
+    pub fn is_displayed(&self) -> bool {
+        self.visible.size.width > 0.0 && self.visible.size.height > 0.0
+    }
+
+    /// The middle of its visible part, where a test presses it, or of its bounds when none
+    /// of it can be seen.
+    pub fn center(&self) -> Offset {
+        let rect = if self.is_displayed() {
+            self.visible
+        } else {
+            self.bounds
+        };
+        Offset::new(
+            rect.origin.x + rect.size.width / 2.0,
+            rect.origin.y + rect.size.height / 2.0,
+        )
+    }
 }
 
 /// An area that reacts to a press, cut to what is visible.
@@ -120,6 +198,9 @@ pub struct PressRegion {
     /// Where the area's top-left corner is, before it was cut to what is visible.
     pub origin: Offset,
     pub on_press: Rc<dyn Fn(PressEvent)>,
+    /// The view configuration in effect where the area was made, which presses on it are
+    /// counted by.
+    pub view_configuration: crate::ViewConfiguration,
 }
 
 /// An area that reacts to one pointer button, cut to what is visible.
@@ -138,6 +219,10 @@ pub struct KeyRegion {
     /// The focusable areas painted inside this one, as indices into [`DisplayList::focusables`].
     /// A key event for one of them reaches this handler too.
     pub focusables: std::ops::Range<usize>,
+    /// The focusable areas of content raised with a z-index that was declared inside this
+    /// one and painted later, over the rest, such as a popup: their keys reach this handler
+    /// as well, as if they were painted in place.
+    pub raised_focusables: Vec<std::ops::Range<usize>>,
     /// Whether this sees the event before the focused area (a preview) instead of after it.
     pub preview: bool,
     pub on_key: KeyHandler,
@@ -152,6 +237,8 @@ pub struct DragSourceRegion {
     /// The drawing commands of the area, as indices into [`DisplayList::commands`],
     /// so what is being dragged can be drawn again under the pointer.
     pub commands: std::ops::Range<usize>,
+    /// How far the pointer moves with the button held before the area is picked up.
+    pub touch_slop: f32,
 }
 
 /// An area something dragged can be dropped on, cut to what is visible.
@@ -194,6 +281,9 @@ pub struct PointerMoveRegion {
 pub struct LongPressRegion {
     pub rect: Rect,
     pub on_long_press: Rc<dyn Fn()>,
+    /// The view configuration in effect where the area was made: how long the primary
+    /// button is held before `on_long_press` runs, and how far it may move meanwhile.
+    pub view_configuration: crate::ViewConfiguration,
 }
 
 /// An area that wants to know when the pointer is over it, cut to what is visible.
@@ -212,6 +302,9 @@ pub struct DragRegion {
     /// Where the area's top-left corner is, before it was cut to what is visible.
     pub origin: Offset,
     pub on_drag: Rc<dyn Fn(Offset)>,
+    /// Whether a press here belongs to this drag alone, as one on a scrollbar does: the
+    /// areas beneath are not pressed, focused or clicked.
+    pub takes_pointer: bool,
 }
 
 /// An area that runs a handler when clicked, cut to what is visible.
@@ -330,6 +423,38 @@ impl DisplayList {
             .filter(move |region| contains(region.rect, point))
     }
 
+    /// What to call for a press at `point`: the dismiss requests of the popups it is outside
+    /// of that are dismissed by a press outside, topmost first.
+    pub fn popups_dismissed_by_press_at(&self, point: Offset) -> Vec<Rc<dyn Fn()>> {
+        self.popups
+            .iter()
+            .rev()
+            .filter(|popup| popup.dismissed_by_press_at(point))
+            .filter_map(|popup| popup.on_dismiss_request.clone())
+            .collect()
+    }
+
+    /// What Escape dismisses: the topmost focusable popup dismissed by Escape, if any.
+    pub fn popup_dismissed_by_escape(&self) -> Option<Rc<dyn Fn()>> {
+        self.popups
+            .iter()
+            .rev()
+            .find(|popup| popup.properties.focusable)
+            .filter(|popup| popup.properties.dismiss_on_back_press)
+            .and_then(|popup| popup.on_dismiss_request.clone())
+    }
+
+    /// The topmost drag-and-drop source containing `point`.
+    pub fn drag_and_drop_source_at(
+        &self,
+        point: Offset,
+    ) -> Option<&crate::DragAndDropSourceRegion> {
+        self.drag_and_drop_sources
+            .iter()
+            .rev()
+            .find(|region| contains(region.rect, point))
+    }
+
     /// The topmost drop target containing `point`.
     pub fn drop_target_at(&self, point: Offset) -> Option<&DropTargetRegion> {
         self.drop_targets
@@ -392,6 +517,7 @@ impl DisplayList {
             region.rect,
             region.focus.as_ref(),
             region.focused.as_ref().map(|focused| focused()),
+            region.group,
             pointer,
             covered,
         )
@@ -460,7 +586,15 @@ impl DisplayList {
         let around: Vec<&KeyRegion> = self
             .key_handlers
             .iter()
-            .filter(|region| index.is_none_or(|index| region.focusables.contains(&index)))
+            .filter(|region| {
+                index.is_none_or(|index| {
+                    region.focusables.contains(&index)
+                        || region
+                            .raised_focusables
+                            .iter()
+                            .any(|raised| raised.contains(&index))
+                })
+            })
             .collect();
         let preview = around.iter().filter(|region| region.preview);
         let bubble = around.iter().rev().filter(|region| !region.preview);
@@ -471,6 +605,37 @@ impl DisplayList {
             .chain(bubble.map(|region| Rc::clone(&region.on_key)))
             .collect();
         handlers.iter().any(|handler| handler(event))
+    }
+
+    /// The areas named `tag` for tests, in paint order: Compose's `onAllNodesWithTag`.
+    pub fn nodes_with_tag(&self, tag: &str) -> Vec<TaggedNode> {
+        self.test_tags
+            .iter()
+            .filter(|node| &*node.tag == tag)
+            .cloned()
+            .collect()
+    }
+
+    /// The first area named `tag` for tests in paint order, if any: Compose's `onNodeWithTag`.
+    pub fn node_with_tag(&self, tag: &str) -> Option<TaggedNode> {
+        self.test_tags
+            .iter()
+            .find(|node| &*node.tag == tag)
+            .cloned()
+    }
+
+    /// The focus of the area named `tag` for tests (see [`TaggedNode::focusable`]), for a test
+    /// that requests focus on it: Compose's `onNodeWithTag(tag).requestFocus()`.
+    pub fn focus_with_tag(&self, tag: &str) -> Option<Focus> {
+        let index = self.node_with_tag(tag)?.focusable?;
+        Some(self.focusables.get(index)?.focus.clone())
+    }
+
+    /// The focusable region holding `focus`, if it was painted.
+    pub fn focus_region(&self, focus: &Focus) -> Option<&FocusRegion> {
+        self.focusables
+            .iter()
+            .find(|region| region.focus.id() == focus.id())
     }
 
     /// The topmost press region containing `point`.
@@ -709,5 +874,65 @@ mod tests {
         assert!(display.interactive_at(panel_empty_space));
         assert!(display.blocks_pointer_at(panel_empty_space));
         assert!(!display.interactive_at(outside));
+    }
+
+    /// A popup that takes presses keeps presses and drags that land on it from the areas
+    /// beneath, while those inside it still get theirs.
+    #[test]
+    fn a_popup_takes_the_presses_and_drags_that_land_on_it() {
+        let mut composition = composition(|| {
+            layout(
+                Modifier::new()
+                    .size(100.0, 100.0)
+                    .on_press(|_| {})
+                    .on_drag(|_| {}),
+                Overlay::default(),
+                || {
+                    layout(
+                        Modifier::new().popup_placement(
+                            crate::AlignmentOffsetPositionProvider {
+                                alignment: crate::BoxAlignment::TopStart,
+                                offset: Offset::new(20.0, 20.0),
+                            },
+                            crate::PopupProperties::default(),
+                            Some(Rc::new(|| {})),
+                        ),
+                        Overlay::default(),
+                        || {
+                            canvas(Modifier::new().size(40.0, 40.0), |_| {});
+                            canvas(Modifier::new().size(10.0, 10.0).on_press(|_| {}), |_| {});
+                        },
+                    );
+                },
+            );
+        });
+        composition.compose();
+        let tree = composition.output().expect("composed");
+        let display = display_list(
+            tree,
+            Constraints::loose(Size::new(200.0, 200.0)),
+            &mut NoText,
+        );
+        let beneath = Offset::new(5.0, 5.0);
+        let on_popup = Offset::new(50.0, 50.0);
+        let inside = Offset::new(25.0, 25.0);
+        let size = |region: Option<&PressRegion>| region.map(|region| region.rect.size);
+        assert_eq!(
+            size(display.press_at(beneath)),
+            Some(Size::new(100.0, 100.0))
+        );
+        assert_eq!(
+            size(display.press_at(on_popup)),
+            Some(Size::new(40.0, 40.0))
+        );
+        assert_eq!(size(display.press_at(inside)), Some(Size::new(10.0, 10.0)));
+        assert_eq!(
+            display.drag_at(beneath).map(|region| region.rect.size),
+            Some(Size::new(100.0, 100.0))
+        );
+        assert_eq!(
+            display.drag_at(on_popup).map(|region| region.rect.size),
+            Some(Size::new(40.0, 40.0))
+        );
     }
 }

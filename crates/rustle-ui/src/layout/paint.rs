@@ -11,12 +11,14 @@ use super::measured::{Measured, Paint};
 use super::regions::{
     ButtonRegion, CursorRegion, DisplayList, DragRegion, DragSourceRegion, DropTargetRegion,
     FileDropRegion, FocusRegion, HitRegion, HoverRegion, ImeCaretRegion, InteractionRegion,
-    KeyRegion, LongPressRegion, PinchRegion, PointerInputRegion, PointerMoveRegion, PressRegion,
-    ScrollRegion, SemanticsNode, intersect,
+    KeyRegion, LongPressRegion, PinchRegion, PointerInputRegion, PointerMoveRegion, PopupRegion,
+    PressRegion, ScrollRegion, SemanticsNode, TaggedNode, intersect,
 };
+use crate::drag_and_drop::{DragAndDropSourceRegion, DragAndDropTargetRegion};
 use crate::input::Focus;
 use crate::interaction::{Interaction, PointerState, resolve};
 use crate::modifier::{Fill, FocusedFn};
+use crate::popup::{PopupPlacement, popup_position};
 use crate::scroll::{ScrollState, ScrollbarVisibility, thumb};
 use crate::semantics::{Role, Semantics};
 use crate::{Node, TextEditing};
@@ -166,9 +168,13 @@ impl LaidOut {
             window: self.window,
             grid: self.grid,
             focus: None,
+            focus_observers: Vec::new(),
+            key_scopes: Vec::new(),
             focused_flag: None,
+            group: None,
             pointer,
             resolved,
+            anchors: Vec::new(),
         };
         painter.paint(&self.measured, Offset::default());
         painter.paint_deferred();
@@ -193,6 +199,13 @@ struct Deferred<'a> {
     focus: Option<Focus>,
     /// The focused flag given from outside around it where it was declared.
     focused_flag: Option<FocusedFn>,
+    /// The visible rectangle of the interaction group around it where it was declared.
+    group: Option<Rect>,
+    /// The key handlers it was declared inside, as indices into the list, outermost first,
+    /// which see the keys of what holds focus in it.
+    key_scopes: Vec<usize>,
+    /// The bounds of the layout it was declared in, the anchor of a popup.
+    anchor: Option<Rect>,
     measured: &'a Measured,
 }
 
@@ -225,12 +238,23 @@ struct Painter<'a> {
     grid: Option<f32>,
     /// The focus of the nearest focusable around what is being painted.
     focus: Option<Focus>,
+    /// The focus-change observers around what is being painted still waiting for the first
+    /// focus target inside them, outermost first; the first one painted takes them all.
+    focus_observers: Vec<Rc<dyn Fn(bool)>>,
+    /// The key handlers around what is being painted, as indices into the list, outermost
+    /// first.
+    key_scopes: Vec<usize>,
     /// The focused flag given from outside around what is being painted.
     focused_flag: Option<FocusedFn>,
+    /// The visible rectangle of the nearest interaction group around what is being painted.
+    group: Option<Rect>,
     /// Where the pointer is and where it went down, for interactive areas.
     pointer: PointerState,
     /// The state of each interactive area in paint order, when already resolved.
     resolved: Option<Vec<Interaction>>,
+    /// The unrounded bounds of the layouts being painted inside, in the window, innermost
+    /// last: the anchor of a popup declared in them.
+    anchors: Vec<Rect>,
 }
 
 impl<'a> Painter<'a> {
@@ -244,6 +268,67 @@ impl<'a> Painter<'a> {
         let origin = Offset::new(round(exact.x), round(exact.y));
         let far = Offset::new(round(exact.x + size.width), round(exact.y + size.height));
         (origin, Size::new(far.x - origin.x, far.y - origin.y))
+    }
+
+    /// Paints the popup `inner` where `placement`'s provider puts it against the innermost
+    /// layout around it (or `rect`, its own place, at the root), and notes it in the list.
+    /// Its size is the extent of what it holds, since a popup takes no room where it is. As
+    /// a window of its own does in Compose, a popup takes the presses and drags that land on
+    /// it, so they do not reach what lies beneath; a focusable one also takes those that land
+    /// outside it, and one that is not focusable lets them through.
+    fn paint_popup(&mut self, placement: &PopupPlacement, inner: &'a Measured, rect: Rect) {
+        let anchor = self.anchors.last().copied().unwrap_or(rect);
+        let size = content_extent(inner);
+        let at = popup_position(
+            placement.provider.as_ref(),
+            placement.properties.clipping_enabled,
+            anchor,
+            self.window,
+            size,
+        );
+        let (origin, size) = self.snap(at, size);
+        if placement.properties.focusable {
+            self.swallow_pointer(Rect::new(Offset::default(), self.window));
+        }
+        self.swallow_pointer(Rect::new(origin, size));
+        self.list.popups.push(PopupRegion {
+            rect: Rect::new(origin, size),
+            properties: placement.properties,
+            on_dismiss_request: placement.on_dismiss_request.clone(),
+        });
+        self.paint(inner, at);
+    }
+
+    /// Notes `rect` as an area that takes the presses, clicks and drags landing on it and
+    /// does nothing with them, so they do not reach what was painted beneath it.
+    fn swallow_pointer(&mut self, rect: Rect) {
+        self.list.regions.push(HitRegion {
+            rect,
+            corner_radius: 0.0,
+            feedback: false,
+            on_click: Rc::new(|| {}),
+        });
+        self.list.presses.push(PressRegion {
+            rect,
+            origin: rect.origin,
+            on_press: Rc::new(|_| {}),
+            view_configuration: crate::ViewConfiguration::default(),
+        });
+        self.list.drags.push(DragRegion {
+            on_end: None,
+            rect,
+            origin: rect.origin,
+            on_drag: Rc::new(|_| {}),
+            takes_pointer: false,
+        });
+    }
+
+    /// `distance` rounded to the grid when edges are rounded, as Compose scrolls by whole
+    /// pixels: content scrolled to an end whose length is not whole then sits on the grid
+    /// as the areas around it do.
+    fn on_grid(&self, distance: f32) -> f32 {
+        self.grid
+            .map_or(distance, |grid| (distance * grid).round() / grid)
     }
 
     /// Paints what was raised with a z-index, lowest first, over what is already painted.
@@ -265,12 +350,24 @@ impl<'a> Painter<'a> {
                 self.clearing = raised.clearing;
                 self.focus = raised.focus;
                 self.focused_flag = raised.focused_flag;
+                self.group = raised.group;
                 let merging = self.merging_node();
                 if merging.is_some() {
                     self.merging += 1;
                     self.merged_text.push(Vec::new());
                 }
+                let first = self.list.focusables.len();
+                self.key_scopes = raised.key_scopes;
+                self.anchors = raised.anchor.into_iter().collect();
                 self.paint(raised.measured, raised.origin);
+                let painted = first..self.list.focusables.len();
+                if !painted.is_empty() {
+                    for index in std::mem::take(&mut self.key_scopes) {
+                        self.list.key_handlers[index]
+                            .raised_focusables
+                            .push(painted.clone());
+                    }
+                }
                 if let Some(index) = merging {
                     self.merging -= 1;
                     let text = self.merged_text.pop().unwrap_or_default();
@@ -471,16 +568,8 @@ impl<'a> Painter<'a> {
                 track,
                 style.min_length,
             );
-            let thickness = if state.scrollbar_active() {
-                style.thickness + 2.0
-            } else {
-                style.thickness
-            };
-            let color = if state.scrollbar_active() {
-                style.active_color
-            } else {
-                style.color
-            };
+            let thickness = style.thickness;
+            let color = state.scrollbar_color();
             let color = Color {
                 a: (f32::from(color.a) * alpha).round() as u8,
                 ..color
@@ -505,7 +594,7 @@ impl<'a> Painter<'a> {
             self.list.commands.push(DrawCommand::Rect {
                 rect: thumb_rect,
                 color: self.faded(color),
-                corner_radius: thickness / 2.0,
+                corner_radius: style.corner_radius.min(thickness / 2.0),
                 border: None,
             });
         }
@@ -523,6 +612,7 @@ impl<'a> Painter<'a> {
                 on_end: Some(Rc::new(move || end_state.end_thumb_drag())),
                 rect: visible,
                 origin: strip.origin,
+                takes_pointer: true,
                 on_drag: Rc::new(move |position| {
                     let along = if vertical { position.y } else { position.x };
                     drag_state.drag_thumb(along - MARGIN, track);
@@ -857,7 +947,7 @@ impl<'a> Painter<'a> {
                 for command in draw(size) {
                     self.list
                         .commands
-                        .push(command.translated(origin.x, origin.y));
+                        .push(command.translated(origin.x, origin.y).faded(self.alpha));
                 }
             }
             Paint::Image { image, scale } => {
@@ -892,9 +982,11 @@ impl<'a> Painter<'a> {
             }
             Paint::Shared(shared) => self.paint(shared, exact),
             Paint::Children(children) => {
+                self.anchors.push(Rect::new(exact, measured.size));
                 for (offset, child) in children {
                     self.paint(child, Offset::new(exact.x + offset.x, exact.y + offset.y));
                 }
+                self.anchors.pop();
             }
             Paint::Background {
                 color,
@@ -918,7 +1010,7 @@ impl<'a> Painter<'a> {
                     }
                     self.list
                         .commands
-                        .push(command.translated(origin.x, origin.y));
+                        .push(command.translated(origin.x, origin.y).faded(self.alpha));
                 }
                 if content == Some(count) {
                     self.paint(inner, exact);
@@ -937,6 +1029,7 @@ impl<'a> Painter<'a> {
                             visible,
                             focus.as_ref(),
                             self.focused_flag.as_ref().map(|focused| focused()),
+                            self.group,
                             self.pointer,
                             false,
                         )
@@ -945,6 +1038,7 @@ impl<'a> Painter<'a> {
                     rect: visible,
                     focus,
                     focused: self.focused_flag.clone(),
+                    group: self.group,
                     covered_after: 0,
                     interaction,
                 });
@@ -956,7 +1050,7 @@ impl<'a> Painter<'a> {
                     }
                     self.list
                         .commands
-                        .push(command.translated(origin.x, origin.y));
+                        .push(command.translated(origin.x, origin.y).faded(self.alpha));
                 }
                 if content == Some(count) {
                     self.paint(inner, exact);
@@ -967,6 +1061,26 @@ impl<'a> Painter<'a> {
                 let around = self.focused_flag.replace(Rc::clone(focused));
                 self.paint(inner, exact);
                 self.focused_flag = around;
+            }
+            Paint::KeepInWindow { inner } => {
+                let inside = |start: f32, length: f32, room: f32| {
+                    let back = (room - (start + length)).min(0.0);
+                    back.max(-start)
+                };
+                let shift = Offset::new(
+                    inside(rect.origin.x, rect.size.width, self.window.width),
+                    inside(rect.origin.y, rect.size.height, self.window.height),
+                );
+                self.paint(inner, Offset::new(exact.x + shift.x, exact.y + shift.y));
+            }
+            Paint::InWindow { at, inner } => self.paint(inner, *at),
+            Paint::Popup { placement, inner } => {
+                self.paint_popup(placement, inner, Rect::new(exact, measured.size));
+            }
+            Paint::InteractionGroup { inner } => {
+                let around = self.group.replace(self.visible(rect));
+                self.paint(inner, exact);
+                self.group = around;
             }
             Paint::Fill { fill, inner } => {
                 self.paint_fill(fill, rect);
@@ -1032,6 +1146,7 @@ impl<'a> Painter<'a> {
             Paint::DragSource {
                 payload,
                 button,
+                touch_slop,
                 inner,
             } => {
                 let start = self.list.commands.len();
@@ -1041,6 +1156,7 @@ impl<'a> Painter<'a> {
                     button: *button,
                     payload: Rc::clone(payload),
                     commands: start..start,
+                    touch_slop: *touch_slop,
                 });
                 self.paint(inner, exact);
                 self.list.drag_sources[index].commands.end = self.list.commands.len();
@@ -1050,6 +1166,35 @@ impl<'a> Painter<'a> {
                     rect: self.visible(rect),
                     on_drop: Rc::clone(on_drop),
                 });
+                self.paint(inner, exact);
+            }
+            Paint::DragAndDropSource {
+                transfer_data,
+                touch_slop,
+                inner,
+            } => {
+                self.list
+                    .drag_and_drop_sources
+                    .push(DragAndDropSourceRegion {
+                        rect: self.visible(rect),
+                        origin,
+                        transfer_data: Rc::clone(transfer_data),
+                        touch_slop: *touch_slop,
+                    });
+                self.paint(inner, exact);
+            }
+            Paint::DragAndDropTarget {
+                should_start,
+                target,
+                inner,
+            } => {
+                self.list
+                    .drag_and_drop_targets
+                    .push(DragAndDropTargetRegion {
+                        rect: self.visible(rect),
+                        should_start: Rc::clone(should_start),
+                        target: Rc::clone(target),
+                    });
                 self.paint(inner, exact);
             }
             Paint::FileDrop { on_drop, inner } => {
@@ -1091,11 +1236,13 @@ impl<'a> Painter<'a> {
             }
             Paint::LongPress {
                 on_long_press,
+                view_configuration,
                 inner,
             } => {
                 self.list.long_presses.push(LongPressRegion {
                     rect: self.visible(rect),
                     on_long_press: Rc::clone(on_long_press),
+                    view_configuration: *view_configuration,
                 });
                 self.paint(inner, exact);
             }
@@ -1139,6 +1286,39 @@ impl<'a> Painter<'a> {
                 on_placed(rect, self.window);
                 self.paint(inner, exact);
             }
+            Paint::PlacedVisible { on_visible, inner } => {
+                on_visible(self.visible(rect));
+                self.paint(inner, exact);
+            }
+            Paint::FocusChanged {
+                on_focus_changed,
+                inner,
+            } => {
+                let waiting = self.focus_observers.len();
+                self.focus_observers.push(Rc::clone(on_focus_changed));
+                self.paint(inner, exact);
+                self.focus_observers.truncate(waiting);
+            }
+            Paint::TestTag { tag, inner } => {
+                let index = self.list.test_tags.len();
+                let first = self.list.focusables.len();
+                self.list.test_tags.push(TaggedNode {
+                    tag: Rc::clone(tag),
+                    bounds: rect,
+                    visible: self.visible(rect),
+                    focusable: None,
+                });
+                self.paint(inner, exact);
+                let around = self.focus.as_ref().and_then(|focus| {
+                    self.list
+                        .focusables
+                        .iter()
+                        .position(|region| region.focus.id() == focus.id())
+                });
+                self.list.test_tags[index].focusable = (self.list.focusables.len() > first)
+                    .then_some(first)
+                    .or(around);
+            }
             Paint::ZIndex {
                 z_index,
                 clipped,
@@ -1162,6 +1342,9 @@ impl<'a> Painter<'a> {
                     clearing: self.clearing,
                     focus: self.focus.clone(),
                     focused_flag: self.focused_flag.clone(),
+                    group: self.group,
+                    key_scopes: self.key_scopes.clone(),
+                    anchor: self.anchors.last().copied(),
                     measured: inner,
                 });
             }
@@ -1208,6 +1391,16 @@ impl<'a> Painter<'a> {
                     alpha: *alpha,
                     rotation: *rotation,
                     scale: *scale,
+                });
+                self.paint(inner, exact);
+                self.list.commands.push(DrawCommand::PopLayer);
+            }
+            Paint::RotateWith { degrees, inner } => {
+                self.list.commands.push(DrawCommand::PushLayer {
+                    rect,
+                    alpha: 1.0,
+                    rotation: degrees().to_radians(),
+                    scale: 1.0,
                 });
                 self.paint(inner, exact);
                 self.list.commands.push(DrawCommand::PopLayer);
@@ -1270,10 +1463,11 @@ impl<'a> Painter<'a> {
                     state: state.clone(),
                     vertical: *vertical,
                 });
+                let shift = self.on_grid(*offset);
                 let inside = if *vertical {
-                    Offset::new(exact.x, exact.y - offset)
+                    Offset::new(exact.x, exact.y - shift)
                 } else {
-                    Offset::new(exact.x - offset, exact.y)
+                    Offset::new(exact.x - shift, exact.y)
                 };
                 self.paint(inner, inside);
                 self.paint_scrollbar(rect, state, *vertical, *offset);
@@ -1285,6 +1479,7 @@ impl<'a> Painter<'a> {
                     rect: self.visible(rect),
                     origin,
                     on_drag: Rc::clone(on_drag),
+                    takes_pointer: false,
                 });
                 self.paint(inner, exact);
             }
@@ -1324,11 +1519,16 @@ impl<'a> Painter<'a> {
                     .find(|region| region.rect == self.list.semantics[index].rect)
                     .map(|region| Rc::clone(&region.on_click));
             }
-            Paint::Press { on_press, inner } => {
+            Paint::Press {
+                on_press,
+                view_configuration,
+                inner,
+            } => {
                 self.list.presses.push(PressRegion {
                     rect: self.visible(rect),
                     origin,
                     on_press: Rc::clone(on_press),
+                    view_configuration: *view_configuration,
                 });
                 self.paint(inner, exact);
             }
@@ -1355,21 +1555,28 @@ impl<'a> Painter<'a> {
                 self.list.key_handlers.push(KeyRegion {
                     rect: self.visible(rect),
                     focusables: first..first,
+                    raised_focusables: Vec::new(),
                     preview: *preview,
                     on_key: Rc::clone(on_key),
                 });
+                self.key_scopes.push(index);
                 self.paint(inner, exact);
+                self.key_scopes.pop();
                 self.list.key_handlers[index].focusables.end = self.list.focusables.len();
             }
             Paint::Focusable {
                 focus,
                 on_key,
+                takes_press,
                 inner,
             } => {
+                let on_focus_changed = std::mem::take(&mut self.focus_observers);
                 self.list.focusables.push(FocusRegion {
                     rect: self.visible(rect),
                     focus: focus.clone(),
                     on_key: Rc::clone(on_key),
+                    takes_press: *takes_press,
+                    on_focus_changed,
                 });
                 let around = self.focus.replace(focus.clone());
                 self.paint(inner, exact);
@@ -1396,6 +1603,27 @@ impl<'a> Painter<'a> {
     }
 }
 
+/// How large what `measured` holds is: for a layout, which for a popup takes no room, the
+/// furthest its children reach; for anything else its own size.
+fn content_extent(measured: &Measured) -> Size {
+    let mut at = measured;
+    loop {
+        at = match &at.paint {
+            Paint::Shared(shared) => shared,
+            Paint::Children(children) => {
+                let far = children.iter().fold(measured.size, |far, (offset, child)| {
+                    Size::new(
+                        far.width.max(offset.x + child.size.width),
+                        far.height.max(offset.y + child.size.height),
+                    )
+                });
+                return far;
+            }
+            _ => return at.size,
+        };
+    }
+}
+
 /// The focus of the first focusable in the chain of modifiers `measured` starts, looking
 /// through the wrappers of one node but not into its children.
 fn chain_focus(measured: &Measured) -> Option<Focus> {
@@ -1408,6 +1636,10 @@ fn chain_focus(measured: &Measured) -> Option<Focus> {
             | Paint::Draw { inner, .. }
             | Paint::Interactive { inner, .. }
             | Paint::InteractionFocused { inner, .. }
+            | Paint::InteractionGroup { inner }
+            | Paint::KeepInWindow { inner }
+            | Paint::InWindow { inner, .. }
+            | Paint::Popup { inner, .. }
             | Paint::Fill { inner, .. }
             | Paint::Effect { inner, .. }
             | Paint::Gradient { inner, .. }
@@ -1416,17 +1648,23 @@ fn chain_focus(measured: &Measured) -> Option<Focus> {
             | Paint::ImeCaret { inner, .. }
             | Paint::Hover { inner, .. }
             | Paint::Placed { inner, .. }
+            | Paint::PlacedVisible { inner, .. }
+            | Paint::FocusChanged { inner, .. }
+            | Paint::TestTag { inner, .. }
             | Paint::LongPress { inner, .. }
             | Paint::PointerMove { inner, .. }
             | Paint::FileDrop { inner, .. }
             | Paint::DragEnd { inner, .. }
             | Paint::DragSource { inner, .. }
             | Paint::DropTarget { inner, .. }
+            | Paint::DragAndDropSource { inner, .. }
+            | Paint::DragAndDropTarget { inner, .. }
             | Paint::PointerInput { inner, .. }
             | Paint::Pinch { inner, .. }
             | Paint::BlocksPointer(inner)
             | Paint::Alpha { inner, .. }
             | Paint::GraphicsLayer { inner, .. }
+            | Paint::RotateWith { inner, .. }
             | Paint::BorderBottom { inner, .. }
             | Paint::BorderSide { inner, .. }
             | Paint::Border { inner, .. }

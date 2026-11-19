@@ -96,6 +96,28 @@ impl Canvas {
         });
     }
 
+    /// A picture stretched over a rectangle, with corners rounded to `corner_radius` and drawn
+    /// at `opacity`, from 0 (invisible) to 1 (as is). A live picture made with
+    /// [`ImageData::keyed`] reuses its texture from frame to frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn image(
+        &mut self,
+        image: &ImageData,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        corner_radius: f32,
+        opacity: f32,
+    ) {
+        self.commands.push(DrawCommand::Image {
+            rect: Self::rect_at(x, y, width, height),
+            image: image.clone(),
+            corner_radius,
+            opacity,
+        });
+    }
+
     /// A filled rectangle with rounded corners.
     pub fn rounded_rect(
         &mut self,
@@ -260,7 +282,7 @@ impl Canvas {
     }
 
     /// A soft blur of a rounded rectangle: a glow when `color` is bright, a drop
-    /// shadow when it is dark. The colour fades out over `blur` pixels.
+    /// shadow when it is dark. The colour fades out over `blur` pixels as a Gaussian.
     pub fn shadow(
         &mut self,
         x: f32,

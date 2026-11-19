@@ -32,7 +32,7 @@ pub enum BoxAlignment {
 
 impl BoxAlignment {
     /// How far along each axis the child sits, from 0 (start) to 1 (end).
-    fn factors(self) -> (f32, f32) {
+    pub(crate) fn factors(self) -> (f32, f32) {
         match self {
             Self::TopStart => (0.0, 0.0),
             Self::TopCenter => (0.5, 0.0),
@@ -55,25 +55,40 @@ pub struct Overlay {
     pub alignment: BoxAlignment,
     /// Mirrors the horizontal alignments.
     pub rtl: bool,
+    /// Gives the children the incoming minimum size, as Compose's
+    /// `Box(propagateMinConstraints = true)`, so a child fills a box given a fixed size.
+    pub propagate_min_constraints: bool,
 }
 
 impl Layout for Overlay {
     fn measure(&self, children: &mut Children, constraints: Constraints) -> LayoutResult {
-        let child_constraints = Constraints {
-            min_width: 0.0,
-            min_height: 0.0,
-            ..constraints
+        let child_constraints = if self.propagate_min_constraints {
+            constraints
+        } else {
+            Constraints {
+                min_width: 0.0,
+                min_height: 0.0,
+                ..constraints
+            }
         };
-        let mut sizes = Vec::with_capacity(children.len());
+        let mut sizes = vec![Size::default(); children.len()];
         let mut size = Size::default();
-        for index in 0..children.len() {
+        for (index, slot) in sizes.iter_mut().enumerate() {
+            if children.matches_parent_size(index) {
+                continue;
+            }
             let child = children.measure(index, child_constraints);
             size.width = size.width.max(child.width);
             size.height = size.height.max(child.height);
-            sizes.push(child);
+            *slot = child;
         }
         // Align against the final size, which may be larger than the content.
         let size = constraints.constrain(size);
+        for (index, slot) in sizes.iter_mut().enumerate() {
+            if children.matches_parent_size(index) {
+                *slot = children.measure(index, Constraints::tight(size));
+            }
+        }
         let positions = sizes
             .iter()
             .enumerate()
