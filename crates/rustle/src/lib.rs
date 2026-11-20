@@ -118,8 +118,8 @@ pub use rustle_graphics::Shadow;
 pub use rustle_graphics::SvgPainter;
 pub use rustle_graphics::TextWrap;
 pub use rustle_graphics::{
-    BlendMode, Color, ColorFilter, DrawCommand, ImageData, ImageKey, LayerEffect, ShaderBrush,
-    TextAlign,
+    BlendMode, Color, ColorFilter, ColorSpace, ColorSpaces, DrawCommand, ImageData, ImageKey,
+    LayerEffect, ShaderBrush, TextAlign, lerp,
 };
 pub use rustle_graphics::{FillRule, Path, PathCommand};
 pub use rustle_macros::composable;
