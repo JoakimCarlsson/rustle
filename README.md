@@ -1,6 +1,31 @@
 # Rustle
 
-A declarative UI framework in Rust, inspired by Jetpack Compose. UI is described by composable functions; state is remembered across recompositions; layout is driven by modifiers; and rendering is a swappable backend, with `wgpu` first.
+[![CI](https://github.com/JoakimCarlsson/rustle/actions/workflows/ci.yml/badge.svg)](https://github.com/JoakimCarlsson/rustle/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-2024_edition-orange?logo=rust)](https://www.rust-lang.org/)
+
+A declarative UI framework for Rust, modeled on Jetpack Compose. UI is written as composable functions, state is remembered across recompositions, layout is driven by modifiers, and rendering is a swappable backend, with `wgpu` first.
+
+## Features
+
+- **Runtime**: `remember`, snapshot state, derived state, effects and tasks, composition locals, skipping and scoped recomposition
+- **Layout**: `Modifier` chains, rows, columns, stacks, flow and constraint layouts, lazy lists and grids
+- **Drawing**: gradients, shadows, clipping, layer effects, backdrop blur, vector paths, SVG and custom WGSL shaders
+- **Text**: rich, wrapped text, selection, text fields with input methods and undo
+- **Input**: Compose-style pointer events, gestures, drag and drop, focus, keyboard, touch and pen
+- **Widgets**: a Material-style theme and a full set of components: buttons, dialogs, popups, menus, tooltips, sliders, tabs, charts and more
+- **Animation**: `animate_*_as_state`, `Animatable`, transitions, springs, keyframes and path morphing
+- **Windows**: multiple windows, window state, placement and focus
+- **Accessibility**: a semantics tree sent to the platform screen reader through AccessKit
+- **Embedding**: `rustle::Embedded` runs an interface inside a host that owns the window, the GPU device and the frame
+- **Icons**: every [Phosphor](https://phosphoricons.com) icon as a compile-time constant
+
+## Quick start
+
+```toml
+[dependencies]
+rustle = { git = "https://github.com/JoakimCarlsson/rustle" }
+```
 
 ```rust
 use rustle::prelude::*;
@@ -20,60 +45,79 @@ fn main() {
 }
 ```
 
-Run the showcase with:
+## Examples
 
-```
-cargo run --example hello_world
-```
-
-It is a full-window dashboard in a restrained, monochrome style, and everything on it works: the sidebar navigates thirteen pages and collapses, Search opens a command palette, Quick Create adds a table row, the notifications and account menus act, and the dashboard's stat cards pick what the chart shows while hovering it reads out the point under the pointer. The table filters, sorts, pages, selects, hides columns and edits rows in a sheet; the overview has a working chat, calendar, role menus and invite dialog; the components page runs a transfer form against live balances, with confirmation. The Gallery page is a shadcn-style catalogue of components (buttons, inputs, OTP, tabs, pagination, tables, calendar, hover card, dialogs and more), and the Motion page shows easing curves and springs, staggered entrances, loaders, hover and click feedback, sliding tabs, an accordion, an auto-advancing carousel, swipe to dismiss, drag and drop between columns, and canvases redrawn from a clock. It follows the system's light or dark setting unless Settings overrides it. The code is split into modules under `examples/hello_world/`.
-
-## What is here
-
-- **Runtime:** state, `remember`, call-site identity with `key`, effects, tasks (whose `delay`, as Compose's, waits on a timer and draws nothing meanwhile), composition locals, observable lists and maps, values saved across runs, skipping of unchanged blocks, scoped recomposition (`restartable` blocks composed again alone, with their layout cached), state read only while measuring or drawing laying out or painting again without composing (`PhaseObserver`, as Compose's phases), derived state, snapshot state (`remember`, `mutable_state_of`, `Snapshot`, `snapshot_flow`), state a holder keeps outside the tree (`mutable_state`, Compose's `mutableStateOf` without `remember`, read by any number of compositions), and recomposition driven by the event loop.
-- **Layout:** constraints, `Modifier` (padding, size, fill, weight, alignment, offset, aspect ratio, background, gradient, alpha, border, shadow, clip, scroll), rows, columns, stacks, lazy lists and grids, and opt-in rounding of every edge to whole logical or physical pixels (`PixelRounding`, set with `Embedded::set_pixel_rounding` or `rustle::set_pixel_rounding`).
-- **Drawing and text:** rounded rectangles, linear, radial and sweep gradients, blurred drop shadows, pictures (live ones, such as video frames, made with `ImageData::keyed` under one `ImageKey`, reuse one texture), coverage masks filled with a color (`mask_image`, `Canvas::mask`, for icons rasterised by the program, kept sharp on whole pixels), SVG documents loaded while the program runs (`SvgPainter::from_str` or `from_bytes`, drawn by `svg_image`, `svg_icon` and `Canvas::svg` at their size in physical pixels, in their own colors or tinted, as Compose's `loadSvgPainter` with `Image` and `Icon`, their text set with the fonts the text engine loaded, a generic family such as `sans-serif` in the family the system resolves it to as a browser does, also inside SVG documents embedded as `data:` URLs, and pictures embedded as `data:` URLs drawn), shadows described as Compose's `Shadow` value (radius, spread, offset, color, alpha, blend mode) cast with `Modifier::drop_shadow_with` or, for a `Shape`, `drop_shadow_shape` (Compose's `dropShadow`), layered by chaining, clipping, custom WGSL shaders (`ShaderBrush`), layer effects (blur, color filters, blend modes, frosted-glass backdrop blur), `draw_behind` and `draw_with_content`, wrapped and aligned text with weights, font families, rich spans and an ellipsis.
-- **Input:** pointer events as Compose's `Modifier.onPointerEvent` delivers them (`on_pointer_event(event_type, pass, handler)`: press, release, move, enter, exit and scroll, every button, the modifier keys and a consumable change, in the initial, main and final passes, consumed or not, the final pass after the built-in gestures heard the event), interaction sources and indications as Compose's (`MutableInteractionSource` with `collect_is_pressed_as_state` and its hover, focus and drag forms, filled by `clickable_with(interaction_source, indication, on_click)`, `hoverable` and `focusable_with`, and drawn by an `Indication` made from an `IndicationNodeFactory`, provided through `LOCAL_INDICATION`), input-method sessions for areas that draw their own text (`Modifier::platform_text_input` with a `PlatformTextInputSession` and a `PlatformTextInputMethodRequest`, Compose's `PlatformTextInputModifierNode`: composition, commits and the caret rectangle that places the candidate window), clicks, double clicks, drags, touch and pen, scrolling (a scroll state a state holder can own, `ScrollState::new`, and a scrollbar that takes the presses on it, `ScrollState::is_scrollbar_dragged` telling a host it is held), files dropped from other applications onto file drop areas or onto drop targets that accept a `DragData::FilesList` (Compose's `DragData.FilesList`, every file in one drop, the targets told as the files enter, move over and leave, as for a drag inside the window; on every platform winit 0.31 supports), focus, keyboard, input methods, a clipboard, a text field with a blinking caret (shown again and blinking anew when the text, the caret or the input method's composition changes) and word and line selection, text fields shaped as Compose's: `TextFieldState` (made outside composition with `TextFieldState::new`, changed with `edit { }` through a `TextFieldBuffer` and its `ChangeList`, undone and redone with its `UndoState`), `basic_text_field_with` and `BasicTextFieldOptions` (`InputTransformation` such as `MaxLength` and `ByValue`, `OutputTransformation`, `KeyboardOptions` and a keyboard action, `TextFieldLineLimits`, a `TextFieldDecorator` around the text, a hoisted scroll state and focus, caret color, `on_text_layout`), `basic_secure_text_field` with `TextObfuscationMode`, and `Focus::free_focus` (Compose's `freeFocus`), focus targets Tab reaches but a press does not focus (`Modifier::focus_target`, Compose's `focusTarget`) and `Modifier::on_focus_changed` (Compose's `onFocusChanged`, told also when the focused area leaves the composition, which clears focus as Compose does), `KeyEvent::code_point` (Compose's `utf16CodePoint`), tests that find areas by `Modifier::test_tag` (Compose's `testTag`: `Embedded::node_with_tag`, `nodes_with_tag` and `tagged_nodes` give `TaggedNode`s with `bounds` as `boundsInRoot`, `is_displayed`, and `Embedded::request_focus_on_tag`), drags and drops inside the window shaped as Compose's (`Modifier::drag_and_drop_source` with `DragAndDropTransferData`, started once the pointer moves the `touch_slop` of the `ViewConfiguration` read through `LOCAL_VIEW_CONFIGURATION` (Compose's `LocalViewConfiguration`, also holding the long-press and double-tap timeouts), and `Modifier::drag_and_drop_target` with a `DragAndDropTarget` told `on_started`, `on_entered`, `on_moved`, `on_exited`, `on_drop` and `on_ended`, each `DragAndDropEvent` carrying the payload, the pointer in the window and the modifier keys), selectable text, rich text that draws a caret and an input method's composition when edited, `Modifier::ime_caret` for areas that draw their own text, such as a terminal, to say where input goes, the shaped layout of any text for hit testing links (`Modifier::on_text_layout`), and hover, press and focus styles resolved when painting (`Modifier::draw_behind_interactive`, `interaction_background`), so hovering a row paints again without composing.
-- **Widgets:** buttons, chips, badges, checkbox, switch, radio button, slider, progress bars, text field and text area, tabs, segmented buttons (`single_choice_segmented_button_row` and `segmented_button` with `SegmentedButtonColors` and `SegmentedButtonDefaults`, as Compose's `SingleChoiceSegmentedButtonRow` and `SegmentedButton`), a determinate `linear_progress_indicator_with(progress, modifier, color, track_color)` with `ProgressIndicatorDefaults` (Compose's `LinearProgressIndicator`), indeterminate and determinate circular indicators (`circular_progress_indicator_with(modifier, color, stroke_width, track_color)` and `circular_progress_indicator_with_progress`, Compose's `CircularProgressIndicator`), navigation bar, lists, dialog (`dialog_with(on_dismiss_request, properties, content)` with `DialogProperties`' `dismiss_on_back_press` and `dismiss_on_click_outside`, as Compose's `Dialog`), popups shaped as Compose's (`popup_with(position_provider, on_dismiss_request, properties, content)`: a `PopupPositionProvider` sees the anchor's bounds, the window's size and the popup's size, with `AlignmentOffsetPositionProvider`, `DropdownMenuPositionProvider` and `popup_position_provider_at_position`; `PopupProperties` with `focusable`, `dismiss_on_back_press`, `dismiss_on_click_outside` and `clipping_enabled`; a press outside or Escape calls `on_dismiss_request`), menus (`dropdown_menu_anchored`, Compose's `DropdownMenu` against the box it is declared in), tooltips (`tooltip_box` with `TooltipState`, `remember_tooltip_state` and `TooltipDefaults::plain_tooltip_position_provider`, as Compose's `TooltipBox`; `basic_tooltip_box`; `tooltip_area`, Compose Desktop's `TooltipArea`, shown once the pointer has rested on its box for a delay on the frame clock), snackbar, animated visibility, animated content with enter and exit transitions, `animate_content_size`, shared elements, crossfade, card and scaffold, with a light and a dark theme. The theme works like Compose's `MaterialTheme`: a `ColorScheme` with the Material 3 roles, a `Typography` and `Shapes`, provided by `theme(color_scheme, typography, shapes, content)` and replaceable part by part for a subtree by nesting it, with a content color that surfaces set and text follows, as Compose's `LocalContentColor`. Widgets read their colors, text styles and corner radii from it, buttons take their colors, shape, padding and border from `ButtonDefaults` or your own values through `button_custom`, the other widgets take their whole look as parameters in their Compose forms (`surface_custom` as `Surface(modifier, shape, color, contentColor, border)` with a `BorderStroke`, `outlined_card` with `CardColors` and `CardDefaults`, `horizontal_divider` and `vertical_divider` with `DividerDefaults`, `checkbox_with` and `tri_state_checkbox` with `ToggleableState`, `CheckboxColors` and `CheckboxDefaults`, `switch_with` with `SwitchColors` and `SwitchDefaults`, each change handler optional, as Compose's nullable `onCheckedChange`, for a control inside a larger one that answers the pointer), scrollbars take their look from `LOCAL_SCROLLBAR_STYLE` (Compose Desktop's `LocalScrollbarStyle`) unless their state was given one, a scheme can be cut from one seed color with `ColorScheme::from_seed`, shapes can be rounded, cut or per corner, surfaces take a tonal elevation, buttons ripple, and extra values go in a composition local of your own, as Compose's custom design systems guide shows. `cargo run --release --example theme` shows it.
-- **Animation:** `animate_*_as_state`, `remember_infinite_transition` with `animate_float` (Compose's `InfiniteTransition`), `Animatable` (with `animate_decay` and fling), `update_transition` for several values off one state, tween, spring, keyframes, snap, repeatable and infinite repeatable specs, and `Path` morphing through `Lerp`.
-- **Windows:** `run_with` and `window` take `WindowOptions`, whose `with_state` gives a window a `WindowState` (Compose Desktop's: placement as `Floating`, `Maximized` or `Fullscreen`, minimized, position and size, made with `remember_window_state`, followed both ways); content reads `LOCAL_WINDOW_INFO` (Compose's `LocalWindowInfo`: whether the window has focus, the modifier keys, its size) and `LOCAL_DENSITY`, which follow the window, and the system's dark setting through `is_system_in_dark_theme`; a `WindowHandle` from `current_window` also brings the window to the front, asks for the user's attention, reads and sets its placement, size and level, and tells how large the screen it is on is (`screen_size`, the bounds of a `ComposeWindow`'s graphics configuration).
-- **Navigation:** a back stack and a host.
-- **Accessibility:** a semantics tree sent to the platform's screen reader API through AccessKit (AT-SPI, UI Automation and `NSAccessibility`).
-- **Embedding:** `rustle::Embedded` runs an interface inside a host that owns the window, the GPU device and the frame. The host gives it the size, the pointer, the wheel, the keys and the input method, learns from each whether the interface used the event (`Modifier::blocks_pointer` makes a panel's empty space count), draws it into its own texture, can replace the root without rebuilding the renderer, backs `remember_saveable` with its own `Saver`, and draws its own content into an area the interface reserves with `viewport`, can paint again without composing (`repaint`), says how long each update spent composing and laying out (`update_timing`), can draw one frame into RGBA pixels (`snapshot`), and tells it whether its window has focus (`set_window_focused`), drives `on_pointer_event` and text input sessions through the same input methods, can time frames with its own clock (`set_clock`, `advance_to`) so offscreen snapshots taken at a given moment are the same every run.
-
-See [docs/architecture.md](docs/architecture.md) for the crates, what belongs in each, the frame flow, and the current limitations.
-
-## Development
-
-```
-make fmt
-make lint
+```bash
+cargo run --example hello_world   # full dashboard showcase (or `make run`)
+cargo run --example multi_window
+cargo run --example text
+cargo run --example graphics
+cargo run --example theme
+cargo run --example embedded -p rustle   # headless embedding check
 ```
 
-`cargo run --example embedded -p rustle` checks the embedding API without a window: it clicks, types through an input method, reads the caret an area that draws its own text reports, replaces the root and draws two interfaces into textures it made.
+`hello_world` is a complete dashboard: navigation, a command palette, tables, charts, forms, a component gallery and a motion page.
 
-To measure animated-frame CPU work and offscreen rendering in release mode:
+## Crates
 
-```sh
-BENCH_ROWS=600 BENCH_FRAMES=300 cargo run --release -p rustle --example bench
-```
+| Crate | Purpose |
+|-------|---------|
+| `rustle` | Public API, prelude, event loop, windows, embedding |
+| `rustle-runtime` | Composition, state, effects, snapshots |
+| `rustle-ui` | Nodes, `Modifier`, layout, input, semantics |
+| `rustle-foundation` | Basic composables: text, rows, columns, lazy lists, text fields |
+| `rustle-widgets` | Theme and Material-style components |
+| `rustle-animation` | Animation specs, transitions, `Animatable` |
+| `rustle-charts` | Area, line, bar and donut charts, sparklines, QR codes |
+| `rustle-navigation` | Back stack and nav host |
+| `rustle-text` | Text styles and layout |
+| `rustle-graphics` | Colors, images, SVG, paths, draw commands |
+| `rustle-geometry` / `rustle-unit` | Geometry and units |
+| `rustle-wgpu` | The wgpu renderer |
+| `rustle-shaders` | WGSL shaders |
+| `rustle-icons` | Phosphor icons |
+| `rustle-macros` | `#[composable]` |
 
-The benchmark compares ordinary rows, skippable rows and `restartable` blocks (the changing bar and the list recomposed alone, the list's layout reused) in a non-lazy scrolling list at 900×700, after five warmup frames. It reports composition and layout/paint medians, render-plus-readback time, and measured total-frame median/p95/p99. The rendering stage includes GPU synchronization and pixel readback, not just GPU execution; these are not native-window FPS measurements. Increase `BENCH_ROWS` to check scaling, use a positive `BENCH_FRAMES`, and repeat runs to account for other work on the machine. For application lists that should only compose visible items, use the lazy list APIs instead. `BENCH_SCENARIO=effects` (or `list`) runs one scenario only: a grid of rounded clips, effect layers and backdrop blurs drawn straight to the renderer, sized with `BENCH_CARDS` and `BENCH_SIZE` (for example `1920x1080`).
+See [docs/architecture.md](docs/architecture.md) for what belongs in each crate, the frame flow and current limitations.
 
-To see what a change looks like without opening a window, draw one frame offscreen to a PNG:
+## Embedding
 
-```
+A host that owns the window, the GPU device and the frame can run a Rustle interface with `rustle::Embedded` and draw it into its own texture through `rustle_wgpu::Renderer::with_device`. The host forwards size, pointer, keyboard and input-method events, and learns from each whether the interface used it.
+
+## Snapshots
+
+Draw one frame offscreen to a PNG, without a window:
+
+```bash
 RUSTLE_SNAPSHOT=out.png RUSTLE_SNAPSHOT_SIZE=800x600 cargo run --example hello_world
 ```
 
-`RUSTLE_SNAPSHOT_LIGHT=1` renders the light theme. Any application started through `rustle::run` supports this.
+| Variable | Effect |
+|----------|--------|
+| `RUSTLE_SNAPSHOT_LIGHT=1` | Light theme |
+| `RUSTLE_SNAPSHOT_SCALE=2` | Scale factor, as on a HiDPI screen |
+| `RUSTLE_SNAPSHOT_INPUT="click:150,237;type:Ada;key:Backspace"` | Replay input before the picture |
+| `RUSTLE_SNAPSHOT_STEP_MS=0` | Take the picture right after the last step |
+| `RUSTLE_DEBUG_INPUT=1` | Print the input a real window receives |
 
-`RUSTLE_SNAPSHOT_SCALE=2` (or `1.25`, `1.5`, ...) draws the picture at that scale factor, as a HiDPI screen would: the layout keeps its logical size and the picture has that many physical pixels per logical pixel.
+Input steps: `click:x,y`, `move:x,y`, `type:text`, `key:Name` and `wait:ms`, separated by `;`. Works for any application started through `rustle::run`.
 
-To check behaviour as well as looks, replay input against the real layout before the picture is taken:
+## Benchmarks
 
+```bash
+BENCH_ROWS=600 BENCH_FRAMES=300 cargo run --release -p rustle --example bench
 ```
-RUSTLE_SNAPSHOT_INPUT="click:150,237;click:230,291;type:Ada;key:Backspace" RUSTLE_SNAPSHOT=out.png cargo run --example hello_world
+
+Reports composition, layout/paint and render-plus-readback medians, and total frame median/p95/p99. `BENCH_SCENARIO=effects` or `list` runs one scenario.
+
+## Development
+
+```bash
+make fmt
+make lint
+cargo test --workspace
 ```
 
-Steps are `click:x,y`, `move:x,y` (hover and pointer-move handlers), `type:text` and `key:Name` (Backspace, Delete, Enter, Tab, Left, Right, Up, Down, Home, End), separated by `;`. Each step is followed by a second of frames, so animations have finished; `RUSTLE_SNAPSHOT_STEP_MS=0` takes the picture right after the last step, and a `wait:ms` step runs that many milliseconds of frames first, to catch an animation midway (`click:150,237;wait:120`). `RUSTLE_DEBUG_INPUT=1` prints the input a real window receives and what each click hit.
+## License
+
+MIT. See [LICENSE](LICENSE). Phosphor icons are MIT, see [LICENSE-PHOSPHOR](crates/rustle-icons/LICENSE-PHOSPHOR).
