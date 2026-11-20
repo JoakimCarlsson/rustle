@@ -14,9 +14,11 @@ use rustle_ui::{
 use crate::interface::Interface;
 use crate::pointing::same_area;
 
-/// A listening area told apart from the others across layouts: where it is and how many
-/// listening areas it is inside, since handlers are made anew at each composition.
-pub(crate) type ListenerKey = (Rect, usize);
+/// A listening area told apart from the others across layouts: where it is, how many
+/// listening areas it is inside and its place among them in the display list, since handlers
+/// are made anew at each composition. An area that moved keeps its place in a tree whose
+/// shape did not change, as a node keeps its identity in Compose wherever it is laid out.
+pub(crate) type ListenerKey = (Rect, usize, usize);
 
 /// A pointer event sent in its initial and main passes and held back for its final pass,
 /// with the listening areas it goes to.
@@ -34,15 +36,46 @@ impl Interface {
     /// The key of the listening area at `index` of the display list.
     fn listener_key(&self, index: usize) -> ListenerKey {
         let region = &self.display.pointer_events[index];
-        (region.rect, region.depth)
+        (region.rect, region.depth, index)
     }
 
-    /// Where the listening area of `key` is in the display list now, if it still is.
+    /// Where the listening area of `key` is in the display list now, if it still is: the
+    /// area at the same depth in the same place, else the one at the same depth at the same
+    /// place in the list, which is the same area moved when the tree kept its shape.
     fn listener_at(&self, key: ListenerKey) -> Option<usize> {
-        self.display
-            .pointer_events
-            .iter()
-            .position(|region| region.depth == key.1 && same_area(region.rect, key.0))
+        let regions = &self.display.pointer_events;
+        let (rect, depth, index) = key;
+        regions
+            .get(index)
+            .filter(|region| region.depth == depth && same_area(region.rect, rect))
+            .map(|_| index)
+            .or_else(|| {
+                regions
+                    .iter()
+                    .position(|region| region.depth == depth && same_area(region.rect, rect))
+            })
+            .or_else(|| {
+                regions
+                    .get(index)
+                    .filter(|region| region.depth == depth)
+                    .map(|_| index)
+            })
+    }
+
+    /// Finds the areas the pointer is over and those that captured it in the display list
+    /// just painted, so each keeps hearing the pointer as the same area wherever it moved,
+    /// and forgets those that are gone.
+    pub(crate) fn follow_listeners(&mut self) {
+        let follow = |interface: &Self, keys: &[ListenerKey]| -> Vec<ListenerKey> {
+            keys.iter()
+                .filter_map(|key| interface.listener_at(*key))
+                .map(|index| interface.listener_key(index))
+                .collect()
+        };
+        self.pointer_event_hovered = follow(self, &self.pointer_event_hovered);
+        if let Some(captured) = &self.pointer_event_captured {
+            self.pointer_event_captured = Some(follow(self, captured));
+        }
     }
 
     /// The listening areas under the pointer, outermost first, or those the pointer was
@@ -154,10 +187,8 @@ impl Interface {
             .into_iter()
             .map(|index| self.listener_key(index))
             .collect();
-        let held = |keys: &[ListenerKey], key: &ListenerKey| {
-            keys.iter()
-                .any(|other| other.1 == key.1 && same_area(other.0, key.0))
-        };
+        let held =
+            |keys: &[ListenerKey], key: &ListenerKey| keys.iter().any(|other| other.2 == key.2);
         let pressed = self.pointer_buttons.are_any_pressed();
         let before = std::mem::take(&mut self.pointer_event_hovered);
         for key in before.iter().rev().filter(|key| !held(&now, key)) {
@@ -504,6 +535,51 @@ mod tests {
                 "outer Release Final",
             ]
         );
+    }
+
+    /// An area that moves while it holds the pointer, as a handle dragged along does, hears
+    /// it leave once it is let go and the pointer goes elsewhere: every enter it heard has its
+    /// exit, wherever the area was when the pointer came over it.
+    #[test]
+    fn an_area_moved_during_a_drag_hears_the_pointer_leave() {
+        let log: Log = Rc::default();
+        let x = rustle_runtime::mutable_state(0.0_f32);
+        let (root_log, root_x) = (Rc::clone(&log), x.clone());
+        let mut ui = embedded(200, 200, move || {
+            let moved = root_x.clone();
+            let modifier = Modifier::new()
+                .offset(root_x.get(), 0.0)
+                .size(20.0, 20.0)
+                .on_pointer_event(
+                    PointerEventType::Move,
+                    PointerEventPass::Main,
+                    move |event| {
+                        if event.changes[0].pressed {
+                            moved.set(event.changes[0].position.x + moved.get() - 10.0);
+                        }
+                    },
+                );
+            stack_sized(listening(modifier, "handle", &root_log, false), || {});
+        });
+        ui.pointer_moved(Offset::new(10.0, 10.0));
+        ui.pointer_button(PointerButton::Primary, true);
+        for step in 1..=4 {
+            ui.pointer_moved(Offset::new(10.0 + 10.0 * step as f32, 10.0));
+            ui.update();
+        }
+        assert!(x.get() > 0.0, "the area did not follow the drag");
+        ui.pointer_button(PointerButton::Primary, false);
+        ui.update();
+        ui.pointer_moved(Offset::new(150.0, 150.0));
+        ui.update();
+        let heard = std::mem::take(&mut *log.borrow_mut());
+        let count = |kind: &str| {
+            heard
+                .iter()
+                .filter(|entry| entry.split(' ').nth(1) == Some(kind) && entry.contains("Main"))
+                .count()
+        };
+        assert_eq!(count("Enter"), count("Exit"), "{heard:?}");
     }
 
     /// The final pass of a scroll reaches the listening areas after the scrolling area under

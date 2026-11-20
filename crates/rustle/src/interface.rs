@@ -185,6 +185,7 @@ impl Interface {
     /// the pointer and focus put them in now.
     pub(crate) fn show(&mut self, laid_out: LaidOut) {
         self.display = self.paint(&laid_out, self.pointer_state());
+        self.follow_listeners();
         self.laid_out = Some(laid_out);
         self.follow_focused_area();
         self.update_pointer_event_hover();
@@ -216,6 +217,7 @@ impl Interface {
             && self.display.interactions_changed(pointer)
         {
             self.display = self.paint(laid_out, pointer);
+            self.follow_listeners();
             self.redraw = true;
         }
     }
@@ -226,6 +228,7 @@ impl Interface {
     pub(crate) fn repaint(&mut self) {
         if let Some(laid_out) = &self.laid_out {
             self.display = self.paint(laid_out, self.pointer_state());
+            self.follow_listeners();
             self.redraw = true;
         }
     }
