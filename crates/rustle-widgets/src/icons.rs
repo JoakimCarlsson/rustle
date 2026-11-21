@@ -8,8 +8,19 @@ use rustle_icons::Icon;
 /// Emits `icon`, `size` square, filled with `color`.
 #[track_caller]
 pub fn icon(icon: Icon, size: f32, color: Color) {
-    canvas(Modifier::new().size(size, size), move |canvas| {
-        canvas.path(&icon, 0.0, 0.0, size, size, color);
+    icon_with(Modifier::new(), icon, size, color);
+}
+
+/// Emits `icon`, `size` square, filled with `color`, with `modifier` around it, as Compose's
+/// `Icon(imageVector, contentDescription, modifier, tint)`: a size set by `modifier` wins over
+/// `size`, and the icon is fitted inside the area it gets, centered.
+#[track_caller]
+pub fn icon_with(modifier: Modifier, icon: Icon, size: f32, color: Color) {
+    canvas(modifier.size(size, size), move |canvas| {
+        let side = canvas.width().min(canvas.height());
+        let x = (canvas.width() - side) / 2.0;
+        let y = (canvas.height() - side) / 2.0;
+        canvas.path(&icon, x, y, side, side, color);
     });
 }
 

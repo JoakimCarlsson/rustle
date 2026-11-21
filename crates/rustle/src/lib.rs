@@ -40,6 +40,7 @@ pub use host::Host;
 pub use preview::{
     PreviewOptions, preview, preview_pixels, preview_pixels_composing, preview_window,
 };
+pub use rustle_wgpu::{set_frame_latency, set_legible_text};
 pub use shadow::{ShadowLayer, WindowShadow};
 pub use window::{ResizeEdge, WindowHandle, WindowOptions, WindowTheme, current_window, window};
 pub use window_info::{LOCAL_WINDOW_INFO, WindowInfo};
@@ -154,7 +155,6 @@ pub use rustle_ui::{
     LOCAL_VIEW_CONFIGURATION, ViewConfiguration,
 };
 pub use rustle_unit::{Constraints, Dp, dp};
-pub use rustle_widgets::svg_icon;
 pub use rustle_widgets::{
     BadgeStyle, ButtonColors, ButtonDefaults, ButtonStyle, ColorScheme, ContentTransform,
     CornerSizes, EnterTransition, ExitTransition, Icon, MenuItem, PagerState, RippleConfiguration,
@@ -190,6 +190,7 @@ pub use rustle_widgets::{
 pub use rustle_widgets::{
     TooltipDefaults, TooltipState, dropdown_menu_anchored, remember_tooltip_state, tooltip_box,
 };
+pub use rustle_widgets::{icon_with, svg_icon};
 
 pub mod prelude {
     pub use crate::{

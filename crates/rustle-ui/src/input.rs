@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rustle_runtime::{State, group, remember};
+use rustle_runtime::{State, group, mutable_state, remember};
 
 /// A key, as far as text editing and navigation care.
 ///
@@ -581,6 +581,18 @@ pub struct Focus {
 }
 
 impl Focus {
+    /// A focus that belongs to no composition, as Compose's `FocusRequester()` made outside
+    /// one: a state holder keeps it and hands it to the composable that takes focus with
+    /// it, so it can ask for focus, and read whether it has it, before that composable is
+    /// composed and after it has left.
+    pub fn new() -> Self {
+        Self {
+            id: NEXT_FOCUS_ID.with(|next| next.replace(next.get() + 1)),
+            focused: mutable_state(false),
+            preedit: mutable_state(None),
+        }
+    }
+
     /// A number that is the same for as long as the focus is remembered.
     pub fn id(&self) -> u64 {
         self.id
@@ -626,6 +638,13 @@ impl Focus {
                 *request = None;
             }
         });
+    }
+}
+
+impl Default for Focus {
+    /// A focus that belongs to no composition; see [`Focus::new`].
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -692,6 +711,24 @@ pub fn clipboard() -> Option<Rc<dyn Clipboard>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A focus made outside any composition has its own id, starts without focus, can be
+    /// asked for and freed, and tells what the host records about it.
+    #[test]
+    fn a_focus_made_outside_composition_asks_and_tells() {
+        let (first, second) = (Focus::new(), Focus::default());
+        assert_ne!(first.id(), second.id());
+        assert!(!first.is_focused());
+        first.request_focus();
+        assert_eq!(
+            take_focus_request().map(|asked| asked.id()),
+            Some(first.id())
+        );
+        first.set_focused(true);
+        assert!(first.is_focused() && !second.is_focused());
+        first.free_focus();
+        assert_eq!(take_focus_release(), Some(first.id()));
+    }
 
     fn event(key: Key, code: KeyCode, modifiers: Modifiers) -> KeyEvent {
         KeyEvent {
