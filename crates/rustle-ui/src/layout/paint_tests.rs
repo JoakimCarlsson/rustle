@@ -69,6 +69,8 @@ fn paint_once(measured: &Measured) -> DisplayList {
         window: measured.size,
         grid: None,
         focus: None,
+        requester: None,
+        scroll_parents: Vec::new(),
         focus_observers: Vec::new(),
         key_scopes: Vec::new(),
         focused_flag: None,

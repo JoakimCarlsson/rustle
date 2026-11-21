@@ -1,8 +1,12 @@
+use std::cell::Cell;
 use std::rc::Rc;
+
+use rustle_geometry::Offset;
+use rustle_runtime::{group, is_composing, remember};
 
 use super::{Element, Modifier};
 use crate::indication::Indication;
-use crate::input::{Focus, PointerButton};
+use crate::input::{Focus, Key, KeyCode, KeyEvent, PhysicalKey, PointerButton};
 use crate::interaction_source::{
     FocusInteraction, HoverInteraction, Interaction, InteractionId, InteractionSource,
     MutableInteractionSource, PressInteraction,
@@ -106,13 +110,16 @@ impl Modifier {
         .focusable(focus, on_key)
     }
 
-    /// Runs `on_click` when the area is pressed and released with the primary button, and
-    /// reports its presses and hovers to `interaction_source`, drawn by `indication`: Compose's
-    /// `Modifier.clickable(interactionSource, indication, onClick)`.
+    /// Runs `on_click` when the area is pressed and released with the primary button, or
+    /// activated from the keyboard as [`clickable`](Self::clickable) is, and reports its
+    /// presses, those of the keys included, and hovers to `interaction_source`, drawn by
+    /// `indication`: Compose's `Modifier.clickable(interactionSource, indication, onClick)`.
     ///
     /// The built-in hover and press tint of [`clickable`](Self::clickable) is not drawn: the
     /// indication shows the interactions, and with `None` nothing does. Pass the
     /// [`LOCAL_INDICATION`](crate::LOCAL_INDICATION) for the one the surrounding theme gives.
+    /// As in Compose, the pointer keeps the cursor around it rather than showing a hand.
+    #[track_caller]
     pub fn clickable_with(
         self,
         interaction_source: &MutableInteractionSource,
@@ -121,7 +128,9 @@ impl Modifier {
     ) -> Self {
         let pressed = interaction_source.clone();
         let released = interaction_source.clone();
-        self.indication(interaction_source, indication)
+        let on_click: Rc<dyn Fn()> = Rc::new(on_click);
+        self.clicked_by_keys(Rc::clone(&on_click), Some(interaction_source.clone()))
+            .indication(interaction_source, indication)
             .hoverable(interaction_source)
             .on_pointer_event(
                 PointerEventType::Press,
@@ -146,6 +155,76 @@ impl Modifier {
                     }
                 },
             )
-            .then(Element::Clickable(Rc::new(on_click), false))
+            .then(Element::Clickable(on_click, false, false))
+    }
+
+    /// Makes the area the focus target of a clickable, activated by the keys Compose's
+    /// `clickable` takes: while it holds focus, one of them going down is taken and reported
+    /// to `interaction_source` as a press, and the same key coming up runs `on_click`.
+    #[track_caller]
+    pub(crate) fn clicked_by_keys(
+        self,
+        on_click: Rc<dyn Fn()>,
+        interaction_source: Option<MutableInteractionSource>,
+    ) -> Self {
+        let (focus, held) = clickable_focus();
+        self.then(Element::Focusable {
+            focus,
+            on_key: Rc::new(move |event| {
+                if !activates_click(event) {
+                    return false;
+                }
+                if event.pressed {
+                    if held.get() {
+                        return false;
+                    }
+                    held.set(true);
+                    if let Some(source) = &interaction_source {
+                        source.emit(PressInteraction::press(Offset::default()));
+                    }
+                    return true;
+                }
+                if !held.replace(false) {
+                    return false;
+                }
+                if let Some(source) = &interaction_source {
+                    source.end_latest(
+                        |interaction| matches!(interaction, Interaction::Press(_)),
+                        |press| PressInteraction::Release { press }.into(),
+                    );
+                }
+                on_click();
+                true
+            }),
+            takes_press: false,
+            pin: crate::pinnable::current_pinnable_container(),
+        })
+    }
+}
+
+/// The focus of a clickable and whether one of its keys is down, remembered at the call site
+/// of the clickable while composing, and new otherwise.
+#[track_caller]
+fn clickable_focus() -> (Focus, Rc<Cell<bool>>) {
+    if !is_composing() {
+        return (Focus::new(), Rc::default());
+    }
+    group(|| {
+        let focus = crate::input::remember_focus();
+        let held = remember(|| Rc::new(Cell::new(false))).get();
+        (focus, held)
+    })
+}
+
+/// Whether `event` is one of the keys that activate a clickable, going down or up: Enter,
+/// the keypad's Enter or the space bar, as Compose's `clickable` takes them.
+fn activates_click(event: &KeyEvent) -> bool {
+    match &event.key {
+        Key::Enter => true,
+        Key::Character(text) => text == " ",
+        _ => matches!(
+            event.physical_key,
+            PhysicalKey::Code(KeyCode::NumpadEnter | KeyCode::Space)
+        ),
     }
 }

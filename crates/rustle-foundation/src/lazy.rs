@@ -7,7 +7,10 @@ use std::time::Duration;
 use rustle_animation::{AnimationSpec, remember_animatable};
 use rustle_geometry::Size;
 use rustle_runtime::{State, frame_clock, group, key, launched_effect, remember};
-use rustle_ui::{Modifier, ScrollState, remember_scroll_state};
+use rustle_ui::{
+    LOCAL_PINNABLE_CONTAINER, Modifier, PinnableContainer, PinnedHandle, ScrollState,
+    remember_scroll_state,
+};
 
 use crate::linear::{column_with, row_with, spacer, stack_with};
 
@@ -385,11 +388,40 @@ impl LazyListState {
         if first {
             self.bump();
         }
-        PinnedHandle {
-            state: self.clone(),
-            key,
-            released: Cell::new(false),
+        let state = self.clone();
+        PinnedHandle::new(move || state.unpin(key))
+    }
+
+    /// Lets go of one pin of the item with `key`, which leaves the composition once it is
+    /// out of view and no other pin holds it.
+    fn unpin(&self, key: u64) {
+        let last = {
+            let mut pinned = self.inner.pinned.borrow_mut();
+            match pinned.get_mut(&key) {
+                Some(count) if *count > 1 => {
+                    *count -= 1;
+                    false
+                }
+                Some(_) => {
+                    pinned.remove(&key);
+                    true
+                }
+                None => false,
+            }
+        };
+        if last {
+            self.bump();
         }
+    }
+
+    /// The container through which the item with `key` is pinned, as the list provides it
+    /// in [`LOCAL_PINNABLE_CONTAINER`] to the item: told apart from others by the list and
+    /// the key.
+    fn pinnable_container(&self, key: u64) -> PinnableContainer {
+        let mut hasher = DefaultHasher::new();
+        (Rc::as_ptr(&self.inner) as usize, key).hash(&mut hasher);
+        let state = self.clone();
+        PinnableContainer::new(hasher.finish(), move || state.pin(key))
     }
 
     /// How far the start of the viewport is past the start of the first item in
@@ -423,81 +455,6 @@ impl LazyListState {
         }
     }
 }
-
-/// What an item of a lazy list can be pinned through, so it stays composed while it
-/// is scrolled out of view: Compose's `PinnableContainer`, read from
-/// [`LOCAL_PINNABLE_CONTAINER`] inside an item, as a focused item pins itself to keep
-/// its focus and state.
-#[derive(Clone, PartialEq)]
-pub struct PinnableContainer {
-    state: LazyListState,
-    key: u64,
-}
-
-impl std::fmt::Debug for PinnableContainer {
-    /// The key of the item.
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PinnableContainer")
-            .field("key", &self.key)
-            .finish()
-    }
-}
-
-impl PinnableContainer {
-    /// Pins the item: it stays composed, at its place in the list, while it is out of
-    /// view, until every handle pinning it is released. Compose's `pin()`.
-    pub fn pin(&self) -> PinnedHandle {
-        self.state.pin(self.key)
-    }
-}
-
-/// A pin on an item of a lazy list, from [`PinnableContainer::pin`]: Compose's
-/// `PinnedHandle`. Released by [`PinnedHandle::release`] or when dropped.
-pub struct PinnedHandle {
-    state: LazyListState,
-    key: u64,
-    released: Cell<bool>,
-}
-
-impl PinnedHandle {
-    /// Releases the pin; the item leaves the composition once it is out of view and no
-    /// other handle pins it. Releasing twice does nothing more. Compose's `release()`.
-    pub fn release(&self) {
-        if self.released.replace(true) {
-            return;
-        }
-        let last = {
-            let mut pinned = self.state.inner.pinned.borrow_mut();
-            match pinned.get_mut(&self.key) {
-                Some(count) if *count > 1 => {
-                    *count -= 1;
-                    false
-                }
-                Some(_) => {
-                    pinned.remove(&self.key);
-                    true
-                }
-                None => false,
-            }
-        };
-        if last {
-            self.state.bump();
-        }
-    }
-}
-
-impl Drop for PinnedHandle {
-    /// Releases the pin if it was not released.
-    fn drop(&mut self) {
-        self.release();
-    }
-}
-
-/// The [`PinnableContainer`] of the lazy list item being composed, or `None` outside
-/// one: Compose's `LocalPinnableContainer`.
-pub static LOCAL_PINNABLE_CONTAINER: rustle_runtime::CompositionLocal<Option<PinnableContainer>> =
-    rustle_runtime::CompositionLocal::new(|| None);
 
 /// Remembers a [`LazyListState`] at this call site.
 #[track_caller]
@@ -1057,10 +1014,7 @@ fn list_impl<K: Hash>(
                     } else {
                         0.0
                     };
-                    let container = PinnableContainer {
-                        state: state.clone(),
-                        key: item_key,
-                    };
+                    let container = state.pinnable_container(item_key);
                     item_cell(axis, state, item_key, spacing, shift, || {
                         LOCAL_PINNABLE_CONTAINER.provide(Some(container), || item(index))
                     });
@@ -1071,8 +1025,9 @@ fn list_impl<K: Hash>(
     });
 }
 
-/// The items a list composes, in order: those from `first` up to `last`, and those
-/// outside them that are pinned.
+/// The items a list composes, in order: those from `first` up to `last`, those outside them
+/// that are pinned, and the one on each side of a pinned item, beyond the bounds of what is
+/// pinned as the items beyond those in view are, so focus can move on from a pinned item.
 fn composed_items(
     keys: &[u64],
     first: usize,
@@ -1082,8 +1037,12 @@ fn composed_items(
     if pinned.is_empty() {
         return (first..last).collect();
     }
-    let before = (0..first).filter(|index| pinned.contains_key(&keys[*index]));
-    let after = (last..keys.len()).filter(|index| pinned.contains_key(&keys[*index]));
+    let near_pinned = |index: usize| {
+        (index.saturating_sub(1)..(index + 2).min(keys.len()))
+            .any(|near| pinned.contains_key(&keys[near]))
+    };
+    let before = (0..first).filter(|index| near_pinned(*index));
+    let after = (last..keys.len()).filter(|index| near_pinned(*index));
     before.chain(first..last).chain(after).collect()
 }
 
@@ -1135,10 +1094,7 @@ fn reversed_items(cells: &Cells<'_>, keys: &[u64], composed: &[usize], item: &im
             } else {
                 0.0
             };
-            let container = PinnableContainer {
-                state: cells.state.clone(),
-                key: item_key,
-            };
+            let container = cells.state.pinnable_container(item_key);
             item_cell_with(
                 cells.axis,
                 cells.state,

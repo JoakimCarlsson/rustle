@@ -99,25 +99,43 @@ impl Modifier {
 
     /// Takes all the width the parent offers, when it is bounded.
     pub fn fill_max_width(self) -> Self {
+        self.fill_max_width_with(1.0)
+    }
+
+    /// Takes `fraction` of the width the parent offers, when it is bounded, kept within the
+    /// least and most width it allows: Compose's `Modifier.fillMaxWidth(fraction)`.
+    pub fn fill_max_width_with(self, fraction: f32) -> Self {
         self.then(Element::FillMax {
-            width: true,
-            height: false,
+            width: Some(fraction),
+            height: None,
         })
     }
 
     /// Takes all the height the parent offers, when it is bounded.
     pub fn fill_max_height(self) -> Self {
+        self.fill_max_height_with(1.0)
+    }
+
+    /// Takes `fraction` of the height the parent offers, when it is bounded, kept within the
+    /// least and most height it allows: Compose's `Modifier.fillMaxHeight(fraction)`.
+    pub fn fill_max_height_with(self, fraction: f32) -> Self {
         self.then(Element::FillMax {
-            width: false,
-            height: true,
+            width: None,
+            height: Some(fraction),
         })
     }
 
     /// Takes all the space the parent offers, when it is bounded.
     pub fn fill_max_size(self) -> Self {
+        self.fill_max_size_with(1.0)
+    }
+
+    /// Takes `fraction` of the width and of the height the parent offers, each when it is
+    /// bounded, kept within what it allows: Compose's `Modifier.fillMaxSize(fraction)`.
+    pub fn fill_max_size_with(self, fraction: f32) -> Self {
         self.then(Element::FillMax {
-            width: true,
-            height: true,
+            width: Some(fraction),
+            height: Some(fraction),
         })
     }
 

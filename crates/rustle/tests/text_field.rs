@@ -368,3 +368,89 @@ fn the_selection_shows_while_the_field_has_focus() {
     let focused = highlighted(&embedded);
     assert!(focused > unfocused, "{unfocused} then {focused}");
 }
+
+/// The text context menu provided around a field is given what the field can do on its
+/// text: copy and cut its selection to the clipboard, paste over it as typing does, and
+/// select it all, each left out while it would not act.
+#[test]
+fn a_text_context_menu_is_given_the_operations_of_its_field() {
+    let memory = Rc::new(Memory::default());
+    set_clipboard(Rc::clone(&memory) as Rc<dyn Clipboard>);
+    let state = rustle::TextFieldState::with_selection("hello world", TextRange::new(0, 5));
+    let given: Rc<RefCell<Option<rustle::TextManager>>> = Rc::default();
+    let (field, kept) = (state.clone(), Rc::clone(&given));
+    let mut ui = interface(move || {
+        let kept = Rc::clone(&kept);
+        let menu = rustle::TextContextMenu::new(move |manager, content| {
+            *kept.borrow_mut() = Some(manager);
+            content();
+        });
+        rustle::LOCAL_TEXT_CONTEXT_MENU.provide(menu, || {
+            basic_text_field_with(
+                Modifier::new().size(300.0, 30.0),
+                &field,
+                BasicTextFieldOptions::default(),
+            );
+        });
+    });
+    let manager = given
+        .borrow()
+        .clone()
+        .expect("the menu was given the field");
+    assert_eq!(manager.selected_text, "hello");
+    (manager.copy.expect("a selection copies"))();
+    assert_eq!(memory.text().as_deref(), Some("hello"));
+    (manager.cut.expect("a selection cuts"))();
+    ui.update();
+    assert_eq!(state.text(), " world");
+    memory.set_text("a\nb");
+    let manager = given.borrow().clone().expect("composed again");
+    assert!(
+        manager.copy.is_none() && manager.cut.is_none(),
+        "nothing selected"
+    );
+    (manager.paste.expect("an editable field pastes"))();
+    ui.update();
+    assert_eq!(
+        state.text(),
+        "ab world",
+        "a single line drops the line break"
+    );
+    let manager = given.borrow().clone().expect("composed again");
+    (manager.select_all.expect("not all selected"))();
+    ui.update();
+    assert_eq!(state.selected_text(), "ab world");
+    let manager = given.borrow().clone().expect("composed again");
+    assert!(manager.select_all.is_none(), "all of it is selected");
+}
+
+/// A secure field offers neither copy nor cut, nor its selected text.
+#[test]
+fn a_secure_field_keeps_its_text_from_the_context_menu() {
+    let state = rustle::TextFieldState::with_selection("secret", TextRange::new(0, 6));
+    let given: Rc<RefCell<Option<rustle::TextManager>>> = Rc::default();
+    let (field, kept) = (state.clone(), Rc::clone(&given));
+    let _ui = interface(move || {
+        let kept = Rc::clone(&kept);
+        let menu = rustle::TextContextMenu::new(move |manager, content| {
+            *kept.borrow_mut() = Some(manager);
+            content();
+        });
+        rustle::LOCAL_TEXT_CONTEXT_MENU.provide(menu, || {
+            basic_secure_text_field(
+                Modifier::new().size(300.0, 30.0),
+                &field,
+                TextObfuscationMode::Hidden,
+                rustle::DEFAULT_OBFUSCATION_CHARACTER,
+                BasicTextFieldOptions::default(),
+            );
+        });
+    });
+    let manager = given
+        .borrow()
+        .clone()
+        .expect("the menu was given the field");
+    assert!(manager.copy.is_none() && manager.cut.is_none());
+    assert!(manager.selected_text.is_empty());
+    assert!(manager.paste.is_some());
+}

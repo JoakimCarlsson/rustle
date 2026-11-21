@@ -251,3 +251,71 @@ fn a_tooltip_shows_after_the_pointer_rests() {
         );
     }
 }
+
+/// A focusable popup takes every pointer event outside it, as Compose's focusable popup
+/// window does: the buttons an area beneath listens to and the events it hears with
+/// `on_pointer_event` do not reach it, while a popup that is not focusable lets them through.
+#[test]
+fn a_focusable_popup_takes_every_pointer_event_outside_it() {
+    for focusable in [true, false] {
+        let heard = Rc::new(Cell::new(0));
+        let count = Rc::clone(&heard);
+        let mut ui = interface(move || {
+            let (buttons, events) = (Rc::clone(&count), Rc::clone(&count));
+            stack_with(
+                Modifier::new()
+                    .fill_max_size()
+                    .on_pointer_button(PointerButton::Secondary, move |_| {
+                        buttons.set(buttons.get() + 1)
+                    })
+                    .on_pointer_event(
+                        rustle::PointerEventType::Press,
+                        rustle::PointerEventPass::Main,
+                        move |_| events.set(events.get() + 1),
+                    ),
+                || {
+                    popup_with(
+                        popup_position_provider_at_position(Offset::new(10.0, 10.0), 0.0),
+                        None,
+                        PopupProperties {
+                            focusable,
+                            ..PopupProperties::default()
+                        },
+                        || spacer(Modifier::new().size(40.0, 20.0)),
+                    );
+                },
+            );
+        });
+        ui.pointer_moved(Offset::new(200.0, 150.0));
+        ui.pointer_button(PointerButton::Secondary, true);
+        ui.pointer_button(PointerButton::Secondary, false);
+        ui.update();
+        assert_eq!(heard.get() == 0, focusable, "focusable: {focusable}");
+    }
+}
+
+/// A popup asks nothing of the layout it is declared in, its intrinsic size included, as
+/// Compose's `Popup` is an empty layout: a row sized to its content's widest and tallest
+/// stays the size of its other child, however large the popup's content.
+#[test]
+fn a_popup_adds_nothing_to_its_parents_intrinsic_size() {
+    let ui = interface(|| {
+        row_with(
+            Modifier::new()
+                .width_intrinsic(rustle::IntrinsicSize::Max)
+                .height_intrinsic(rustle::IntrinsicSize::Max)
+                .test_tag("row"),
+            || {
+                spacer(Modifier::new().size(40.0, 20.0));
+                popup_with(
+                    popup_position_provider_at_position(Offset::new(10.0, 10.0), 0.0),
+                    None,
+                    PopupProperties::default(),
+                    || spacer(Modifier::new().size(200.0, 120.0).test_tag("menu")),
+                );
+            },
+        );
+    });
+    assert_eq!(bounds(&ui, "row").size, Size::new(40.0, 20.0));
+    assert_eq!(bounds(&ui, "menu").size, Size::new(200.0, 120.0));
+}

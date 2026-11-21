@@ -338,7 +338,7 @@ impl Interface {
         }
         let target = self
             .pointer
-            .and_then(|pointer| self.display.hit_test(pointer))
+            .and_then(|pointer| self.display.click_target(pointer))
             .map(|region| region.rect);
         self.redraw = true;
         if !pressed {
@@ -356,7 +356,7 @@ impl Interface {
             // from when the button went down, which may be out of date.
             let pressed = self.pressed.take();
             if let (Some(pressed), Some(pointer)) = (pressed, self.pointer)
-                && let Some(region) = self.display.hit_test(pointer)
+                && let Some(region) = self.display.click_target(pointer)
                 && same_area(pressed, region.rect)
             {
                 let on_click = Rc::clone(&region.on_click);

@@ -67,6 +67,9 @@ pub(crate) struct Interface {
     /// Whether focus was given to an area not painted yet, whose observers are still to be
     /// told when it is.
     pub(crate) focus_unseen: bool,
+    /// The pin the area holding focus keeps on what it belongs to, such as the item of a
+    /// lazy list, so it stays composed while it holds focus.
+    pub(crate) focus_pin: Option<rustle_ui::PinnedHandle>,
     /// Text a key press just typed, so the same text arriving again from an input method is not typed twice.
     pub(crate) typed: Option<(Instant, String)>,
     /// Whether to print the input received (`RUSTLE_DEBUG_INPUT`).
@@ -138,6 +141,7 @@ impl Interface {
         mem::swap(&mut self.focused, &mut other.focused);
         mem::swap(&mut self.focus_observers, &mut other.focus_observers);
         mem::swap(&mut self.focus_unseen, &mut other.focus_unseen);
+        mem::swap(&mut self.focus_pin, &mut other.focus_pin);
         mem::swap(&mut self.typed, &mut other.typed);
         mem::swap(&mut self.long_press, &mut other.long_press);
         mem::swap(&mut self.hovered, &mut other.hovered);
@@ -272,7 +276,12 @@ impl Interface {
         };
         self.display
             .cursor_at(pointer)
-            .or_else(|| self.display.hit_test(pointer).map(|_| CursorIcon::Pointer))
+            .or_else(|| {
+                self.display
+                    .hit_test(pointer)
+                    .filter(|region| region.hand)
+                    .map(|_| CursorIcon::Pointer)
+            })
             .unwrap_or_default()
     }
 

@@ -18,6 +18,7 @@ mod interaction;
 pub mod interaction_source;
 mod layout;
 mod modifier;
+mod pinnable;
 pub mod pointer;
 mod popup;
 mod scroll;
@@ -66,6 +67,7 @@ pub use layout::{
     display_list_with, subcompose_layout,
 };
 pub use modifier::Modifier;
+pub use pinnable::{LOCAL_PINNABLE_CONTAINER, PinnableContainer, PinnedHandle};
 pub use pointer::{
     PointerButtons, PointerEventHandler, PointerEventPass, PointerEventRegion, PointerEventType,
     PointerInputChange,

@@ -201,6 +201,7 @@ impl Modifier {
             focus: focus.clone(),
             on_key: Rc::new(on_key),
             takes_press: true,
+            pin: crate::pinnable::current_pinnable_container(),
         })
     }
 
@@ -215,6 +216,7 @@ impl Modifier {
             focus: focus.clone(),
             on_key: Rc::new(|_| false),
             takes_press: false,
+            pin: crate::pinnable::current_pinnable_container(),
         })
     }
 
@@ -340,12 +342,31 @@ impl Modifier {
         })
     }
 
-    /// Runs `on_click` when the area is pressed and released with the primary button.
+    /// Runs `on_click` when the area is pressed and released with the primary button, or
+    /// activated from the keyboard: Compose's `Modifier.clickable(onClick)`.
+    ///
+    /// As in Compose, the area is focusable: Tab reaches it, while a press of the pointer
+    /// does not focus it. While it holds focus, Enter, the keypad's Enter or the space bar
+    /// going down and coming up again runs `on_click`; repeats of the held key are left to
+    /// the handlers around it. A [`focus_requester`](Self::focus_requester) before this gives
+    /// it that focus; otherwise it remembers its own, so call it while composing.
     ///
     /// The area is whatever the modifiers before this one add up to, so
     /// `padding` before `clickable` makes the padding clickable too.
+    #[track_caller]
     pub fn clickable(self, on_click: impl Fn() + 'static) -> Self {
-        self.then(Element::Clickable(Rc::new(on_click), true))
+        let on_click: Rc<dyn Fn()> = Rc::new(on_click);
+        self.clicked_by_keys(Rc::clone(&on_click), None)
+            .then(Element::Clickable(on_click, true, true))
+    }
+
+    /// Gives the first focus target inside the area `focus` in place of its own, Compose's
+    /// `Modifier.focusRequester(focusRequester)`: requesting it with
+    /// [`Focus::request_focus`] focuses that target, and the target's focus is read through
+    /// it. Put it before the [`clickable`](Self::clickable) or [`focusable`](Self::focusable)
+    /// it is for.
+    pub fn focus_requester(self, focus: &Focus) -> Self {
+        self.then(Element::FocusRequester(focus.clone()))
     }
 
     /// Reports `rect`, in the area's own coordinates, as where text input goes while the
@@ -365,7 +386,9 @@ impl Modifier {
     ///
     /// For areas that only take clicks so they do not reach what is behind,
     /// such as a dialog's backdrop.
+    ///
+    /// Unlike `clickable`, it is not focusable: it is for the pointer alone.
     pub fn clickable_plain(self, on_click: impl Fn() + 'static) -> Self {
-        self.then(Element::Clickable(Rc::new(on_click), false))
+        self.then(Element::Clickable(Rc::new(on_click), false, true))
     }
 }

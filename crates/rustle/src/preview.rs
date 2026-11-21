@@ -183,10 +183,14 @@ pub(crate) fn snapshot(
                             modifiers,
                         });
                     }
-                    if let Some(region) = display.hit_test(at) {
-                        (Rc::clone(&region.on_click))();
-                    }
                 }
+                let clicked = (button == PointerButton::Primary)
+                    .then(|| {
+                        display
+                            .click_target(at)
+                            .map(|region| Rc::clone(&region.on_click))
+                    })
+                    .flatten();
                 if let Some(region) = display.button_at(at, button) {
                     let on_event = Rc::clone(&region.on_event);
                     let event = |phase| PointerEvent {
@@ -204,6 +208,9 @@ pub(crate) fn snapshot(
                     ] {
                         on_event(&event(phase));
                     }
+                }
+                if let Some(on_click) = clicked {
+                    on_click();
                 }
             }
             "mod" => {

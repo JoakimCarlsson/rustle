@@ -1,6 +1,7 @@
 //! Text fields: editing, caret, selection, the clipboard, undo, what shapes input and
 //! output, and the decoration around the text, as Compose's `BasicTextField` has them.
 
+mod context_menu;
 mod state;
 mod transformation;
 
@@ -20,6 +21,7 @@ use rustle_ui::{
 use crate::LOCAL_TEXT_STYLE;
 use crate::selection::{LOCAL_TEXT_SELECTION_COLORS, in_selection_container};
 
+pub use context_menu::{LOCAL_TEXT_CONTEXT_MENU, TextContextMenu, TextManager};
 pub use state::{
     ChangeList, TextFieldBuffer, TextFieldState, TextFieldValue, TextRange, UndoState,
 };
@@ -776,6 +778,51 @@ struct Placed {
 /// around the decoration, the text placed where the decorator calls for it.
 #[track_caller]
 fn field(
+    outer: Modifier,
+    inner: Modifier,
+    state: &TextFieldState,
+    focus: &Focus,
+    settings: Settings,
+) {
+    let manager = text_manager(state, &settings);
+    let mut parts = Some((outer, inner, settings));
+    LOCAL_TEXT_CONTEXT_MENU.current().area(manager, &mut || {
+        if let Some((outer, inner, settings)) = parts.take() {
+            field_content(outer, inner, state, focus, settings);
+        }
+    });
+}
+
+/// The operations the field of `state` going by `settings` can do on its text now, for the
+/// context menu around it: those its shortcuts do, left out where the shortcut would not act.
+fn text_manager(state: &TextFieldState, settings: &Settings) -> TextManager {
+    let value = state.value();
+    let selected = value.selected_text().unwrap_or_default().to_owned();
+    let all = value.selection() == Some((0, value.length())) || value.length() == 0;
+    let shortcut = |letter: &'static str| -> Rc<dyn Fn()> {
+        let (state, settings) = (state.clone(), settings.clone());
+        Rc::new(move || {
+            state.shortcut(letter, false, &settings);
+        })
+    };
+    let copies = !settings.secure && !selected.is_empty();
+    let edits = !settings.read_only && !settings.disabled;
+    TextManager {
+        selected_text: if settings.secure {
+            String::new()
+        } else {
+            selected
+        },
+        cut: (copies && edits).then(|| shortcut("x")),
+        copy: copies.then(|| shortcut("c")),
+        paste: edits.then(|| shortcut("v")),
+        select_all: (!all).then(|| shortcut("a")),
+    }
+}
+
+/// Emits the field of `state` with `outer` around its decoration and `inner` around its text,
+/// holding `focus` and going by `settings`.
+fn field_content(
     outer: Modifier,
     inner: Modifier,
     state: &TextFieldState,

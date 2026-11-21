@@ -82,9 +82,11 @@ pub fn flow_row(
 }
 
 /// Emits a flow row with `options`: a limit on lines or children per line, and
-/// an arrangement for the space left in a line. Children with `weight` share
-/// what is left of their line in proportion to it. In a right-to-left layout
-/// lines start at the right edge.
+/// an arrangement for the space left in a line. Children with `weight` share what the
+/// other children and the spacing leave of their line in proportion to it, as Compose's
+/// `FlowRow` gives `Modifier.weight` children their share: lines are broken by a weighted
+/// child's least intrinsic width, and `weight_with(weight, false)` lets a child be
+/// shorter than its share. In a right-to-left layout lines start at the right edge.
 #[track_caller]
 pub fn flow_row_with(modifier: Modifier, options: FlowOptions, content: impl FnOnce()) {
     layout(
@@ -197,11 +199,23 @@ impl Flow {
         }
     }
 
+    /// Whether child `index` has a weight, so it shares what is left of its line.
+    fn weighted(children: &Children, index: usize) -> bool {
+        children.weight(index).is_some_and(|weight| weight > 0.0)
+    }
+
+    /// The main length child `index` takes when lines are broken: its least intrinsic length
+    /// when it is weighted, as Compose's `FlowRow` breaks weighted children, and the length it
+    /// would like otherwise.
+    fn breaking_main(&self, children: &mut Children, index: usize) -> f32 {
+        self.child_main(children, index, Self::weighted(children, index))
+    }
+
     /// The summed cross length of the lines children break into at `limit`.
     fn cross_intrinsic(&self, children: &mut Children, limit: f32) -> f32 {
         let count = children.len();
         let mains: Vec<f32> = (0..count)
-            .map(|index| self.child_main(children, index, false))
+            .map(|index| self.breaking_main(children, index))
             .collect();
         let lines = self.lines(&mains, limit);
         let shown = self.options.max_lines.unwrap_or(usize::MAX);
@@ -291,8 +305,12 @@ impl Layout for Flow {
         let count = children.len();
         let mut sizes = Vec::with_capacity(count);
         for index in 0..count {
-            let size = children.measure(index, loose(main_max));
-            sizes.push(self.split(size));
+            if Self::weighted(children, index) && main_max.is_finite() {
+                sizes.push((self.breaking_main(children, index), 0.0));
+            } else {
+                let size = children.measure(index, loose(main_max));
+                sizes.push(self.split(size));
+            }
         }
         let mains: Vec<f32> = sizes.iter().map(|(main, _)| *main).collect();
         let mut lines = self.lines(&mains, main_max);
@@ -314,26 +332,33 @@ impl Layout for Flow {
             let mut used = spacing + line.iter().map(|index| sizes[*index].0).sum::<f32>();
             let total_weight: f32 = line
                 .iter()
+                .filter(|index| Self::weighted(children, **index))
                 .filter_map(|index| children.weight(*index))
-                .map(|weight| weight.max(0.0))
                 .sum();
-            if total_weight > 0.0 {
+            if total_weight > 0.0 && main_max.is_finite() {
                 any_weight = true;
-                let leftover = if main_max.is_finite() {
-                    (main_max - used).max(0.0)
-                } else {
-                    0.0
-                };
+                let fixed = spacing
+                    + line
+                        .iter()
+                        .filter(|index| !Self::weighted(children, **index))
+                        .map(|index| sizes[*index].0)
+                        .sum::<f32>();
+                let remaining = (main_max - fixed).max(0.0);
                 for index in line {
-                    let Some(weight) = children.weight(*index) else {
+                    if !Self::weighted(children, *index) {
                         continue;
-                    };
-                    let main = sizes[*index].0 + leftover * weight.max(0.0) / total_weight;
-                    let cross_loose = (0.0, f32::INFINITY);
-                    let (min_width, max_width, min_height, max_height) = if self.vertical {
-                        (cross_loose.0, cross_loose.1, main, main)
+                    }
+                    let weight = children.weight(*index).unwrap_or_default();
+                    let main = remaining * weight / total_weight;
+                    let least = if children.weight_fills(*index) {
+                        main
                     } else {
-                        (main, main, cross_loose.0, cross_loose.1)
+                        0.0
+                    };
+                    let (min_width, max_width, min_height, max_height) = if self.vertical {
+                        (0.0, f32::INFINITY, least, main)
+                    } else {
+                        (least, main, 0.0, f32::INFINITY)
                     };
                     let size = children.measure(
                         *index,

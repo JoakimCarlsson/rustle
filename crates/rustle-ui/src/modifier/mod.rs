@@ -109,9 +109,11 @@ pub(crate) enum Element {
         min_height: Option<f32>,
         max_height: Option<f32>,
     },
+    /// Takes the fraction given of the width, of the height, or of both, that the parent
+    /// offers, when it is bounded.
     FillMax {
-        width: bool,
-        height: bool,
+        width: Option<f32>,
+        height: Option<f32>,
     },
     AspectRatio(f32),
     Offset {
@@ -208,7 +210,9 @@ pub(crate) enum Element {
         state: ScrollState,
         vertical: bool,
     },
-    Clickable(Rc<dyn Fn()>, bool),
+    /// What a click runs, whether the runner tints the area while hovered or pressed, and
+    /// whether the pointer shows a hand over it where nothing chooses the cursor.
+    Clickable(Rc<dyn Fn()>, bool, bool),
     Semantics(Semantics),
     /// What a press runs, and the view configuration its presses are counted by.
     Press(Rc<dyn Fn(PressEvent)>, crate::ViewConfiguration),
@@ -226,7 +230,11 @@ pub(crate) enum Element {
         on_key: KeyHandler,
         /// Whether a press of the primary button on the area gives it focus.
         takes_press: bool,
+        /// What the area belongs to that it pins while it holds focus.
+        pin: Option<crate::PinnableContainer>,
     },
+    /// The focus the first focus target inside takes in place of its own.
+    FocusRequester(Focus),
     /// Told whether the nearest focus target inside holds focus, each time that changes.
     FocusChanged(Rc<dyn Fn(bool)>),
     /// Names the area for tests that look it up.

@@ -84,6 +84,38 @@ fn layout_modifier_sizes_and_places_content() {
     assert_eq!(measure(&label(modifier, "abcd")), Size::new(42.0, 36.0));
 }
 
+/// A fraction of the room offered is taken as Compose's `fillMaxWidth(fraction)` takes it:
+/// that fraction of the most width or height, kept within the least, and nothing changed
+/// where the room is unbounded.
+#[test]
+fn fill_max_takes_a_fraction_of_the_room() {
+    let node = |modifier: Modifier| stack(modifier, vec![label(Modifier::new(), "ab")]);
+    assert_eq!(
+        measure(&node(Modifier::new().fill_max_width_with(0.5))),
+        Size::new(200.0, 16.0)
+    );
+    assert_eq!(
+        measure(&node(Modifier::new().fill_max_height_with(0.25))),
+        Size::new(16.0, 100.0)
+    );
+    assert_eq!(
+        measure(&node(Modifier::new().fill_max_size_with(0.5))),
+        Size::new(200.0, 200.0)
+    );
+    let least = Constraints {
+        min_width: 300.0,
+        max_width: 400.0,
+        min_height: 0.0,
+        max_height: f32::INFINITY,
+    };
+    let held = measure_node(
+        &node(Modifier::new().fill_max_size_with(0.5)),
+        least,
+        &mut FixedText,
+    );
+    assert_eq!(held.size, Size::new(300.0, 16.0));
+}
+
 /// An intrinsic width modifier sizes a stack to its widest child.
 #[test]
 fn intrinsic_width_takes_the_widest_child() {

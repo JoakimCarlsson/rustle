@@ -16,8 +16,8 @@ use crate::stack_with;
 /// The layer popups are drawn in: over everything else in the window.
 pub const POPUP_Z_INDEX: i32 = 1 << 20;
 
-/// Measures its children without limits and takes no room itself, so a popup leaves the
-/// layout it is declared in as it was.
+/// Measures its children without limits and takes no room itself, nor asks for any when
+/// asked its intrinsic size, so a popup leaves the layout it is declared in as it was.
 struct PopupLayout;
 
 impl Layout for PopupLayout {
@@ -36,6 +36,27 @@ impl Layout for PopupLayout {
             size: Size::default(),
             positions: vec![Offset::default(); children.len()],
         }
+    }
+
+    /// Nothing: a popup takes no room, so it asks nothing of the layout around it, as
+    /// Compose's `Popup` is an empty layout where it is declared.
+    fn min_intrinsic_width(&self, _: &mut Children, _: f32) -> f32 {
+        0.0
+    }
+
+    /// Nothing, as [`min_intrinsic_width`](Self::min_intrinsic_width) says.
+    fn max_intrinsic_width(&self, _: &mut Children, _: f32) -> f32 {
+        0.0
+    }
+
+    /// Nothing, as [`min_intrinsic_width`](Self::min_intrinsic_width) says.
+    fn min_intrinsic_height(&self, _: &mut Children, _: f32) -> f32 {
+        0.0
+    }
+
+    /// Nothing, as [`min_intrinsic_width`](Self::min_intrinsic_width) says.
+    fn max_intrinsic_height(&self, _: &mut Children, _: f32) -> f32 {
+        0.0
     }
 }
 

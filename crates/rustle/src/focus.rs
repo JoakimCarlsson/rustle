@@ -3,7 +3,9 @@
 use std::rc::Rc;
 
 use rustle_foundation::{Focus, Key, KeyEvent};
-use rustle_ui::{Preedit, take_focus_release, take_focus_request};
+use rustle_ui::{
+    DisplayList, FocusRegion, PinnableContainer, Preedit, take_focus_release, take_focus_request,
+};
 
 use crate::interface::Interface;
 
@@ -28,6 +30,7 @@ impl Interface {
             new.set_focused(true);
         }
         let lost = std::mem::take(&mut self.focus_observers);
+        self.focus_pin = None;
         let region = focus
             .as_ref()
             .and_then(|new| self.display.focus_region(new));
@@ -35,6 +38,10 @@ impl Interface {
         self.focus_observers = region
             .map(|region| region.on_focus_changed.clone())
             .unwrap_or_default();
+        if let Some(region) = region {
+            self.focus_pin = region.pin.as_ref().map(PinnableContainer::pin);
+            bring_into_view(&self.display, region);
+        }
         let gained = self.focus_observers.clone();
         self.focused = focus;
         self.focus_changed = true;
@@ -54,6 +61,8 @@ impl Interface {
             Some(region) => {
                 self.focus_observers = region.on_focus_changed.clone();
                 if std::mem::take(&mut self.focus_unseen) {
+                    self.focus_pin = region.pin.as_ref().map(PinnableContainer::pin);
+                    bring_into_view(&self.display, region);
                     tell(&self.focus_observers.clone(), true);
                 }
             }
@@ -143,6 +152,58 @@ impl Interface {
             }
             _ => false,
         }
+    }
+}
+
+/// Scrolls the scrolling areas `region` is inside, innermost first, so as much of it as fits
+/// is in view, as Compose's focus target asks its scrollable parents to bring it into view
+/// when it takes focus: an area already wholly in view, or covering the whole view, stays
+/// where it is, and one partly out of view moves the shorter way in. A scrolling area with
+/// nothing of it in view, such as one laid out before the window had a size, does not move.
+fn bring_into_view(display: &DisplayList, region: &FocusRegion) {
+    let mut area = region.bounds;
+    for &index in region.scrolls.iter().rev() {
+        let Some(scroll) = display.scrolls.get(index) else {
+            continue;
+        };
+        let (start, length, view_start, view_length) = if scroll.vertical {
+            (
+                area.origin.y,
+                area.size.height,
+                scroll.rect.origin.y,
+                scroll.rect.size.height,
+            )
+        } else {
+            (
+                area.origin.x,
+                area.size.width,
+                scroll.rect.origin.x,
+                scroll.rect.size.width,
+            )
+        };
+        let distance = scroll_distance(start - view_start, length, view_length);
+        if distance == 0.0 || view_length <= 0.0 {
+            continue;
+        }
+        scroll.state.scroll_drawn_by(distance);
+        if scroll.vertical {
+            area.origin.y -= distance;
+        } else {
+            area.origin.x -= distance;
+        }
+    }
+}
+
+/// How far to scroll so an area `length` long whose near edge is `leading` past the near edge
+/// of a view `view` long comes into view: Compose's default `BringIntoViewSpec`.
+fn scroll_distance(leading: f32, length: f32, view: f32) -> f32 {
+    let trailing = leading + length;
+    if (leading >= 0.0 && trailing <= view) || (leading < 0.0 && trailing > view) {
+        0.0
+    } else if leading.abs() < (trailing - view).abs() {
+        leading
+    } else {
+        trailing - view
     }
 }
 

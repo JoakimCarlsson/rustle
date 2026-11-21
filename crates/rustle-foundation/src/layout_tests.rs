@@ -483,7 +483,8 @@ fn flow_row_max_items_per_line() {
     assert_eq!(found["e"].origin, Offset::new(0.0, 20.0));
 }
 
-/// Weighted children share what is left of their line, and each line on its own.
+/// Weighted children share what the other children leave of their line, each line on its
+/// own, as Compose's `FlowRow` gives `Modifier.weight` children their share.
 #[test]
 fn flow_row_weights_share_each_line() {
     let found = flowed(
@@ -501,10 +502,29 @@ fn flow_row_weights_share_each_line() {
         LayoutDirection::Ltr,
     );
     assert_eq!(tuple(found["a"]), (0.0, 0.0, 20.0, 10.0));
-    assert_eq!(tuple(found["b"]), (20.0, 0.0, 25.0, 10.0));
-    assert_eq!(tuple(found["c"]), (45.0, 0.0, 55.0, 10.0));
+    assert_eq!(tuple(found["b"]), (20.0, 0.0, 20.0, 10.0));
+    assert_eq!(tuple(found["c"]), (40.0, 0.0, 60.0, 10.0));
     assert_eq!(tuple(found["d"]), (0.0, 10.0, 90.0, 10.0));
     assert_eq!(tuple(found["e"]), (90.0, 10.0, 10.0, 10.0));
+}
+
+/// With a limit on children per line, equally weighted children of different widths take
+/// equal shares of each line, spacing left out, as tiles of Compose's `FlowRow` with
+/// `maxItemsInEachRow` and `Modifier.weight(1f)` do; a weighted child is broken onto a line
+/// by its least width.
+#[test]
+fn flow_row_weights_make_equal_columns() {
+    let found = flowed(
+        false,
+        (110.0, 200.0),
+        FlowOptions::new(10.0, 0.0).max_items_per_line(2),
+        &[(30.0, 10.0), (60.0, 10.0), (20.0, 10.0)],
+        &[Some(1.0), Some(1.0), Some(1.0)],
+        LayoutDirection::Ltr,
+    );
+    assert_eq!(tuple(found["a"]), (0.0, 0.0, 50.0, 10.0));
+    assert_eq!(tuple(found["b"]), (60.0, 0.0, 50.0, 10.0));
+    assert_eq!(tuple(found["c"]), (0.0, 10.0, 110.0, 10.0));
 }
 
 /// A flow row in a right-to-left layout starts at the right edge.
@@ -546,9 +566,9 @@ fn flow_column_wraps_and_weights() {
         &[None, Some(1.0), Some(3.0)],
         LayoutDirection::Ltr,
     );
-    assert_eq!(weighted["b"].size.height, 25.0);
-    assert_eq!(weighted["c"].size.height, 55.0);
-    assert_eq!(weighted["c"].origin.y - weighted["flow"].origin.y, 45.0);
+    assert_eq!(weighted["b"].size.height, 20.0);
+    assert_eq!(weighted["c"].size.height, 60.0);
+    assert_eq!(weighted["c"].origin.y - weighted["flow"].origin.y, 40.0);
 }
 
 /// Columns of a flow column in a right-to-left layout start at the right edge.

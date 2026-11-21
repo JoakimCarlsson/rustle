@@ -104,6 +104,7 @@ pub use rustle_foundation::{
     basic_text_field, basic_text_field_in, is_rtl, is_system_in_dark_theme, remember_focus,
     remember_scroll_state, remember_text_field_state, selectable_text,
 };
+pub use rustle_foundation::{LOCAL_TEXT_CONTEXT_MENU, TextContextMenu, TextManager};
 pub use rustle_foundation::{
     SelectionPoint, SelectionState, basic_text_area_no_wrap, remember_selection_state,
     selection_container, selection_container_with,

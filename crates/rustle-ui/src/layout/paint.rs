@@ -15,7 +15,7 @@ use super::regions::{
     PressRegion, ScrollRegion, SemanticsNode, TaggedNode, intersect,
 };
 use crate::drag_and_drop::{DragAndDropSourceRegion, DragAndDropTargetRegion};
-use crate::input::Focus;
+use crate::input::{Focus, PointerButton};
 use crate::interaction::{Interaction, PointerState, resolve};
 use crate::modifier::{Fill, FocusedFn};
 use crate::popup::{PopupPlacement, popup_position};
@@ -168,6 +168,8 @@ impl LaidOut {
             window: self.window,
             grid: self.grid,
             focus: None,
+            requester: None,
+            scroll_parents: Vec::new(),
             focus_observers: Vec::new(),
             key_scopes: Vec::new(),
             focused_flag: None,
@@ -241,6 +243,12 @@ struct Painter<'a> {
     grid: Option<f32>,
     /// The focus of the nearest focusable around what is being painted.
     focus: Option<Focus>,
+    /// The focus a [`focus_requester`](crate::Modifier::focus_requester) around what is being
+    /// painted gives the first focus target inside it, until one takes it.
+    requester: Option<Focus>,
+    /// The scrolling areas around what is being painted, as indices into the list, outermost
+    /// first.
+    scroll_parents: Vec<usize>,
     /// The focus-change observers around what is being painted still waiting for the first
     /// focus target inside them, outermost first; the first one painted takes them all.
     focus_observers: Vec<Rc<dyn Fn(bool)>>,
@@ -279,9 +287,9 @@ impl<'a> Painter<'a> {
     /// Paints the popup `inner` where `placement`'s provider puts it against the innermost
     /// layout around it (or `rect`, its own place, at the root), and notes it in the list.
     /// Its size is the extent of what it holds, since a popup takes no room where it is. As
-    /// a window of its own does in Compose, a popup takes the presses and drags that land on
-    /// it, so they do not reach what lies beneath; a focusable one also takes those that land
-    /// outside it, and one that is not focusable lets them through.
+    /// a window of its own does in Compose, a popup takes the pointer events that land on it,
+    /// so they do not reach what lies beneath; a focusable one also takes those that land
+    /// outside it, every button included, and one that is not focusable lets them through.
     fn paint_popup(&mut self, placement: &PopupPlacement, inner: &'a Measured, rect: Rect) {
         let anchor = self.anchors.last().copied().unwrap_or(rect);
         let size = content_extent(inner);
@@ -305,14 +313,50 @@ impl<'a> Painter<'a> {
         self.paint(inner, at);
     }
 
-    /// Notes `rect` as an area that takes the presses, clicks and drags landing on it and
-    /// does nothing with them, so they do not reach what was painted beneath it.
+    /// Notes `rect` as an area that takes the presses, clicks and drags landing on it, the
+    /// events of every pointer button and those heard through
+    /// [`on_pointer_event`](crate::Modifier::on_pointer_event) and
+    /// [`pointer_input`](crate::Modifier::pointer_input), and does nothing with them, so they
+    /// do not reach what was painted beneath it.
     fn swallow_pointer(&mut self, rect: Rect) {
+        for button in [
+            PointerButton::Primary,
+            PointerButton::Secondary,
+            PointerButton::Middle,
+            PointerButton::Back,
+            PointerButton::Forward,
+        ] {
+            self.list.buttons.push(ButtonRegion {
+                rect,
+                origin: rect.origin,
+                button,
+                on_event: Rc::new(|_| {}),
+            });
+        }
+        self.list
+            .pointer_events
+            .push(crate::pointer::PointerEventRegion {
+                rect,
+                origin: rect.origin,
+                parent: None,
+                depth: 0,
+                event_type: crate::pointer::PointerEventType::Unknown,
+                pass: crate::pointer::PointerEventPass::Main,
+                on_event: Rc::new(|_| {}),
+            });
+        self.list.pointer_inputs.push(PointerInputRegion {
+            rect,
+            origin: rect.origin,
+            on_event: Rc::new(|_| false),
+        });
+        let buttons = self.list.buttons.len();
         self.list.regions.push(HitRegion {
             rect,
             corner_radius: 0.0,
             feedback: false,
+            hand: false,
             on_click: Rc::new(|| {}),
+            buttons_inside: buttons..buttons,
         });
         self.list.presses.push(PressRegion {
             rect,
@@ -1551,6 +1595,7 @@ impl<'a> Painter<'a> {
                 inner,
             } => {
                 self.push_clip(rect);
+                self.scroll_parents.push(self.list.scrolls.len());
                 self.list.scrolls.push(ScrollRegion {
                     rect: self.visible(rect),
                     state: state.clone(),
@@ -1563,6 +1608,7 @@ impl<'a> Painter<'a> {
                     Offset::new(exact.x - shift, exact.y)
                 };
                 self.paint(inner, inside);
+                self.scroll_parents.pop();
                 self.paint_scrollbar(rect, state, *vertical, *offset);
                 self.pop_clip();
             }
@@ -1657,12 +1703,19 @@ impl<'a> Painter<'a> {
                 self.key_scopes.pop();
                 self.list.key_handlers[index].focusables.end = self.list.focusables.len();
             }
+            Paint::FocusRequester { focus, inner } => {
+                let around = self.requester.replace(focus.clone());
+                self.paint(inner, exact);
+                self.requester = around;
+            }
             Paint::Focusable {
                 focus,
                 on_key,
                 takes_press,
+                pin,
                 inner,
             } => {
+                let focus = &self.requester.take().unwrap_or_else(|| focus.clone());
                 let on_focus_changed = std::mem::take(&mut self.focus_observers);
                 self.list.focusables.push(FocusRegion {
                     rect: self.visible(rect),
@@ -1670,6 +1723,9 @@ impl<'a> Painter<'a> {
                     on_key: Rc::clone(on_key),
                     takes_press: *takes_press,
                     on_focus_changed,
+                    bounds: rect,
+                    scrolls: self.scroll_parents.clone(),
+                    pin: pin.clone(),
                 });
                 let around = self.focus.replace(focus.clone());
                 self.paint(inner, exact);
@@ -1678,19 +1734,25 @@ impl<'a> Painter<'a> {
             Paint::Clickable {
                 on_click,
                 feedback,
+                hand,
                 inner,
             } => {
                 let corner_radius = match &inner.paint {
                     Paint::Background { corner_radius, .. } => *corner_radius,
                     _ => 0.0,
                 };
+                let index = self.list.regions.len();
+                let buttons = self.list.buttons.len();
                 self.list.regions.push(HitRegion {
                     rect: self.visible(rect),
                     corner_radius,
                     feedback: *feedback,
+                    hand: *hand,
                     on_click: Rc::clone(on_click),
+                    buttons_inside: buttons..buttons,
                 });
                 self.paint(inner, exact);
+                self.list.regions[index].buttons_inside.end = self.list.buttons.len();
             }
         }
     }
@@ -1724,6 +1786,9 @@ fn chain_focus(measured: &Measured) -> Option<Focus> {
     loop {
         at = match &at.paint {
             Paint::Focusable { focus, .. } => return Some(focus.clone()),
+            Paint::FocusRequester { focus, inner } => {
+                return chain_focus(inner).map(|_| focus.clone());
+            }
             Paint::Shared(shared) => shared,
             Paint::Background { inner, .. }
             | Paint::Draw { inner, .. }

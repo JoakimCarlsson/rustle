@@ -158,6 +158,14 @@ pub struct FocusRegion {
     /// What [`Modifier::on_focus_changed`](crate::Modifier::on_focus_changed) asked to be
     /// told when its focus comes or goes.
     pub on_focus_changed: Vec<Rc<dyn Fn(bool)>>,
+    /// Where the whole area was laid out in the window, before clips cut it.
+    pub bounds: Rect,
+    /// The scrolling areas it is inside, as indices into [`DisplayList::scrolls`], outermost
+    /// first, which bring it into view when it takes focus.
+    pub scrolls: Vec<usize>,
+    /// What the area belongs to that it pins while it holds focus, such as the item of a
+    /// lazy list, as Compose's focus target pins its `LocalPinnableContainer`.
+    pub pin: Option<crate::PinnableContainer>,
 }
 
 /// An area named for tests with [`Modifier::test_tag`](crate::Modifier::test_tag): Compose's
@@ -320,7 +328,13 @@ pub struct HitRegion {
     pub corner_radius: f32,
     /// Whether the runner tints the region while hovered or pressed.
     pub feedback: bool,
+    /// Whether the pointer shows a hand over the region where no cursor region chooses one.
+    pub hand: bool,
     pub on_click: Rc<dyn Fn()>,
+    /// The areas that listen to a pointer button painted inside the region, as indices into
+    /// [`DisplayList::buttons`]: one of them that listens to the primary button takes a press
+    /// from the region, as a gesture inside Compose's `clickable` consumes the press first.
+    pub buttons_inside: std::ops::Range<usize>,
 }
 
 /// An area that scrolls, cut to what is visible.
@@ -404,6 +418,19 @@ impl DisplayList {
             .iter()
             .rev()
             .find(|region| contains(region.rect, point))
+    }
+
+    /// The topmost clickable region containing `point` that a press of the primary button
+    /// there clicks: none when an area inside it that listens to the primary button contains
+    /// `point`, since that area takes the press.
+    pub fn click_target(&self, point: Offset) -> Option<&HitRegion> {
+        self.hit_test(point).filter(|region| {
+            !self.buttons[region.buttons_inside.clone()]
+                .iter()
+                .any(|button| {
+                    button.button == PointerButton::Primary && contains(button.rect, point)
+                })
+        })
     }
 
     /// The topmost focusable region containing `point`.

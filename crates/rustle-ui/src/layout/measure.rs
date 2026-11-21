@@ -93,11 +93,21 @@ pub(super) fn measure_modified(
         }
         Element::FillMax { width, height } => {
             let mut filled = constraints;
-            if *width && constraints.max_width.is_finite() {
-                filled.min_width = constraints.max_width;
+            if let Some(fraction) = width
+                && constraints.max_width.is_finite()
+            {
+                let filling = (constraints.max_width * fraction)
+                    .clamp(constraints.min_width, constraints.max_width);
+                filled.min_width = filling;
+                filled.max_width = filling;
             }
-            if *height && constraints.max_height.is_finite() {
-                filled.min_height = constraints.max_height;
+            if let Some(fraction) = height
+                && constraints.max_height.is_finite()
+            {
+                let filling = (constraints.max_height * fraction)
+                    .clamp(constraints.min_height, constraints.max_height);
+                filled.min_height = filling;
+                filled.max_height = filling;
             }
             next(filled)
         }
@@ -391,13 +401,18 @@ pub(super) fn measure_modified(
                 },
             }
         }
-        Element::Clickable(on_click, feedback) => {
+        Element::Clickable(on_click, feedback, hand) => {
             wrap(next(constraints), |inner| Paint::Clickable {
                 on_click: Rc::clone(on_click),
                 feedback: *feedback,
+                hand: *hand,
                 inner,
             })
         }
+        Element::FocusRequester(focus) => wrap(next(constraints), |inner| Paint::FocusRequester {
+            focus: focus.clone(),
+            inner,
+        }),
         Element::Semantics(semantics) => wrap(next(constraints), |inner| Paint::Semantics {
             semantics: semantics.clone(),
             inner,
@@ -427,10 +442,12 @@ pub(super) fn measure_modified(
             focus,
             on_key,
             takes_press,
+            pin,
         } => wrap(next(constraints), |inner| Paint::Focusable {
             focus: focus.clone(),
             on_key: Rc::clone(on_key),
             takes_press: *takes_press,
+            pin: pin.clone(),
             inner,
         }),
         Element::FocusChanged(on_focus_changed) => {

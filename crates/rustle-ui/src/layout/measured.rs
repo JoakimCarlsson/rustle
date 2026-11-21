@@ -230,6 +230,13 @@ pub(super) enum Paint {
     Clickable {
         on_click: Rc<dyn Fn()>,
         feedback: bool,
+        /// Whether the pointer shows a hand over the area where nothing chooses the cursor.
+        hand: bool,
+        inner: Box<Measured>,
+    },
+    /// The focus the first focus target inside takes in place of its own.
+    FocusRequester {
+        focus: Focus,
         inner: Box<Measured>,
     },
     Semantics {
@@ -259,6 +266,8 @@ pub(super) enum Paint {
         focus: Focus,
         on_key: KeyHandler,
         takes_press: bool,
+        /// What the area belongs to that it pins while it holds focus.
+        pin: Option<crate::PinnableContainer>,
         inner: Box<Measured>,
     },
     FocusChanged {
