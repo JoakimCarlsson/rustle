@@ -87,6 +87,10 @@ pub use rustle_foundation::{
     remember_scrollable_state, remember_transformable_state,
 };
 pub use rustle_foundation::{
+    AppendInlineContent, DEFAULT_ALTERNATE_TEXT, INLINE_CONTENT_TAG, InlineTextContent,
+    basic_text_annotated, text_annotated,
+};
+pub use rustle_foundation::{
     BasicTextFieldOptions, ByValue, ChangeList, DEFAULT_OBFUSCATION_CHARACTER, ImeAction,
     InputTransformation, KeyboardActionHandler, KeyboardOptions, KeyboardType, MaxLength,
     OutputTransformation, TextFieldBuffer, TextFieldDecorator, TextFieldLineLimits,
@@ -133,9 +137,12 @@ pub use rustle_runtime::{
 };
 pub use rustle_runtime::{Saver, Subcomposition, is_composing, mutable_state, set_saver};
 pub use rustle_text::{
-    Affinity, Caret, Cluster, FontFamily, FontWeight, LineLayout, TextLayout, TextSpan, TextStyle,
-    WrappedLine, ellipsize, font_epoch, font_families, layout_spans, layout_text,
-    monospace_font_families, register_font, wrap_at_spaces,
+    Affinity, AnnotatedRange, AnnotatedString, AnnotatedStringBuilder, AnnotationStyle, Caret,
+    Cluster, FontFamily, FontWeight, LineLayout, LinkAnnotation, LinkInteractionListener,
+    ParagraphStyle, Placeholder, PlaceholderVerticalAlign, SpanStyle, TextLayout, TextLinkStyles,
+    TextSpan, TextStyle, TextUnit, WrappedLine, build_annotated_string, ellipsize, font_epoch,
+    font_families, layout_spans, layout_text, monospace_font_families, register_font,
+    wrap_at_spaces,
 };
 pub use rustle_ui::{Children, Layout, LayoutResult, Node, collect, compose, emit, layout};
 pub use rustle_ui::{
@@ -152,8 +159,8 @@ pub use rustle_ui::{
     remember_platform_text_input_session,
 };
 pub use rustle_ui::{
-    DragAndDropEvent, DragAndDropTarget, DragAndDropTransferData, DragData,
-    LOCAL_VIEW_CONFIGURATION, ViewConfiguration,
+    DragAndDropEvent, DragAndDropTarget, DragAndDropTransferData, DragData, LOCAL_URI_HANDLER,
+    LOCAL_VIEW_CONFIGURATION, UriHandler, ViewConfiguration,
 };
 pub use rustle_unit::{Constraints, Dp, dp};
 pub use rustle_widgets::{

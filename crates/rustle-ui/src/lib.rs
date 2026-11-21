@@ -24,6 +24,7 @@ mod popup;
 mod scroll;
 mod semantics;
 mod text_input;
+mod uri_handler;
 mod view_configuration;
 
 #[cfg(test)]
@@ -85,6 +86,7 @@ pub use text_input::{
     PlatformTextInputMethodRequest, PlatformTextInputSession, TextInputRegion,
     remember_platform_text_input_session,
 };
+pub use uri_handler::{LOCAL_URI_HANDLER, UriHandler};
 pub use view_configuration::{LOCAL_VIEW_CONFIGURATION, ViewConfiguration};
 
 /// Which way layouts run: the start of a row is on the left in `Ltr` and on the right in `Rtl`.

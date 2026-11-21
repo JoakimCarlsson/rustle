@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use rustle_geometry::Size;
 use rustle_runtime::{CompositionLocal, State, mutable_state};
-use rustle_ui::{Density, LOCAL_DENSITY, Modifiers};
+use rustle_ui::{Density, LOCAL_DENSITY, LOCAL_URI_HANDLER, Modifiers, UriHandler};
 
 /// What the window content is shown in is like now: Compose's `WindowInfo`.
 ///
@@ -112,10 +112,22 @@ fn set_changed<T: Clone + PartialEq + 'static>(state: &State<T>, value: T) {
 pub static LOCAL_WINDOW_INFO: CompositionLocal<WindowInfo> = CompositionLocal::new(WindowInfo::new);
 
 /// Runs `content` with `info` as the window it is shown in, and its density as
-/// [`LOCAL_DENSITY`]; reading the density makes the caller compose again when it changes.
+/// [`LOCAL_DENSITY`], with a [`LOCAL_URI_HANDLER`] that hands addresses to the system through
+/// [`open_url`](crate::open_url); reading the density makes the caller compose again when it
+/// changes.
 pub(crate) fn provide_window<R>(info: &WindowInfo, content: impl FnOnce() -> R) -> R {
     let density = Density::new(info.density());
-    LOCAL_WINDOW_INFO.provide(info.clone(), || LOCAL_DENSITY.provide(density, content))
+    let handler = SYSTEM_URI_HANDLER.with(UriHandler::clone);
+    LOCAL_WINDOW_INFO.provide(info.clone(), || {
+        LOCAL_DENSITY.provide(density, || LOCAL_URI_HANDLER.provide(handler, content))
+    })
+}
+
+thread_local! {
+    /// The handler that hands addresses to the system, shared so every window provides the same.
+    static SYSTEM_URI_HANDLER: UriHandler = UriHandler::new(|uri| {
+        crate::open_url(uri);
+    });
 }
 
 #[cfg(test)]

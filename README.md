@@ -11,7 +11,7 @@ A declarative UI framework for Rust, modeled on Jetpack Compose. UI is written a
 - **Runtime**: `remember`, snapshot state, derived state, effects and tasks, composition locals, skipping and scoped recomposition
 - **Layout**: `Modifier` chains, rows, columns, stacks, flow and constraint layouts, lazy lists and grids
 - **Drawing**: gradients, shadows, clipping, layer effects, backdrop blur, vector paths, SVG and custom WGSL shaders
-- **Text**: rich, wrapped text, selection, text fields with input methods and undo
+- **Text**: rich, wrapped text, annotated strings with links, inline content and paragraph styles, selection, text fields with input methods and undo
 - **Input**: Compose-style pointer events, gestures, drag and drop, focus, keyboard, touch and pen
 - **Widgets**: a Material-style theme and a full set of components: buttons, dialogs, popups, menus, tooltips, sliders, tabs, charts and more
 - **Animation**: `animate_*_as_state`, `Animatable`, transitions, springs, keyframes and path morphing

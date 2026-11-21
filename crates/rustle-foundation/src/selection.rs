@@ -716,11 +716,11 @@ pub(crate) fn taking_part(modifier: Modifier, shaped: Shaped) -> Modifier {
             *held.borrow_mut() = found;
         })
         .draw_behind(move |canvas| {
-            let Some((text, layout)) = painted.borrow().clone() else {
+            let Some((_, layout)) = painted.borrow().clone() else {
                 return;
             };
             if let Some((from, to)) = state.covering(key) {
-                let (start, end) = (byte_of(&text, from), byte_of(&text, to));
+                let (start, end) = (byte_of(layout.text(), from), byte_of(layout.text(), to));
                 canvas.selection(0.0, 0.0, &layout, start, end, color);
             }
         })

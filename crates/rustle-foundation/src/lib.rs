@@ -3,6 +3,7 @@
 //! Everything here is a composable built on the primitives of `rustle-ui`.
 //! Each element has a plain form and a `_with` form taking a [`Modifier`].
 
+mod annotated_text;
 mod constraint;
 mod ellipsized;
 mod flow;
@@ -23,6 +24,10 @@ mod layout_tests;
 #[cfg(test)]
 mod lazy_motion_tests;
 
+pub use annotated_text::{
+    AppendInlineContent, DEFAULT_ALTERNATE_TEXT, INLINE_CONTENT_TAG, InlineTextContent,
+    basic_text_annotated, text_annotated,
+};
 pub use constraint::{
     Anchor, BarrierDirection, ChainStyle, ChildConstraints, ConstraintSet, Dimension,
     GuidePosition, Ref, constraint_layout,
