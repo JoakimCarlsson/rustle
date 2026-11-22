@@ -16,7 +16,7 @@ Rustle is a standalone declarative UI framework: a Cargo workspace of `rustle-*`
 - `make run`: the `hello_world` showcase.
 - `cargo run --example embedded -p rustle`: checks the embedding API headless (needs a GPU adapter).
 - `cargo test --workspace`.
-- `RUSTLE_SNAPSHOT=out.png` draws one frame without a window (see the README).
+- `RUSTLE_SNAPSHOT=out.png` draws one frame without a window (see `docs/development.md`).
 
 ## Layout of `rustle`
 
