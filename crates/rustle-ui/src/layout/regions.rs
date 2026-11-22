@@ -319,6 +319,9 @@ pub struct DragRegion {
     /// Whether a press here belongs to this drag alone, as one on a scrollbar does: the
     /// areas beneath are not pressed, focused or clicked.
     pub takes_pointer: bool,
+    /// How many areas seeing the raw pointer stream were painted before this one: those
+    /// painted after it lie over it.
+    pub inputs_before: usize,
 }
 
 /// An area that runs a handler when clicked, cut to what is visible.
@@ -599,6 +602,20 @@ impl DisplayList {
             .iter()
             .rev()
             .find(|region| contains(region.rect, point))
+    }
+
+    /// The scrollbar a press at `point` belongs to: the topmost drag region there when it
+    /// takes the pointer and no area seeing the raw pointer stream was painted over it, so
+    /// a handle lying over the edge of a scrolling area is the one dragged.
+    pub fn scrollbar_at(&self, point: Offset) -> Option<&DragRegion> {
+        self.drag_at(point).filter(|region| {
+            region.takes_pointer
+                && !self
+                    .pointer_inputs
+                    .iter()
+                    .skip(region.inputs_before)
+                    .any(|over| contains(over.rect, point))
+        })
     }
 
     /// The topmost region reacting to `button` that contains `point`.

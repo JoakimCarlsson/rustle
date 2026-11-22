@@ -1291,3 +1291,46 @@ fn presses_count_by_the_double_tap_timeout_provided_around_them() {
         assert_eq!(*counts.borrow(), expected);
     }
 }
+
+/// A handle drawn over the edge of a scrolling area takes a press on it: the handle is
+/// dragged and the scrollbar beneath it is left alone.
+#[test]
+fn a_handle_over_a_scrollbar_takes_the_press() {
+    let state = ScrollState::new(0.0);
+    state.set_scrollbar(ScrollbarStyle {
+        visibility: ScrollbarVisibility::Always,
+        ..ScrollbarStyle::default()
+    });
+    let held = slot();
+    let (shown, out) = (state.clone(), held.clone());
+    let mut ui = rig(move || {
+        let handle = remember_draggable_state();
+        *out.borrow_mut() = Some(handle.clone());
+        let shown = shown.clone();
+        stack_with(Modifier::new().size(200.0, 200.0), move || {
+            column_with(
+                Modifier::new().size(200.0, 200.0).vertical_scroll(&shown),
+                || spacer(Modifier::new().fill_max_width().height(1000.0)),
+            );
+            stack_with(
+                Modifier::new()
+                    .offset(190.0, 0.0)
+                    .size(10.0, 200.0)
+                    .draggable(&handle, Axis::Horizontal),
+                || {},
+            );
+        });
+    });
+    ui.update();
+    let handle: DraggableState = get(&held);
+    press_and_move(
+        &mut ui,
+        Offset::new(195.0, 20.0),
+        Offset::new(150.0, 120.0),
+        6,
+    );
+    assert!(handle.is_dragging());
+    assert!(!state.is_scrollbar_dragged());
+    assert_eq!(state.offset(), 0.0);
+    ui.pointer_button(PointerButton::Primary, false);
+}

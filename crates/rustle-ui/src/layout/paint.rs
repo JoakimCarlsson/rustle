@@ -370,6 +370,7 @@ impl<'a> Painter<'a> {
             origin: rect.origin,
             on_drag: Rc::new(|_| {}),
             takes_pointer: false,
+            inputs_before: self.list.pointer_inputs.len(),
         });
     }
 
@@ -707,6 +708,7 @@ impl<'a> Painter<'a> {
                 rect: visible,
                 origin: strip.origin,
                 takes_pointer: true,
+                inputs_before: self.list.pointer_inputs.len(),
                 on_drag: Rc::new(move |position| {
                     let along = if vertical { position.y } else { position.x };
                     drag_state.drag_thumb(along - MARGIN, track);
@@ -1619,6 +1621,7 @@ impl<'a> Painter<'a> {
                     origin,
                     on_drag: Rc::clone(on_drag),
                     takes_pointer: false,
+                    inputs_before: self.list.pointer_inputs.len(),
                 });
                 self.paint(inner, exact);
             }

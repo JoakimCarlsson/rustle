@@ -305,13 +305,10 @@ impl Interface {
 
     /// Starts dragging the scrollbar at `pointer`, if a press there belongs to one alone, as
     /// a scrollbar drawn over its content takes the pointer before the content in Compose;
-    /// says whether it did. Nothing beneath is pressed, focused or clicked.
+    /// says whether it did. Nothing beneath is pressed, focused or clicked. A bar with an area
+    /// that sees the raw pointer stream painted over it there leaves the press to that area.
     fn grab_scrollbar(&mut self, pointer: Offset) -> bool {
-        let Some(region) = self
-            .display
-            .drag_at(pointer)
-            .filter(|region| region.takes_pointer)
-        else {
+        let Some(region) = self.display.scrollbar_at(pointer) else {
             return false;
         };
         let (on_drag, origin) = (Rc::clone(&region.on_drag), region.origin);
@@ -397,7 +394,11 @@ impl Interface {
         let Some(pointer) = self.pointer else {
             return;
         };
-        if let Some(region) = self.display.drag_at(pointer) {
+        if let Some(region) = self
+            .display
+            .drag_at(pointer)
+            .filter(|region| !region.takes_pointer)
+        {
             let (on_drag, origin) = (Rc::clone(&region.on_drag), region.origin);
             on_drag(Offset::new(pointer.x - origin.x, pointer.y - origin.y));
             self.dragging = Some((on_drag, origin, region.on_end.clone()));
