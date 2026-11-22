@@ -686,6 +686,13 @@ pub trait Clipboard {
     fn text(&self) -> Option<String>;
     /// Puts `text` on the clipboard.
     fn set_text(&self, text: &str);
+    /// Puts `html` on the clipboard as rich text, with `text` as the plain-text alternative
+    /// for programs that do not read HTML. A clipboard that cannot hold HTML puts only
+    /// `text` there, which is what this default does.
+    fn set_html(&self, html: &str, text: &str) {
+        let _ = html;
+        self.set_text(text);
+    }
     /// The files copied in a file manager, if the clipboard holds a list of them.
     fn files(&self) -> Vec<std::path::PathBuf> {
         Vec::new()

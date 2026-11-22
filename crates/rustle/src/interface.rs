@@ -59,6 +59,12 @@ pub(crate) struct Interface {
     pub(crate) pressed_at: Option<Offset>,
     /// Where the pointer is, in logical pixels, while it is over the area.
     pub(crate) pointer: Option<Offset>,
+    /// Where the pointer last was over the area, kept after it leaves, so a button released
+    /// outside the area is still told somewhere to its areas.
+    pub(crate) pointer_last: Option<Offset>,
+    /// Buttons whose release was made up because the window lost them, such as when it lost
+    /// focus while they were held, so the real release, if it still arrives, is not told twice.
+    pub(crate) released_early: Vec<PointerButton>,
     /// What has keyboard focus.
     pub(crate) focused: Option<Focus>,
     /// What asked to be told when the focus held now goes: the focus-change observers of the
@@ -138,6 +144,7 @@ impl Interface {
         mem::swap(&mut self.laid_out, &mut other.laid_out);
         mem::swap(&mut self.pressed_at, &mut other.pressed_at);
         mem::swap(&mut self.pointer, &mut other.pointer);
+        mem::swap(&mut self.pointer_last, &mut other.pointer_last);
         mem::swap(&mut self.focused, &mut other.focused);
         mem::swap(&mut self.focus_observers, &mut other.focus_observers);
         mem::swap(&mut self.focus_unseen, &mut other.focus_unseen);

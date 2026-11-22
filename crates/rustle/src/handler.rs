@@ -148,6 +148,9 @@ impl App {
                 if let Some(info) = crate::window::window_info(self.key) {
                     info.set_focused(focused);
                 }
+                if !focused {
+                    self.ui.release_all_buttons();
+                }
                 self.observe_window_state();
             }
             WindowEvent::PointerEntered {

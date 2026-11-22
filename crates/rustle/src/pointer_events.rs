@@ -321,7 +321,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use rustle_ui::{Modifier, PointerEventPass};
+    use rustle_ui::{Modifier, PointerEventPass, PointerPhase};
 
     use crate::Embedded;
     use crate::testing::{embedded, stack_sized};
@@ -613,5 +613,64 @@ mod tests {
         ui.pointer_moved(Offset::new(10.0, 10.0));
         assert!(ui.wheel(Offset::new(0.0, -48.0)));
         assert_eq!(*seen.borrow(), [48.0]);
+    }
+
+    /// An interface 100 by 100 whose whole area logs the phases of the secondary button.
+    fn secondary_logged(phases: &Rc<RefCell<Vec<(PointerPhase, Offset)>>>) -> Embedded {
+        let phases = Rc::clone(phases);
+        embedded(100, 100, move || {
+            let phases = Rc::clone(&phases);
+            stack_sized(
+                Modifier::new()
+                    .size(100.0, 100.0)
+                    .on_pointer_button(PointerButton::Secondary, move |event| {
+                        phases.borrow_mut().push((event.phase, event.position))
+                    }),
+                || {},
+            );
+        })
+    }
+
+    #[test]
+    fn a_button_released_after_the_pointer_left_is_told_where_it_last_was() {
+        let phases = Rc::new(RefCell::new(Vec::new()));
+        let mut ui = secondary_logged(&phases);
+        ui.pointer_moved(Offset::new(10.0, 10.0));
+        ui.pointer_button(PointerButton::Secondary, true);
+        ui.pointer_moved(Offset::new(99.0, 50.0));
+        ui.pointer_left();
+        ui.pointer_button(PointerButton::Secondary, false);
+        let seen: Vec<PointerPhase> = phases.borrow().iter().map(|(phase, _)| *phase).collect();
+        assert_eq!(seen.first(), Some(&PointerPhase::Press));
+        assert_eq!(seen.last(), Some(&PointerPhase::Release));
+        assert!(!seen.contains(&PointerPhase::Click));
+        assert_eq!(
+            phases.borrow().last().map(|(_, at)| *at),
+            Some(Offset::new(99.0, 50.0))
+        );
+    }
+
+    #[test]
+    fn letting_go_of_held_buttons_releases_them_once() {
+        let phases = Rc::new(RefCell::new(Vec::new()));
+        let mut ui = secondary_logged(&phases);
+        ui.pointer_moved(Offset::new(10.0, 10.0));
+        ui.pointer_button(PointerButton::Secondary, true);
+        ui.release_pointer_buttons();
+        ui.pointer_button(PointerButton::Secondary, false);
+        let releases = phases
+            .borrow()
+            .iter()
+            .filter(|(phase, _)| *phase == PointerPhase::Release)
+            .count();
+        assert_eq!(releases, 1);
+        ui.pointer_button(PointerButton::Secondary, true);
+        ui.pointer_button(PointerButton::Secondary, false);
+        let releases = phases
+            .borrow()
+            .iter()
+            .filter(|(phase, _)| *phase == PointerPhase::Release)
+            .count();
+        assert_eq!(releases, 2);
     }
 }

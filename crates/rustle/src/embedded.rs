@@ -379,6 +379,15 @@ impl Embedded {
         self.ui.after_input();
     }
 
+    /// Lets go of every mouse button held, as if each was released where the pointer is or
+    /// last was, for a host that knows their releases will not reach it, such as when its
+    /// window lost focus while they were held. A release that still arrives afterwards
+    /// through [`pointer_button`](Embedded::pointer_button) is ignored.
+    pub fn release_pointer_buttons(&mut self) {
+        self.ui.release_all_buttons();
+        self.ui.after_input();
+    }
+
     /// A pointer button went down or up where the pointer is.
     ///
     /// Returns whether the pointer is over the interface, in which case the button belongs to

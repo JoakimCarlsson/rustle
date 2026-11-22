@@ -62,6 +62,7 @@ impl Interface {
     pub(crate) fn pointer_moved(&mut self, pointer: Offset) {
         let before = hover_target(&self.display, self.pointer);
         self.pointer = Some(pointer);
+        self.pointer_last = Some(pointer);
         self.update_following();
         if let Some(carrying) = &mut self.carrying
             && !carrying.active
@@ -106,6 +107,16 @@ impl Interface {
     /// Like [`button_input`](Self::button_input); `mouse` says whether the button belongs to
     /// the mouse, as opposed to a contact that stands in for the primary button.
     pub(crate) fn button_input_from(&mut self, button: PointerButton, pressed: bool, mouse: bool) {
+        let early = self
+            .released_early
+            .iter()
+            .position(|early| *early == button);
+        if let Some(index) = early {
+            self.released_early.remove(index);
+            if !pressed {
+                return;
+            }
+        }
         let held = if self.pointer.is_some() || !pressed {
             self.pointer_event_button(button, pressed)
         } else {
@@ -174,44 +185,83 @@ impl Interface {
         if button != PointerButton::Primary {
             self.finish_carrying(button);
         }
-        if let Some(index) = self
-            .held_buttons
-            .iter()
-            .position(|held| held.button == button)
-        {
-            let held = self.held_buttons.remove(index);
-            // The handler that runs is the current one for the area, not the one from the press.
-            let current = self
-                .display
-                .buttons
-                .iter()
-                .rev()
-                .find(|region| region.button == button && same_area(region.rect, held.rect))
-                .map(|region| (Rc::clone(&region.on_event), region.origin));
-            if let Some((on_event, origin)) = current {
-                let event = |phase| PointerEvent {
-                    click_count: held.click_count,
-                    ..self.pointer_event(button, phase, pointer, origin)
-                };
-                on_event(&event(PointerPhase::Release));
-                let over = self
-                    .display
-                    .button_at(pointer, button)
-                    .is_some_and(|region| same_area(region.rect, held.rect));
-                if over {
-                    on_event(&event(PointerPhase::Click));
-                }
-            }
-        }
+        self.release_held_button(button, pointer, true);
         if button == PointerButton::Primary {
             self.primary_button(false);
         }
     }
 
+    /// Tells the area `button` went down on that it came up at `pointer`, in the window's
+    /// logical pixels, and that it was clicked when `may_click` and `pointer` is still over
+    /// that area. The handler that runs is the area's current one, not the one from the press.
+    fn release_held_button(&mut self, button: PointerButton, pointer: Offset, may_click: bool) {
+        let Some(index) = self
+            .held_buttons
+            .iter()
+            .position(|held| held.button == button)
+        else {
+            return;
+        };
+        let held = self.held_buttons.remove(index);
+        let current = self
+            .display
+            .buttons
+            .iter()
+            .rev()
+            .find(|region| region.button == button && same_area(region.rect, held.rect))
+            .map(|region| (Rc::clone(&region.on_event), region.origin));
+        let Some((on_event, origin)) = current else {
+            return;
+        };
+        let event = |phase| PointerEvent {
+            click_count: held.click_count,
+            ..self.pointer_event(button, phase, pointer, origin)
+        };
+        on_event(&event(PointerPhase::Release));
+        let over = may_click
+            && self
+                .display
+                .button_at(pointer, button)
+                .is_some_and(|region| same_area(region.rect, held.rect));
+        if over {
+            on_event(&event(PointerPhase::Click));
+        }
+    }
+
+    /// Lets go of every mouse button held, as if each was released where the pointer is or
+    /// last was, for when the window will not hear their releases, such as when it lost
+    /// focus while they were held. A release that still arrives afterwards is ignored.
+    pub(crate) fn release_all_buttons(&mut self) {
+        let mut buttons: Vec<PointerButton> = [
+            PointerButton::Primary,
+            PointerButton::Secondary,
+            PointerButton::Middle,
+            PointerButton::Back,
+            PointerButton::Forward,
+        ]
+        .into_iter()
+        .filter(|button| self.pointer_buttons.is_pressed(*button))
+        .filter(|button| *button != PointerButton::Primary || self.primary_contact.is_none())
+        .collect();
+        for held in &self.held_buttons {
+            if !buttons.contains(&held.button) {
+                buttons.push(held.button);
+            }
+        }
+        for button in buttons {
+            self.button_input_from(button, false, true);
+            self.released_early.push(button);
+        }
+    }
+
     /// A button was released after the pointer left the area, so nothing says where: the
-    /// raw pointer stream of the mouse ends where it last was, and what `button` carried is
-    /// put down without being dropped.
+    /// raw pointer stream of the mouse ends where it last was, the area `button` went down on
+    /// hears it come up where the pointer last was, without a click, and what `button`
+    /// carried is put down without being dropped.
     fn release_without_pointer(&mut self, button: PointerButton, mouse: bool) {
+        if let Some(last) = self.pointer_last {
+            self.release_held_button(button, last, false);
+        }
         if button == PointerButton::Primary && mouse {
             let last = self
                 .pointers
