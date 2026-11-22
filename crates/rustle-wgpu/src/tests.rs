@@ -1056,3 +1056,50 @@ fn svg_text_is_set_with_the_text_engines_fonts() {
     let image = painter.rasterize(60, 30).unwrap();
     assert!(image.pixels().chunks(4).any(|pixel| pixel[3] > 0));
 }
+
+/// Text limited to one line draws only its first line, though it holds a line break.
+#[test]
+fn a_one_line_text_draws_no_second_line() {
+    let Some(mut renderer) = renderer(128) else {
+        return;
+    };
+    let said = |content: &str| match words(8.0, 8.0) {
+        DrawCommand::Text {
+            x,
+            y,
+            width,
+            color,
+            font_size,
+            line_height,
+            font_weight,
+            font_family,
+            align,
+            max_lines,
+            italic,
+            letter_spacing,
+            ligatures,
+            wrap,
+            ..
+        } => DrawCommand::Text {
+            x,
+            y,
+            width,
+            content: content.into(),
+            color,
+            font_size,
+            line_height,
+            font_weight,
+            font_family,
+            align,
+            max_lines,
+            italic,
+            letter_spacing,
+            ligatures,
+            wrap,
+        },
+        other => other,
+    };
+    let one = draw(&mut renderer, &[said("Rustle")]);
+    let broken = draw(&mut renderer, &[said("Rustle\nRustle")]);
+    assert_eq!(differing(&one, &broken, (0, 0, 128, 128), 8), 0);
+}

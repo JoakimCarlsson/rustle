@@ -267,7 +267,8 @@ fn measure_plain(
         max_width.is_finite().then_some(max_width),
     );
     // A trailing line break leaves an empty last line the shaper does not report.
-    let breaks = content.matches('\n').count() as u32 + 1;
+    let breaks =
+        (content.matches('\n').count() + 1).min(style.max_lines.unwrap_or(usize::MAX)) as u32;
     size_of_buffer(&buffer, style.line_height, breaks)
 }
 
@@ -508,7 +509,9 @@ fn attributes(
     attrs
 }
 
-/// Shapes text in logical pixels, wrapping at `width` if there is one.
+/// Shapes text in logical pixels, wrapping at `width` if there is one. Text limited to a
+/// number of lines keeps at most that many of its own lines, so a line break in it never
+/// shows more lines than the limit.
 pub(super) fn shape(
     font_system: &mut FontSystem,
     setting: Setting<'_>,
@@ -597,6 +600,9 @@ pub(super) fn shape(
             alignment,
         ),
     }
+    if let Some(lines) = setting.max_lines {
+        buffer.lines.truncate(lines.max(1));
+    }
     buffer.shape_until_scroll(font_system, false);
     buffer
 }
@@ -629,6 +635,26 @@ mod tests {
         assert_eq!(rich, rich_measure_key(&spans.clone(), &style, 100.0, 7));
         assert_ne!(plain, rich);
         assert_ne!(plain, plain_measure_key("other", &style, 100.0, 7));
+    }
+
+    /// Text limited to one line is one line tall and no wider than its first line, though
+    /// it holds a line break, plain or in runs.
+    #[test]
+    fn a_line_limit_holds_across_line_breaks() {
+        let mut metrics = TextMetrics::new();
+        let one = TextStyle::default().max_lines(1);
+        let first = metrics.measure("short", &one, f32::INFINITY);
+        let broken = metrics.measure("short\na much longer second line", &one, f32::INFINITY);
+        assert_eq!(broken, first);
+        let rich = metrics.measure_spans(&[span("short")], &one, f32::INFINITY);
+        let rich_broken = metrics.measure_spans(
+            &[span("short\na much longer second line")],
+            &one,
+            f32::INFINITY,
+        );
+        assert_eq!(rich_broken, rich);
+        let two = metrics.measure("a\nb\nc", &TextStyle::default().max_lines(2), f32::INFINITY);
+        assert_eq!(two.height, first.height * 2.0);
     }
 
     /// Every base-style property contributes to both plain and rich keys.
