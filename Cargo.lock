@@ -2206,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "rustle"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2239,7 +2239,7 @@ dependencies = [
 
 [[package]]
 name = "rustle-animation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustle-graphics",
  "rustle-runtime",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "rustle-charts"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "qrcode",
  "rustle-foundation",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "rustle-foundation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustle-animation",
  "rustle-geometry",
@@ -2271,11 +2271,11 @@ dependencies = [
 
 [[package]]
 name = "rustle-geometry"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "rustle-graphics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fontdb 0.24.0",
  "image",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "rustle-icons"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustle-graphics",
  "rustle-icons-macros",
@@ -2293,14 +2293,14 @@ dependencies = [
 
 [[package]]
 name = "rustle-icons-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "svgtypes",
 ]
 
 [[package]]
 name = "rustle-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "quote",
  "syn 3.0.9",
@@ -2308,22 +2308,22 @@ dependencies = [
 
 [[package]]
 name = "rustle-navigation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustle-runtime",
 ]
 
 [[package]]
 name = "rustle-runtime"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "rustle-shaders"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "rustle-text"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustle-geometry",
  "rustle-graphics",
@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "rustle-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustle-geometry",
  "rustle-graphics",
@@ -2342,14 +2342,14 @@ dependencies = [
 
 [[package]]
 name = "rustle-unit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustle-geometry",
 ]
 
 [[package]]
 name = "rustle-wgpu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytemuck",
  "glyphon",
@@ -2364,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "rustle-widgets"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustle-animation",
  "rustle-foundation",
