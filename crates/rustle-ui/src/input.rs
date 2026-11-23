@@ -693,6 +693,12 @@ pub trait Clipboard {
         let _ = html;
         self.set_text(text);
     }
+    /// The rich text on the clipboard as HTML, if it holds any, as a browser or a word
+    /// processor puts it there beside the plain text. A clipboard that cannot read HTML
+    /// has none, which is what this default says.
+    fn html(&self) -> Option<String> {
+        None
+    }
     /// The files copied in a file manager, if the clipboard holds a list of them.
     fn files(&self) -> Vec<std::path::PathBuf> {
         Vec::new()
@@ -718,6 +724,27 @@ pub fn clipboard() -> Option<Rc<dyn Clipboard>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A clipboard that only reads and writes text, as a test's fake does.
+    struct TextOnly;
+
+    impl Clipboard for TextOnly {
+        fn text(&self) -> Option<String> {
+            Some("plain".into())
+        }
+
+        fn set_text(&self, _text: &str) {}
+    }
+
+    /// A clipboard that does not read rich text, files or pictures has none of them.
+    #[test]
+    fn a_text_only_clipboard_has_no_html_files_or_picture() {
+        let clipboard = TextOnly;
+        assert_eq!(clipboard.html(), None);
+        assert!(clipboard.files().is_empty());
+        assert_eq!(clipboard.image(), None);
+        assert_eq!(clipboard.text().as_deref(), Some("plain"));
+    }
 
     /// A focus made outside any composition has its own id, starts without focus, can be
     /// asked for and freed, and tells what the host records about it.

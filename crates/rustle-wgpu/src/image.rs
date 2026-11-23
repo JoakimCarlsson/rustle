@@ -5,7 +5,7 @@ use crate::srgb_to_linear;
 use std::collections::HashMap;
 
 use rustle_geometry::Rect;
-use rustle_graphics::{Color, DrawCommand, ImageData, ImageKey};
+use rustle_graphics::{Color, DrawCommand, ImageData, ImageKey, PixelFormat, PixelRect};
 use wgpu::util::DeviceExt;
 
 /// One picture as the shader reads it, in physical pixels.
@@ -261,27 +261,33 @@ impl Images {
     }
 
     /// Makes sure the texture cached for `image` holds it: uploads a new picture, writes a new
-    /// generation of a live picture into its texture when the size is unchanged, and makes the
-    /// texture again when it is not.
+    /// generation of a live picture into its texture when the size and pixel format are
+    /// unchanged (only the rectangle it says changed when the texture holds the generation it
+    /// changed from), and makes the texture again when they are not.
     fn ensure(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &ImageData) {
         let slot = slot(image);
+        let format = self.texture_format(image.format());
         if let Some(cached) = self.textures.get_mut(&slot) {
             cached.last_used = self.frame;
             if cached.generation == image.generation() {
                 return;
             }
             let size = cached.texture.size();
-            if (size.width, size.height) == (image.width(), image.height()) {
-                write_pixels(queue, &cached.texture, image);
+            if (size.width, size.height) == (image.width(), image.height())
+                && cached.texture.format() == format
+            {
+                let rect = image
+                    .change()
+                    .filter(|(previous, _)| image.key().is_some() && *previous == cached.generation)
+                    .map_or_else(
+                        || PixelRect::new(0, 0, image.width(), image.height()),
+                        |(_, rect)| rect,
+                    );
+                write_pixels(queue, &cached.texture, image, rect);
                 cached.generation = image.generation();
                 return;
             }
         }
-        let format = if self.srgb_target {
-            wgpu::TextureFormat::Rgba8UnormSrgb
-        } else {
-            wgpu::TextureFormat::Rgba8Unorm
-        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("picture"),
             size: wgpu::Extent3d {
@@ -296,7 +302,12 @@ impl Images {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        write_pixels(queue, &texture, image);
+        write_pixels(
+            queue,
+            &texture,
+            image,
+            PixelRect::new(0, 0, image.width(), image.height()),
+        );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("picture"),
@@ -321,6 +332,28 @@ impl Images {
                 last_used: self.frame,
             },
         );
+    }
+
+    /// The texture format a picture whose bytes are in the order `format` is kept in: sRGB
+    /// encoded when the target is, so sampling decodes it as the target encodes it again.
+    fn texture_format(&self, format: PixelFormat) -> wgpu::TextureFormat {
+        match (format, self.srgb_target) {
+            (PixelFormat::Rgba8, true) => wgpu::TextureFormat::Rgba8UnormSrgb,
+            (PixelFormat::Rgba8, false) => wgpu::TextureFormat::Rgba8Unorm,
+            (PixelFormat::Bgra8, true) => wgpu::TextureFormat::Bgra8UnormSrgb,
+            (PixelFormat::Bgra8, false) => wgpu::TextureFormat::Bgra8Unorm,
+        }
+    }
+
+    /// Makes sure the texture for `image` holds it, as drawing it would, without drawing.
+    #[cfg(test)]
+    pub(crate) fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &ImageData,
+    ) {
+        self.ensure(device, queue, image);
     }
 
     /// How many picture textures are kept.
@@ -363,24 +396,36 @@ impl Images {
     }
 }
 
-/// Writes `image`'s pixels into `texture`, which is its size.
-fn write_pixels(queue: &wgpu::Queue, texture: &wgpu::Texture, image: &ImageData) {
+/// Writes the pixels of `image` inside `rect` into the same rectangle of `texture`, which is
+/// the image's size and pixel format; wgpu copies only the rows of the rectangle, and of each
+/// only its width. Nothing is written for an empty rectangle.
+fn write_pixels(queue: &wgpu::Queue, texture: &wgpu::Texture, image: &ImageData, rect: PixelRect) {
+    if rect.is_empty() {
+        return;
+    }
+    let row = image.width() as usize * 4;
+    let start = rect.y as usize * row + rect.x as usize * 4;
+    let end = (rect.y + rect.height - 1) as usize * row + (rect.x + rect.width) as usize * 4;
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
+            origin: wgpu::Origin3d {
+                x: rect.x,
+                y: rect.y,
+                z: 0,
+            },
             aspect: wgpu::TextureAspect::All,
         },
-        image.pixels(),
+        &image.pixels()[start..end],
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(image.width() * 4),
-            rows_per_image: Some(image.height()),
+            rows_per_image: Some(rect.height),
         },
         wgpu::Extent3d {
-            width: image.width(),
-            height: image.height(),
+            width: rect.width,
+            height: rect.height,
             depth_or_array_layers: 1,
         },
     );

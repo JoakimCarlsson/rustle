@@ -34,15 +34,87 @@ impl Default for ImageKey {
     }
 }
 
-/// A picture: RGBA pixels, cheap to clone, identified so renderers can cache its texture.
+/// The order of the four bytes of each pixel of an [`ImageData`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PixelFormat {
+    /// Red, green, blue, then alpha.
+    #[default]
+    Rgba8,
+    /// Blue, green, red, then alpha, as many browsers, video decoders and window systems hand
+    /// out pictures; a renderer takes it as it is, without reordering the bytes.
+    Bgra8,
+}
+
+/// A rectangle of whole pixels inside a picture, from its top left corner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PixelRect {
+    /// The left edge, in pixels from the picture's left.
+    pub x: u32,
+    /// The top edge, in pixels from the picture's top.
+    pub y: u32,
+    /// The width, in pixels.
+    pub width: u32,
+    /// The height, in pixels.
+    pub height: u32,
+}
+
+impl PixelRect {
+    /// A rectangle from its left and top edges and its size.
+    pub fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Whether the rectangle covers no pixel.
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// The part of the rectangle inside a picture `width` by `height` pixels.
+    pub fn clamped(self, width: u32, height: u32) -> Self {
+        let x = self.x.min(width);
+        let y = self.y.min(height);
+        Self {
+            x,
+            y,
+            width: self.width.min(width - x),
+            height: self.height.min(height - y),
+        }
+    }
+
+    /// The smallest rectangle holding both this one and `other`; an empty one adds nothing.
+    pub fn union(self, other: Self) -> Self {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let right = (self.x + self.width).max(other.x + other.width);
+        let bottom = (self.y + self.height).max(other.y + other.height);
+        Self::new(x, y, right - x, bottom - y)
+    }
+}
+
+/// A picture: RGBA or BGRA pixels, cheap to clone, identified so renderers can cache its texture.
 #[derive(Clone)]
 pub struct ImageData {
     id: u64,
     key: Option<ImageKey>,
     width: u32,
     height: u32,
-    /// Straight-alpha RGBA, 8 bits per channel, row by row from the top.
+    /// Straight alpha, 8 bits per channel in the order of `format`, row by row from the top.
     pixels: Arc<[u8]>,
+    /// The order of each pixel's bytes.
+    format: PixelFormat,
+    /// The generation of the same key this picture differs from only inside the rectangle.
+    change: Option<(u64, PixelRect)>,
 }
 
 impl ImageData {
@@ -54,6 +126,8 @@ impl ImageData {
             width,
             height,
             pixels: pixels.into(),
+            format: PixelFormat::Rgba8,
+            change: None,
         })
     }
 
@@ -73,6 +147,21 @@ impl ImageData {
         height: u32,
         pixels: impl Into<Arc<[u8]>>,
     ) -> Option<Self> {
+        Self::keyed_as(key, width, height, pixels, PixelFormat::Rgba8)
+    }
+
+    /// One picture of the live picture `key`, as [`ImageData::keyed`], from pixels whose bytes
+    /// are in the order `format`, or `None` if `pixels` is not `width * height * 4` bytes.
+    ///
+    /// A renderer keeps a BGRA picture in a texture of that order, so pixels handed out as
+    /// BGRA, such as a browser's paints, are uploaded without reordering a byte.
+    pub fn keyed_as(
+        key: ImageKey,
+        width: u32,
+        height: u32,
+        pixels: impl Into<Arc<[u8]>>,
+        format: PixelFormat,
+    ) -> Option<Self> {
         let pixels = pixels.into();
         (pixels.len() == width as usize * height as usize * 4).then(|| Self {
             id: next_id(),
@@ -80,7 +169,33 @@ impl ImageData {
             width,
             height,
             pixels,
+            format,
+            change: None,
         })
+    }
+
+    /// This picture, said to differ from the generation `previous` of its key only inside
+    /// `rect`, so a renderer whose texture still holds `previous` writes only that rectangle
+    /// into it.
+    ///
+    /// A renderer whose texture holds any other generation, or none, or one of another size or
+    /// pixel format, writes the whole picture as it would without this, so a wrong `previous`
+    /// costs an upload, never a wrong picture. `rect` is cut to the picture; an empty one says
+    /// nothing changed. Pictures without a key are always written whole.
+    pub fn changed_since(mut self, previous: u64, rect: PixelRect) -> Self {
+        self.change = Some((previous, rect.clamped(self.width, self.height)));
+        self
+    }
+
+    /// The generation this picture differs from only inside a rectangle, and that rectangle,
+    /// when it was made with [`ImageData::changed_since`].
+    pub fn change(&self) -> Option<(u64, PixelRect)> {
+        self.change
+    }
+
+    /// The order of the bytes of each pixel.
+    pub fn format(&self) -> PixelFormat {
+        self.format
     }
 
     /// A coverage mask from one byte per pixel, or `None` if `coverage` is not
@@ -98,6 +213,8 @@ impl ImageData {
                 width,
                 height,
                 pixels: pixels.into(),
+                format: PixelFormat::Rgba8,
+                change: None,
             }
         })
     }
@@ -114,7 +231,13 @@ impl ImageData {
 
     /// The picture as the bytes of a PNG file.
     pub fn encode_png(&self) -> Result<Vec<u8>, String> {
-        let buffer = image::RgbaImage::from_raw(self.width, self.height, self.pixels.to_vec())
+        let mut rgba = self.pixels.to_vec();
+        if self.format == PixelFormat::Bgra8 {
+            for pixel in rgba.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+        }
+        let buffer = image::RgbaImage::from_raw(self.width, self.height, rgba)
             .ok_or_else(|| "pixels do not match the size".to_string())?;
         let mut bytes = std::io::Cursor::new(Vec::new());
         buffer
@@ -149,7 +272,8 @@ impl ImageData {
         self.height
     }
 
-    /// The straight-alpha RGBA pixels, 8 bits per channel, row by row from the top.
+    /// The straight-alpha pixels, 8 bits per channel in the order [`ImageData::format`] gives
+    /// (RGBA unless the picture was made as BGRA), row by row from the top.
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
@@ -194,6 +318,44 @@ mod tests {
         assert_ne!(ImageKey::new(), key);
         assert!(ImageData::keyed(key, 2, 1, vec![0; 4]).is_none());
         assert_eq!(ImageData::from_rgba(1, 1, vec![0; 4]).unwrap().key(), None);
+    }
+
+    /// A BGRA picture keeps its byte order, and a change is cut to the picture.
+    #[test]
+    fn a_bgra_picture_and_its_change_are_kept() {
+        let key = ImageKey::new();
+        let image = ImageData::keyed_as(key, 2, 2, vec![0; 16], PixelFormat::Bgra8)
+            .unwrap()
+            .changed_since(7, PixelRect::new(1, 1, 5, 5));
+        assert_eq!(image.format(), PixelFormat::Bgra8);
+        assert_eq!(image.change(), Some((7, PixelRect::new(1, 1, 1, 1))));
+        assert_eq!(
+            ImageData::keyed(key, 1, 1, vec![0; 4]).unwrap().format(),
+            PixelFormat::Rgba8
+        );
+        assert_eq!(
+            PixelRect::new(0, 0, 1, 1).union(PixelRect::new(3, 2, 1, 1)),
+            PixelRect::new(0, 0, 4, 3)
+        );
+        assert_eq!(
+            PixelRect::default().union(PixelRect::new(3, 2, 1, 1)),
+            PixelRect::new(3, 2, 1, 1)
+        );
+    }
+
+    /// A BGRA picture is encoded with its colors where they belong.
+    #[test]
+    fn a_bgra_picture_encodes_as_its_colors() {
+        let bgra = ImageData::keyed_as(
+            ImageKey::new(),
+            1,
+            1,
+            vec![10, 20, 30, 255],
+            PixelFormat::Bgra8,
+        )
+        .unwrap();
+        let decoded = ImageData::decode(&bgra.encode_png().unwrap()).unwrap();
+        assert_eq!(decoded.pixels(), &[30, 20, 10, 255]);
     }
 
     /// A mask from coverage bytes is white with that alpha, and its size is checked.

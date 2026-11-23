@@ -5,7 +5,7 @@
 use rustle_geometry::{Offset, Rect, Size};
 use rustle_graphics::{
     BlendMode, Color, ColorFilter, DrawCommand, FontFamily, ImageData, ImageKey, LayerEffect, Path,
-    PathCommand, ShaderBrush, SvgPainter, TextAlign, TextWrap,
+    PathCommand, PixelFormat, PixelRect, ShaderBrush, SvgPainter, TextAlign, TextWrap,
 };
 
 use crate::Renderer;
@@ -1102,4 +1102,103 @@ fn a_one_line_text_draws_no_second_line() {
     let one = draw(&mut renderer, &[said("Rustle")]);
     let broken = draw(&mut renderer, &[said("Rustle\nRustle")]);
     assert_eq!(differing(&one, &broken, (0, 0, 128, 128), 8), 0);
+}
+
+/// A BGRA picture of one color, given as RGBA, `size` pixels square, as a generation of `key`.
+fn live_bgra(key: ImageKey, size: u32, color: [u8; 4]) -> ImageData {
+    let [red, green, blue, alpha] = color;
+    let pixels: Vec<u8> = (0..size * size)
+        .flat_map(|_| [blue, green, red, alpha])
+        .collect();
+    ImageData::keyed_as(key, size, size, pixels, PixelFormat::Bgra8).unwrap()
+}
+
+#[test]
+fn a_bgra_picture_shows_its_colors_where_they_belong() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    let key = ImageKey::new();
+    let red = [230, 20, 10, 255];
+    let picture = draw(&mut renderer, &[picture_at_8(live_bgra(key, 8, red))]);
+    picture.expect(24, 24, red, 2);
+    let rgba = live_frame(key, 8, [10, 20, 230, 255]);
+    let picture = draw(&mut renderer, &[picture_at_8(rgba)]);
+    picture.expect(24, 24, [10, 20, 230, 255], 2);
+}
+
+#[test]
+fn a_changed_rectangle_is_all_that_is_written_over_the_generation_it_changed_from() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    let key = ImageKey::new();
+    let first = live_bgra(key, 32, [255, 0, 0, 255]);
+    let previous = first.generation();
+    draw(&mut renderer, &[picture_at_8(first)]);
+    let green =
+        live_bgra(key, 32, [0, 255, 0, 255]).changed_since(previous, PixelRect::new(0, 0, 16, 32));
+    let picture = draw(&mut renderer, &[picture_at_8(green.clone())]);
+    picture.expect(12, 24, [0, 255, 0, 255], 2);
+    picture.expect(36, 24, [255, 0, 0, 255], 2);
+    let blue =
+        live_bgra(key, 32, [0, 0, 255, 255]).changed_since(previous, PixelRect::new(0, 0, 1, 1));
+    let picture = draw(&mut renderer, &[picture_at_8(blue)]);
+    picture.expect(12, 24, [0, 0, 255, 255], 2);
+    picture.expect(36, 24, [0, 0, 255, 255], 2);
+}
+
+/// The time `run` takes on average over `rounds` calls after one to warm up, in milliseconds.
+fn average_ms(rounds: u32, mut run: impl FnMut()) -> f64 {
+    run();
+    let started = std::time::Instant::now();
+    for _ in 0..rounds {
+        run();
+    }
+    started.elapsed().as_secs_f64() * 1000.0 / f64::from(rounds)
+}
+
+/// Times writing a new generation of a live picture into its texture at 1080p and 4K: whole
+/// and RGBA, whole and BGRA, and only a caret's rectangle, then a tenth of the rows, as BGRA.
+/// Run with `cargo test -p rustle-wgpu --release -- --ignored --nocapture live_picture_upload_cost`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn live_picture_upload_cost() {
+    let Some(mut renderer) = renderer(64) else {
+        return;
+    };
+    for (name, width, height) in [("1080p", 1920u32, 1080u32), ("4K", 3840, 2160)] {
+        let pixels: std::sync::Arc<[u8]> = vec![128u8; (width * height * 4) as usize].into();
+        let key = ImageKey::new();
+        let mut timed = |format: PixelFormat, rect: Option<PixelRect>| {
+            let mut previous =
+                ImageData::keyed_as(key, width, height, pixels.clone(), format).unwrap();
+            renderer
+                .images
+                .prepare(&renderer.device, &renderer.queue, &previous);
+            average_ms(30, || {
+                let mut image =
+                    ImageData::keyed_as(key, width, height, pixels.clone(), format).unwrap();
+                if let Some(rect) = rect {
+                    image = image.changed_since(previous.generation(), rect);
+                }
+                renderer
+                    .images
+                    .prepare(&renderer.device, &renderer.queue, &image);
+                renderer.queue.submit([]);
+                let _ = renderer.device.poll(wgpu::PollType::wait_indefinitely());
+                previous = image;
+            })
+        };
+        let whole_rgba = timed(PixelFormat::Rgba8, None);
+        let whole_bgra = timed(PixelFormat::Bgra8, None);
+        let caret = timed(PixelFormat::Bgra8, Some(PixelRect::new(400, 300, 2, 40)));
+        let tenth = timed(
+            PixelFormat::Bgra8,
+            Some(PixelRect::new(0, height / 2, width, height / 10)),
+        );
+        println!(
+            "{name}: whole RGBA {whole_rgba:.3} ms, whole BGRA {whole_bgra:.3} ms, caret {caret:.3} ms, tenth of rows {tenth:.3} ms"
+        );
+    }
 }

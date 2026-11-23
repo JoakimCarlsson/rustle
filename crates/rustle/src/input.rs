@@ -53,6 +53,11 @@ impl Clipboard for SystemClipboard {
         self.with(|clipboard| clipboard.set().html(html, Some(text)).ok());
     }
 
+    fn html(&self) -> Option<String> {
+        self.with(|clipboard| clipboard.get().html().ok())
+            .filter(|html| !html.trim().is_empty())
+    }
+
     fn files(&self) -> Vec<std::path::PathBuf> {
         self.with(|clipboard| clipboard.get().file_list().ok())
             .unwrap_or_default()

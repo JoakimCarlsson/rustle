@@ -125,7 +125,7 @@ pub use rustle_graphics::SvgPainter;
 pub use rustle_graphics::TextWrap;
 pub use rustle_graphics::{
     BlendMode, Color, ColorFilter, ColorSpace, ColorSpaces, DrawCommand, ImageData, ImageKey,
-    LayerEffect, ShaderBrush, TextAlign, lerp,
+    LayerEffect, PixelFormat, PixelRect, ShaderBrush, TextAlign, lerp,
 };
 pub use rustle_graphics::{FillRule, Path, PathCommand};
 pub use rustle_macros::composable;
