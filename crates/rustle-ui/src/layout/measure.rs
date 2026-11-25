@@ -592,10 +592,36 @@ struct LayoutCache {
 /// while all of them are as they were. Work with effects that cannot be replayed (composing
 /// content while measuring, editable text) is never cached.
 fn measure_scope(scope: &Scope, constraints: Constraints, text: &mut dyn TextMeasurer) -> Measured {
+    measure_cached(scope.user_data(), constraints, text, || {
+        scope.record_read();
+        scope
+            .output::<Node>()
+            .expect("a restartable block has not run")
+    })
+}
+
+/// Measures `node`, the content a kept block produced, reusing the measurement `cache`
+/// holds as [`measure_scope`] does.
+fn measure_kept(
+    cache: &std::cell::RefCell<Option<Box<dyn std::any::Any>>>,
+    node: &Node,
+    constraints: Constraints,
+    text: &mut dyn TextMeasurer,
+) -> Measured {
+    measure_cached(cache, constraints, text, || node.clone())
+}
+
+/// Measures the node `node` gives, or reuses the measurement `cache` holds when it was
+/// made with `constraints`, the same text measurer and fonts, and nothing it read changed.
+fn measure_cached(
+    cache: &std::cell::RefCell<Option<Box<dyn std::any::Any>>>,
+    constraints: Constraints,
+    text: &mut dyn TextMeasurer,
+    node: impl FnOnce() -> Node,
+) -> Measured {
     let measurer = std::ptr::from_mut(text).cast::<()>() as usize;
     let fonts = rustle_text::font_epoch();
-    let hit = scope
-        .user_data()
+    let hit = cache
         .borrow()
         .as_ref()
         .and_then(|data| data.downcast_ref::<LayoutCache>())
@@ -614,14 +640,11 @@ fn measure_scope(scope: &Scope, constraints: Constraints, text: &mut dyn TextMea
         };
     }
     let (measured, reads) = track_reads(|| {
-        scope.record_read();
-        let node = scope
-            .output::<Node>()
-            .expect("a restartable block has not run");
+        let node = node();
         measure_node(&node, constraints, text)
     });
     let measured = Rc::new(measured);
-    *scope.user_data().borrow_mut() = reads.is_trackable().then(|| {
+    *cache.borrow_mut() = reads.is_trackable().then(|| {
         Box::new(LayoutCache {
             constraints,
             measurer,
@@ -726,6 +749,7 @@ fn measure_content(node: &Node, constraints: Constraints, text: &mut dyn TextMea
             },
         },
         Content::Scope(scope) => measure_scope(scope, constraints, text),
+        Content::Kept(kept) => measure_kept(&kept.layout, &kept.node, constraints, text),
         Content::Image { image, scale } => {
             let (width, height) = (image.width() as f32, image.height() as f32);
             let shrink = (constraints.max_width / width)

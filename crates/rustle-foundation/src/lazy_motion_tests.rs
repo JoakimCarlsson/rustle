@@ -205,7 +205,7 @@ fn scrolling_composes_only_the_items_near_the_viewport() {
         *stage.items().first().unwrap(),
         *stage.items().last().unwrap(),
     );
-    assert!(first >= 23 && last <= 31, "{first}..{last}");
+    assert!(first >= 20 && last <= 34, "{first}..{last}");
 }
 
 #[test]
@@ -883,4 +883,43 @@ fn a_reversed_list_scrolled_to_its_end_shows_the_padding_after_its_last_item() {
     stage.settle();
     near(stage.y(19).expect("the last item is in view"), 6.0);
     near(state.scroll().offset(), state.scroll().max_offset());
+}
+
+/// A scroll that keeps the viewport inside what the list composed composes nothing again;
+/// one that leaves it composes the list once more, around the new viewport. The state is
+/// held outside the composition, as a state holder holds it, so only its readers follow it.
+#[test]
+fn scrolling_within_the_composed_items_composes_nothing() {
+    let found = Found::default();
+    let runs = Rc::new(std::cell::Cell::new(0));
+    let state = LazyListState::default();
+    let (probes, held, counted) = (Rc::clone(&found), state.clone(), Rc::clone(&runs));
+    let mut stage = Stage::new(100.0, 200.0, &found, move || {
+        counted.set(counted.get() + 1);
+        let state = held.clone();
+        let probes = Rc::clone(&probes);
+        lazy_list_with(
+            Modifier::new().size(100.0, 200.0),
+            &state,
+            LazyContent::new(),
+            100,
+            |index| index,
+            move |index| {
+                probe(
+                    &probes,
+                    index,
+                    Modifier::new().fill_max_width().height(40.0),
+                )
+            },
+        );
+    });
+    let settled = runs.get();
+    state.scroll().scroll_to(40.0);
+    stage.settle();
+    assert_eq!(runs.get(), settled, "a scroll inside what is composed");
+    near(stage.y(1).unwrap(), 0.0);
+    state.scroll().scroll_to(1000.0);
+    stage.settle();
+    assert!(runs.get() > settled, "a scroll past what is composed");
+    near(stage.y(25).unwrap(), 0.0);
 }

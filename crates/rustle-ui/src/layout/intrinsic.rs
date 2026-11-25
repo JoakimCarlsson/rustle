@@ -116,6 +116,7 @@ fn intrinsic_content(node: &Node, query: Query, extent: f32, text: &mut dyn Text
             }
         }
         Content::Canvas { .. } => 0.0,
+        Content::Kept(kept) => intrinsic_node(&kept.node, query, extent, text),
         Content::Scope(scope) => {
             scope.record_read();
             let node = scope

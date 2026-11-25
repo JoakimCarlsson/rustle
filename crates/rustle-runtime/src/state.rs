@@ -240,6 +240,9 @@ impl<T: 'static> Inner<T> {
     /// Remembers that whatever composes now read the value, in the composition it belongs to,
     /// or, outside composition, that the phase a host observes read it.
     fn note_read(&self) {
+        if is_untracked() {
+            return;
+        }
         let reader = scope::reader();
         if matches!(reader, scope::Reader::Nobody) {
             if let Some((phase, invalidation)) = crate::phase::observing() {
@@ -340,6 +343,8 @@ pub(crate) enum Read {
     State(Rc<dyn Versioned>, u64),
     /// A check that is true while what was read, such as a composition local, still is.
     Same(Rc<dyn Fn() -> bool>),
+    /// A check that a composition local, named by its address, still has the value read.
+    Local(usize, Rc<dyn Fn() -> bool>),
 }
 
 impl Read {
@@ -347,7 +352,7 @@ impl Read {
     pub(crate) fn is_current(&self) -> bool {
         match self {
             Self::State(state, version) => state.version() == *version,
-            Self::Same(check) => check(),
+            Self::Same(check) | Self::Local(_, check) => check(),
         }
     }
 }
@@ -362,6 +367,31 @@ pub(crate) struct Recording {
 
 thread_local! {
     static RECORDINGS: RefCell<Vec<Recording>> = const { RefCell::new(Vec::new()) };
+    /// How many [`untracked`] blocks are open; while any is, reads are not counted.
+    static UNTRACKED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Runs `body` with the state it reads not counted as read by whatever composes,
+/// lays out or draws now: a change to that state invalidates nothing on its account.
+///
+/// For a value that is wanted as it is now but whose every change must not compose
+/// the reader again, such as a lazy list's scroll offset, which matters to its
+/// composition only when the items in view change.
+pub fn untracked<R>(body: impl FnOnce() -> R) -> R {
+    struct Leave;
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            UNTRACKED.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+    UNTRACKED.with(|depth| depth.set(depth.get() + 1));
+    let _leave = Leave;
+    body()
+}
+
+/// Whether an [`untracked`] block is open.
+fn is_untracked() -> bool {
+    UNTRACKED.with(|depth| depth.get() > 0)
 }
 
 pub(crate) fn begin_recording() {
@@ -397,6 +427,40 @@ pub(crate) fn record_check(check: Rc<dyn Fn() -> bool>) {
             top.reads.push(Read::Same(check));
         }
     });
+}
+
+/// Notes that the enclosing skippable block read the composition local at address `local`,
+/// as a check that it still has the value read.
+pub(crate) fn record_local_check(local: usize, check: Rc<dyn Fn() -> bool>) {
+    RECORDINGS.with(|stack| {
+        if let Some(top) = stack.borrow_mut().last_mut() {
+            top.reads.push(Read::Local(local, check));
+        }
+    });
+}
+
+/// Runs `content`, which a provider of the composition local at address `local` composes
+/// with its value, and counts what it read for the enclosing skippable blocks but for the
+/// reads of that local: inside `content` it has the provided value whatever it has
+/// outside, so a block around the provider must not be checked against it.
+pub(crate) fn shadowing_local<R>(local: usize, content: impl FnOnce() -> R) -> R {
+    if recording_depth() == 0 {
+        return content();
+    }
+    begin_recording();
+    let guard = RecordingGuard {
+        depth: recording_depth() - 1,
+    };
+    let result = content();
+    let recording = end_recording();
+    drop(guard);
+    let reads = recording
+        .reads
+        .into_iter()
+        .filter(|read| !matches!(read, Read::Local(id, _) if *id == local))
+        .collect();
+    merge_recording(reads, recording.unskippable);
+    result
 }
 
 /// Marks the enclosing skippable block as unable to be skipped or cached, because
@@ -489,6 +553,9 @@ impl<T: 'static> State<T> {
     /// [`mutable_state_of`](crate::mutable_state_of) reads as the snapshot sees it.
     pub fn with<R>(&self, read: impl FnOnce(&T) -> R) -> R {
         RECORDINGS.with(|stack| {
+            if is_untracked() {
+                return;
+            }
             if let Some(top) = stack.borrow_mut().last_mut() {
                 let inner: Rc<dyn Versioned> = self.inner.clone();
                 top.reads.push(Read::State(inner, self.inner.version.get()));

@@ -15,3 +15,4 @@ rustle-text.workspace = true
 rustle-shaders.workspace = true
 wgpu = "30.0.1"
 zeno = { version = "0.3.3", default-features = false, features = ["std"] }
+cosmic-text = { version = "0.19", default-features = false, features = ["shape-run-cache"] }

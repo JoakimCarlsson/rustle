@@ -135,7 +135,9 @@ pub use rustle_runtime::{
     group, key, launched_effect, memo, produce_state, remember, remember_saveable,
     remember_state_list, remember_state_map, remember_updated_state, side_effect,
 };
-pub use rustle_runtime::{Saver, Subcomposition, is_composing, mutable_state, set_saver};
+pub use rustle_runtime::{
+    Saver, Subcomposition, is_composing, mutable_state, set_saver, untracked, watched_state_of,
+};
 pub use rustle_text::{
     Affinity, AnnotatedRange, AnnotatedString, AnnotatedStringBuilder, AnnotationStyle, Caret,
     Cluster, FontFamily, FontWeight, LineLayout, LinkAnnotation, LinkInteractionListener,
@@ -148,7 +150,7 @@ pub use rustle_ui::{Children, Layout, LayoutResult, Node, collect, compose, emit
 pub use rustle_ui::{
     Clipboard, ClipboardImage, CursorIcon, DisplayOptions, Interaction, InteractionColors,
     IntrinsicSize, Measurable, PixelRounding, Placement, SubcomposeResult, SubcomposeScope,
-    TaggedNode, clipboard, restartable, set_clipboard, skippable, subcompose_layout,
+    TaggedNode, clipboard, kept, restartable, set_clipboard, skippable, subcompose_layout,
 };
 pub use rustle_ui::{
     Density, DragInteraction, FocusInteraction, HoverInteraction, Indication,

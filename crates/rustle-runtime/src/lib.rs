@@ -25,7 +25,7 @@ pub use composition::{
 };
 pub use effects::{
     Saver, derived_state_of, disposable_effect, launched_effect, produce_state, remember_saveable,
-    remember_updated_state, set_saver, side_effect,
+    remember_updated_state, set_saver, side_effect, watched_state_of,
 };
 pub use frame::FrameClock;
 pub use local::CompositionLocal;
@@ -35,5 +35,5 @@ pub use snapshot::{
     AppliedChanges, ApplyResult, MutableSnapshot, ObserverHandle, Snapshot, SnapshotFlow,
     snapshot_flow,
 };
-pub use state::State;
+pub use state::{State, untracked};
 pub use task::{Delay, NextFrame, TaskScope};

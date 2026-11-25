@@ -148,7 +148,7 @@ impl ScopeInner {
         let checks = recording
             .reads
             .iter()
-            .filter(|read| matches!(read, Read::Same(_)))
+            .filter(|read| matches!(read, Read::Same(_) | Read::Local(..)))
             .cloned()
             .collect();
         *self.reads.borrow_mut() = recording.reads;

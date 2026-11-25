@@ -663,3 +663,73 @@ fn each_composition_is_asked_for_the_phase_it_read_in() {
     assert!(!drawing.is_dirty());
     assert!(phases.take_redraw());
 }
+
+/// State read inside `untracked` composes nothing again when it changes, while the same
+/// state read plainly does.
+#[test]
+fn untracked_reads_invalidate_nothing() {
+    let shared = mutable_state(0);
+    let runs = counter();
+    let (state, counted) = (shared.clone(), runs.clone());
+    let mut composition = Composition::new(move || {
+        counted.set(counted.get() + 1);
+        let _ = untracked(|| state.get());
+    });
+    composition.compose();
+    shared.set(1);
+    assert!(!composition.recompose());
+    assert_eq!(runs.get(), 1);
+}
+
+/// A reader of a watched state composes again only when the calculation's result changes,
+/// not for every change of the state it reads.
+#[test]
+fn watched_state_changes_only_with_its_result() {
+    let shared = mutable_state(0);
+    let runs = counter();
+    let seen = log();
+    let (state, counted, logged) = (shared.clone(), runs.clone(), seen.clone());
+    let mut composition = Composition::new(move || {
+        counted.set(counted.get() + 1);
+        let state = state.clone();
+        let tens = watched_state_of(move || state.get() / 10).get();
+        logged.borrow_mut().push(tens.to_string());
+    });
+    composition.compose();
+    for value in 1..10 {
+        shared.set(value);
+        assert!(
+            !composition.recompose(),
+            "{value} is still in the first ten"
+        );
+    }
+    shared.set(12);
+    assert!(composition.recompose());
+    assert_eq!(runs.get(), 2);
+    assert_eq!(*seen.borrow(), ["0", "1"]);
+}
+
+/// A local read only inside a provider of it, within a skippable block, does not keep the
+/// block from being skipped: outside the provider the local has another value.
+static LOCAL_SHADE: CompositionLocal<u32> = CompositionLocal::new(|| 0);
+
+/// See [`LOCAL_SHADE`].
+#[test]
+fn a_local_provided_inside_a_block_lets_it_be_skipped() {
+    let tick = mutable_state(0);
+    let (outer_runs, block_runs) = (counter(), counter());
+    let (state, outer, block) = (tick.clone(), outer_runs.clone(), block_runs.clone());
+    let mut composition = Composition::new(move || {
+        outer.set(outer.get() + 1);
+        let _ = state.get();
+        let block = block.clone();
+        memo((), move || {
+            block.set(block.get() + 1);
+            LOCAL_SHADE.provide(7, || LOCAL_SHADE.current())
+        });
+    });
+    composition.compose();
+    tick.set(1);
+    assert!(composition.recompose());
+    assert_eq!((outer_runs.get(), block_runs.get()), (2, 1));
+}

@@ -213,6 +213,57 @@ pub fn derived_state_of<T: Clone + 'static>(calculation: impl FnOnce() -> T) -> 
     })
 }
 
+/// What [`watched_state_of`] keeps between passes: the latest calculation and the watch
+/// that runs it after every change of state.
+struct Watch<T> {
+    calculation: Rc<RefCell<Rc<dyn Fn() -> T>>>,
+    _observer: crate::snapshot::ObserverHandle,
+}
+
+/// Returns state holding what `calculation` computes, changed only when the result
+/// differs: Compose's `derivedStateOf`.
+///
+/// The calculation runs, without its reads counting for anyone, after every change of
+/// state and once per pass, and the returned state is set when its result is not equal to
+/// what it holds. A reader therefore composes again only when the result changes, not for
+/// every change of what the calculation reads, as it does with [`derived_state_of`]. Use it
+/// for a coarse view of a value that changes often, such as the first item of a list in
+/// view while it scrolls. Keep `calculation` cheap: it runs after every write of state
+/// while the call stays composed.
+#[track_caller]
+pub fn watched_state_of<T: PartialEq + Clone + 'static>(
+    calculation: impl Fn() -> T + 'static,
+) -> State<T> {
+    let calculation: Rc<dyn Fn() -> T> = Rc::new(calculation);
+    group_at(Location::caller(), || {
+        let value = remember(|| crate::state::untracked(|| calculation()));
+        let watch = remember(|| {
+            let target = value.clone();
+            let held: Rc<RefCell<Rc<dyn Fn() -> T>>> =
+                Rc::new(RefCell::new(Rc::clone(&calculation)));
+            let watched = Rc::clone(&held);
+            let observer = crate::snapshot::Snapshot::register_apply_observer(move |_| {
+                let calculation = Rc::clone(&watched.borrow());
+                let now = crate::state::untracked(|| calculation());
+                if crate::state::untracked(|| target.with(|held| *held != now)) {
+                    target.set(now);
+                }
+            });
+            Rc::new(Watch {
+                calculation: held,
+                _observer: observer,
+            })
+        });
+        let watch = crate::state::untracked(|| watch.get());
+        *watch.calculation.borrow_mut() = Rc::clone(&calculation);
+        let now = crate::state::untracked(|| calculation());
+        if crate::state::untracked(|| value.with(|held| *held != now)) {
+            value.replace_quietly(now);
+        }
+        value
+    })
+}
+
 /// Returns state that starts as `initial` and is set by a task `producer`
 /// runs, such as one that waits and then publishes a result. The task restarts
 /// when `key` changes and is cancelled when the call leaves the composition.

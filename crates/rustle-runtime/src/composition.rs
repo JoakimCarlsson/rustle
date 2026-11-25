@@ -588,7 +588,7 @@ pub fn restartable<D: PartialEq + 'static, T: Clone + 'static>(
                 .reads
                 .borrow()
                 .iter()
-                .filter(|read| matches!(read, Read::Same(_)))
+                .filter(|read| matches!(read, Read::Same(_) | Read::Local(..)))
                 .cloned()
                 .collect();
             merge_recording(checks, false);

@@ -466,20 +466,73 @@ fn font_features(ligatures: bool) -> FontFeatures {
 /// The weight of the face of `font_family` a request for `weight` settles on, so a named
 /// family without that exact weight is drawn in its nearest face rather than in another
 /// family that has it; generic families keep `weight`.
+///
+/// Each answer is kept by the family, the weight and how many faces the font system
+/// holds, so text set again does not search the faces for every run, and a font loaded
+/// later is searched for.
 fn available_weight(font_system: &FontSystem, font_family: FontFamily, weight: u16) -> u16 {
-    if !matches!(font_family, FontFamily::Named(_)) {
+    let FontFamily::Named(name) = font_family else {
         return weight;
-    }
-    let query = glyphon::cosmic_text::fontdb::Query {
-        families: &[family(font_family)],
-        weight: Weight(weight),
-        ..Default::default()
     };
-    font_system
-        .db()
-        .query(&query)
-        .and_then(|id| font_system.db().face(id))
-        .map_or(weight, |face| face.weight.0)
+    let faces = font_system.db().len();
+    AVAILABLE_WEIGHTS.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.0 != faces {
+            *kept = (faces, HashMap::new());
+        }
+        *kept.1.entry((name, weight)).or_insert_with(|| {
+            let query = glyphon::cosmic_text::fontdb::Query {
+                families: &[family(font_family)],
+                weight: Weight(weight),
+                ..Default::default()
+            };
+            font_system
+                .db()
+                .query(&query)
+                .and_then(|id| font_system.db().face(id))
+                .map_or(weight, |face| face.weight.0)
+        })
+    })
+}
+
+/// The weights of named families found by [`available_weight`], by family and weight
+/// asked for, with how many faces the font system held when they were found.
+type AvailableWeights = (usize, HashMap<(&'static str, u16), u16>);
+
+thread_local! {
+    /// What [`available_weight`] found, kept while the font system holds as many faces.
+    static AVAILABLE_WEIGHTS: RefCell<AvailableWeights> = RefCell::new((0, HashMap::new()));
+    /// How many texts were set since the shaped words were last trimmed.
+    static SHAPED_SINCE_TRIM: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// How many faces the font system held, and the font epoch, when its shaped words were
+    /// kept: a font loaded since may shape them otherwise.
+    static SHAPED_WITH: std::cell::Cell<(usize, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// How many texts are set between trims of the shaped words the font system keeps.
+const SHAPES_PER_TRIM: u32 = 1024;
+
+/// How many trims a shaped word survives unused.
+const TRIMS_KEPT: u64 = 4;
+
+/// Counts one text set, and every [`SHAPES_PER_TRIM`] lets go of the shaped words the
+/// font system keeps that no text set in the last [`TRIMS_KEPT`] stretches used: the words
+/// are kept so that text set again, such as a paragraph growing as it streams in, shapes
+/// only the words it did not have before. All of them are let go once the fonts change.
+/// Called before a text is shaped.
+fn trim_shaped_words(font_system: &mut FontSystem) {
+    let fonts = (font_system.db().len(), rustle_text::font_epoch());
+    if SHAPED_WITH.with(|kept| kept.replace(fonts)) != fonts {
+        font_system.shape_run_cache = Default::default();
+    }
+    let due = SHAPED_SINCE_TRIM.with(|count| {
+        count.set(count.get() + 1);
+        count.get() >= SHAPES_PER_TRIM
+    });
+    if due {
+        SHAPED_SINCE_TRIM.with(|count| count.set(0));
+        font_system.shape_run_cache.trim(TRIMS_KEPT);
+    }
 }
 
 /// The attributes of a run: family, weight, slant, letter spacing, ligatures and,
@@ -517,6 +570,7 @@ pub(super) fn shape(
     setting: Setting<'_>,
     width: Option<f32>,
 ) -> Buffer {
+    trim_shaped_words(font_system);
     let mut buffer = Buffer::new(
         font_system,
         Metrics::new(setting.font_size, setting.line_height),

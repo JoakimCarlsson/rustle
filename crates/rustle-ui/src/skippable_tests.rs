@@ -290,3 +290,68 @@ fn invalidation_releases_the_previous_cached_batch() {
         ["1", "second"]
     );
 }
+
+/// Measures nothing and counts how often it is measured.
+struct Counted(Rc<Cell<usize>>);
+
+impl Layout for Counted {
+    /// Counts the measurement and takes a fixed size.
+    fn measure(&self, children: &mut Children, _: rustle_unit::Constraints) -> LayoutResult {
+        self.0.set(self.0.get() + 1);
+        LayoutResult {
+            size: rustle_geometry::Size::new(10.0, 10.0),
+            positions: vec![rustle_geometry::Offset::default(); children.len()],
+        }
+    }
+}
+
+/// Lays out no text.
+struct NoText;
+
+impl rustle_text::TextMeasurer for NoText {
+    fn measure(&mut self, _: &str, _: &TextStyle, _: f32) -> rustle_geometry::Size {
+        rustle_geometry::Size::default()
+    }
+    fn measure_spans(
+        &mut self,
+        _: &[rustle_graphics::StyledSpan],
+        _: &TextStyle,
+        _: f32,
+    ) -> rustle_geometry::Size {
+        rustle_geometry::Size::default()
+    }
+    fn layout(
+        &mut self,
+        _: &[rustle_graphics::StyledSpan],
+        _: &TextStyle,
+        _: f32,
+    ) -> rustle_text::TextLayout {
+        unimplemented!("the tests lay out no text")
+    }
+}
+
+/// A kept block that is skipped keeps its layout: laying the tree out again with the same
+/// constraints does not measure its content again, while a block run again is measured.
+#[test]
+fn a_skipped_kept_block_keeps_its_layout() {
+    let measured = Rc::new(Cell::new(0));
+    let input = Rc::new(Cell::new(0));
+    let (counted, deps) = (Rc::clone(&measured), Rc::clone(&input));
+    let mut composition = composition(move || {
+        let counted = Rc::clone(&counted);
+        kept(deps.get(), move || {
+            layout(Modifier::new(), Counted(counted), || {});
+        });
+    });
+    let mut text = NoText;
+    let constraints = rustle_unit::Constraints::loose(rustle_geometry::Size::new(100.0, 100.0));
+    composition.compose();
+    display_list(composition.output().unwrap(), constraints, &mut text);
+    composition.compose();
+    display_list(composition.output().unwrap(), constraints, &mut text);
+    assert_eq!(measured.get(), 1);
+    input.set(1);
+    composition.compose();
+    display_list(composition.output().unwrap(), constraints, &mut text);
+    assert_eq!(measured.get(), 2);
+}

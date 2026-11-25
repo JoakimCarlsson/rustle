@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use crate::composition::with_runtime;
-use crate::state::record_check;
+use crate::state::{record_local_check, shadowing_local};
 
 /// A value that composables further down can read without it being passed to them.
 ///
@@ -28,7 +28,10 @@ impl<T: Clone + PartialEq + 'static> CompositionLocal<T> {
         let value = self.current_untracked();
         // A skippable block that read this must not be skipped once it changed.
         let observed = value.clone();
-        record_check(Rc::new(move || self.current_untracked() == observed));
+        record_local_check(
+            self.id(),
+            Rc::new(move || self.current_untracked() == observed),
+        );
         value
     }
 
@@ -47,10 +50,13 @@ impl<T: Clone + PartialEq + 'static> CompositionLocal<T> {
 
     /// Runs `content` with `value` as the current value of this local.
     /// An inner `provide` overrides an outer one within its own `content`.
+    ///
+    /// What `content` reads of this local does not count for the skippable blocks around
+    /// the call, which see the local's value from outside it.
     pub fn provide<R>(&'static self, value: T, content: impl FnOnce() -> R) -> R {
         with_runtime(|runtime| runtime.locals.push((self.id(), Rc::new(value))));
         let _pop = Pop;
-        content()
+        shadowing_local(self.id(), content)
     }
 
     /// Each local is a distinct `static`, so its address identifies it.

@@ -184,6 +184,10 @@ pub enum Content {
     /// again alone. It lays out and paints as the node it last produced, and its layout is
     /// kept while nothing it depends on has changed.
     Scope(rustle_runtime::Scope),
+    /// The content of one node a [`kept`] block produced. It lays out and paints as that
+    /// content, and its layout is kept while the block is skipped and nothing its layout
+    /// read has changed.
+    Kept(Rc<Kept>),
     /// Children arranged by a layout policy.
     Layout {
         policy: Rc<dyn Layout>,
@@ -378,6 +382,63 @@ pub fn skippable<D: PartialEq + 'static>(deps: D, content: impl FnOnce()) {
         uncollected.is_none_or(|nodes| nodes.is_empty()),
         "composables can only be called during composition"
     );
+}
+
+/// What a [`kept`] block produced: the content of its node, and what its latest layout found,
+/// for the next layout to reuse.
+pub struct Kept {
+    /// The node, without the modifier the node that holds this carries.
+    pub(crate) node: Node,
+    /// The latest measurement and what it depended on.
+    pub(crate) layout: RefCell<Option<Box<dyn std::any::Any>>>,
+}
+
+/// Runs `content` like [`skippable`], keeping the layout of what it emitted while the block
+/// is skipped: a later layout given the same constraints, while nothing the layout read has
+/// changed, reuses the measured and placed tree instead of measuring it again.
+///
+/// When `content` emits exactly one node that lays out children, that node is emitted with
+/// its modifier, so a parent reads its weight and alignment as it would, and its children
+/// are laid out once for as long as the block is skipped. Otherwise, such as for several
+/// nodes or a single text, which its modifier measures, what it emitted is emitted as
+/// [`skippable`] emits it and laid out each time. Pass everything `content` takes from
+/// outside in `deps`.
+#[track_caller]
+pub fn kept<D: PartialEq + 'static>(deps: D, content: impl FnOnce()) {
+    let emitted = rustle_runtime::memo(deps, || {
+        let mut nodes = collect_scope(content).into_vec();
+        if nodes.len() != 1 || !matches!(nodes[0].content, Content::Layout { .. }) {
+            return Emitted::Many(Rc::new(nodes));
+        }
+        let node = nodes.remove(0);
+        let kept = Kept {
+            node: Node {
+                modifier: Modifier::new(),
+                content: node.content,
+            },
+            layout: RefCell::default(),
+        };
+        Emitted::One(node.modifier, Rc::new(kept))
+    });
+    match emitted {
+        Emitted::One(modifier, kept) => emit(Node {
+            modifier,
+            content: Content::Kept(kept),
+        }),
+        Emitted::Many(nodes) => SCOPES.with(|scopes| {
+            if let Some(scope) = scopes.borrow_mut().last_mut() {
+                scope.append(nodes);
+            }
+        }),
+    }
+}
+
+/// What a [`kept`] block emitted: one node, as its modifier and its kept content, or
+/// several, as they are.
+#[derive(Clone)]
+enum Emitted {
+    One(Modifier, Rc<Kept>),
+    Many(Rc<Vec<Node>>),
 }
 
 /// Runs `content` like a block of composables, as one node that is composed again alone

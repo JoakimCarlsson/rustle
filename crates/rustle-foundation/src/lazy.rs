@@ -147,23 +147,33 @@ struct Placed {
 
 struct ListInner {
     /// The measured height of each item, by key.
-    heights: RefCell<HashMap<u64, f32>>,
+    heights: RefCell<KeyMap<f32>>,
     /// The sum of `heights`, for the average that estimates the rest.
     sum: Cell<f32>,
     placed: RefCell<Placed>,
     stick_to_end: Cell<bool>,
     request: Cell<Option<Request>>,
     /// How many lanes the staggered grid had and the lane of each item, by key.
-    lanes: RefCell<(usize, HashMap<u64, usize>)>,
+    lanes: RefCell<(usize, KeyMap<usize>)>,
     /// Until when items slide to their new places after a reorder.
     slide_until: Cell<Option<Duration>>,
     /// Where each item of a staggered grid was placed when it last composed, by key, and
     /// the keys it had, so the view can be held and reorders noticed.
-    stagger: RefCell<(Vec<u64>, HashMap<u64, f32>)>,
+    stagger: RefCell<(Vec<u64>, KeyMap<f32>)>,
     /// For a spanned grid, the items of each row, so items can be asked for by index.
     grid_rows: RefCell<Vec<Vec<usize>>>,
     /// How many handles pin each item, by key: pinned items stay composed out of view.
-    pinned: RefCell<HashMap<u64, usize>>,
+    pinned: RefCell<KeyMap<usize>>,
+    /// The stretch of the list, from the start of its first composed item to the end of
+    /// its last, that its latest composition covers; a scroll that keeps the viewport
+    /// inside it composes nothing.
+    covered: Cell<(f32, f32)>,
+    /// Whether the list asked to compose again because the viewport left what it covers,
+    /// and has not composed since.
+    uncovered: Cell<bool>,
+    /// The watch on scrolls that asks the list to compose again once the viewport leaves
+    /// what it covers, kept while the list is.
+    watch: RefCell<Option<rustle_runtime::ObserverHandle>>,
 }
 
 /// One item a lazy list laid out in view, like Compose's `LazyListItemInfo`.
@@ -244,6 +254,9 @@ impl ListInner {
             stagger: RefCell::default(),
             grid_rows: RefCell::default(),
             pinned: RefCell::default(),
+            covered: Cell::new((f32::NEG_INFINITY, f32::INFINITY)),
+            uncovered: Cell::new(false),
+            watch: RefCell::default(),
         }
     }
 }
@@ -441,6 +454,34 @@ impl LazyListState {
         self.version.update(|version| *version += 1);
     }
 
+    /// Watches the scroll from now on, if it is not yet watched, so that a scroll taking
+    /// the viewport out of what the latest composition covers composes the list again,
+    /// and no other scroll does: the composition reads the offset without tracking it.
+    fn watch_scroll(&self) {
+        if self.inner.watch.borrow().is_some() {
+            return;
+        }
+        let inner = Rc::downgrade(&self.inner);
+        let scroll = self.scroll.clone();
+        let version = self.version.clone();
+        let handle = rustle_runtime::Snapshot::register_apply_observer(move |_| {
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            if inner.uncovered.get() {
+                return;
+            }
+            let (start, length) =
+                rustle_runtime::untracked(|| (scroll.offset(), scroll.viewport_length()));
+            let (from, to) = inner.covered.get();
+            if start < from || start + length > to {
+                inner.uncovered.set(true);
+                version.update(|version| *version += 1);
+            }
+        });
+        *self.inner.watch.borrow_mut() = Some(handle);
+    }
+
     fn record(&self, key: u64, height: f32) {
         let changed = {
             let mut heights = self.inner.heights.borrow_mut();
@@ -466,6 +507,11 @@ pub fn remember_lazy_list_state() -> LazyListState {
     })
 }
 
+/// How far beyond each end of its viewport a list composes items, as a share of the
+/// viewport's length, so that scrolling composes the list again only once it has moved
+/// that far rather than on every frame.
+const COMPOSED_MARGIN: f32 = 0.25;
+
 /// How close to the end counts as being at it, in pixels.
 const END_TOLERANCE: f32 = 2.0;
 
@@ -477,7 +523,7 @@ fn item_at(tops: &[f32], offset: f32) -> usize {
 
 /// The tops of items with the given `keys`, ending with the end of the list.
 /// Items not measured count as `estimate`.
-fn place(keys: &[u64], heights: &HashMap<u64, f32>, estimate: f32) -> Vec<f32> {
+fn place(keys: &[u64], heights: &KeyMap<f32>, estimate: f32) -> Vec<f32> {
     let mut tops = Vec::with_capacity(keys.len() + 1);
     let mut y = 0.0;
     for key in keys {
@@ -568,9 +614,69 @@ impl Reposition<'_> {
 }
 
 fn hash_key(key: impl Hash) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = KeyHasher::default();
     key.hash(&mut hasher);
     hasher.finish()
+}
+
+/// A map by the key of an item, hashed by [`KeyHasher`].
+type KeyMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<KeyHasher>>;
+
+/// A fast hasher for the keys of a list's items and for maps by them: a list hashes the
+/// key of every item each time it composes, and looks every item up by it, so with tens of
+/// thousands of items the default hasher's cost shows. Not resistant to keys chosen to
+/// collide, which a list's keys are not.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl KeyHasher {
+    /// Mixes `word` into the hash.
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl Hasher for KeyHasher {
+    /// The hash of what was written.
+    fn finish(&self) -> u64 {
+        let mut hash = self.0;
+        hash ^= hash >> 33;
+        hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        hash ^ (hash >> 33)
+    }
+
+    /// Mixes `bytes` in, eight at a time.
+    fn write(&mut self, bytes: &[u8]) {
+        let (chunks, rest) = bytes.as_chunks::<8>();
+        for chunk in chunks {
+            self.add(u64::from_le_bytes(*chunk));
+        }
+        if !rest.is_empty() {
+            let mut last = [0; 8];
+            last[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(last) ^ ((rest.len() as u64) << 56));
+        }
+    }
+
+    /// Mixes `value` in as one word.
+    fn write_u64(&mut self, value: u64) {
+        self.add(value);
+    }
+
+    /// Mixes `value` in as one word.
+    fn write_usize(&mut self, value: usize) {
+        self.add(value as u64);
+    }
+
+    /// Mixes `value` in as one word.
+    fn write_u32(&mut self, value: u32) {
+        self.add(u64::from(value));
+    }
+
+    /// Mixes `value` in as one word.
+    fn write_u8(&mut self, value: u8) {
+        self.add(u64::from(value));
+    }
 }
 
 /// Which way a list scrolls.
@@ -880,7 +986,10 @@ fn list_impl<K: Hash>(
 ) {
     group(|| {
         let _ = state.version.get();
+        state.watch_scroll();
+        state.inner.uncovered.set(false);
         let keys: Vec<u64> = (0..count).map(|index| hash_key(key_of(index))).collect();
+        let scrolled = || rustle_runtime::untracked(|| state.scroll.offset());
         let (new_tops, offset, viewport) = {
             let heights = state.inner.heights.borrow();
             let estimate = if heights.is_empty() {
@@ -901,7 +1010,7 @@ fn list_impl<K: Hash>(
             };
             let mut placed = state.inner.placed.borrow_mut();
             let wanted = Reposition {
-                offset: state.scroll.offset(),
+                offset: scrolled(),
                 viewport,
                 old_viewport: placed.viewport,
                 stick_to_end: state.inner.stick_to_end.get(),
@@ -931,9 +1040,9 @@ fn list_impl<K: Hash>(
         let held = if state.inner.request.get().is_some() {
             0.0
         } else {
-            offset - state.scroll.offset()
+            offset - scrolled()
         };
-        if (offset - state.scroll.offset()).abs() > 0.05 {
+        if (offset - scrolled()).abs() > 0.05 {
             state.scroll.jump_to(offset);
         }
 
@@ -942,12 +1051,25 @@ fn list_impl<K: Hash>(
         } else {
             offset
         };
-        let first = item_at(&new_tops, seen).min(count);
+        let margin = viewport * COMPOSED_MARGIN;
+        let first = item_at(&new_tops, seen - margin).min(count);
         let last = new_tops
-            .partition_point(|top| *top < seen + viewport)
+            .partition_point(|top| *top < seen + viewport + margin)
             .min(count);
         let first = first.saturating_sub(1);
         let last = (last + 1).min(count);
+        state.inner.covered.set((
+            if first == 0 {
+                f32::NEG_INFINITY
+            } else {
+                new_tops[first]
+            },
+            if last == count {
+                f32::INFINITY
+            } else {
+                new_tops[last]
+            },
+        ));
         if let Some(request) = state.inner.request.get() {
             let target = match request {
                 Request::Item(index, _) | Request::At(index, _) => index,
@@ -1028,12 +1150,7 @@ fn list_impl<K: Hash>(
 /// The items a list composes, in order: those from `first` up to `last`, those outside them
 /// that are pinned, and the one on each side of a pinned item, beyond the bounds of what is
 /// pinned as the items beyond those in view are, so focus can move on from a pinned item.
-fn composed_items(
-    keys: &[u64],
-    first: usize,
-    last: usize,
-    pinned: &HashMap<u64, usize>,
-) -> Vec<usize> {
+fn composed_items(keys: &[u64], first: usize, last: usize, pinned: &KeyMap<usize>) -> Vec<usize> {
     if pinned.is_empty() {
         return (first..last).collect();
     }
@@ -1261,8 +1378,8 @@ struct Lanes {
 /// followed by `spacing`.
 fn assign_lanes(
     keys: &[u64],
-    assigned: &mut HashMap<u64, usize>,
-    heights: &HashMap<u64, f32>,
+    assigned: &mut KeyMap<usize>,
+    heights: &KeyMap<f32>,
     estimate: f32,
     lanes: usize,
     content: &LazyContent,
@@ -1302,7 +1419,7 @@ fn assign_lanes(
 /// at the start of the viewport (the first one, lane by lane, that contained `offset`)
 /// stays exactly where it was, however the items above it in its lane were measured.
 /// `previous` is where each item was, by key, `dealt` and `keys` say where they are now.
-fn held_offset(offset: f32, previous: &HashMap<u64, f32>, dealt: &Lanes, keys: &[u64]) -> f32 {
+fn held_offset(offset: f32, previous: &KeyMap<f32>, dealt: &Lanes, keys: &[u64]) -> f32 {
     if previous.is_empty() || offset <= 0.0 {
         return offset;
     }
@@ -1351,7 +1468,7 @@ fn staggered_impl<K: Hash>(
             };
             let mut assigned = state.inner.lanes.borrow_mut();
             if assigned.0 != lanes {
-                *assigned = (lanes, HashMap::new());
+                *assigned = (lanes, KeyMap::default());
             }
             assign_lanes(&keys, &mut assigned.1, &heights, estimate, lanes, &content)
         };
@@ -1551,7 +1668,7 @@ pub fn lazy_vertical_grid_spanned<K: Hash>(
 mod tests {
     use super::*;
 
-    fn heights(pairs: &[(u64, f32)]) -> HashMap<u64, f32> {
+    fn heights(pairs: &[(u64, f32)]) -> KeyMap<f32> {
         pairs.iter().copied().collect()
     }
 
@@ -1567,7 +1684,7 @@ mod tests {
     #[test]
     fn a_staggered_grid_holds_the_item_in_view_when_items_above_are_measured() {
         let keys = [1, 2, 3];
-        let previous: HashMap<u64, f32> = [(1, 0.0), (2, 50.0), (3, 0.0)].into_iter().collect();
+        let previous: KeyMap<f32> = [(1, 0.0), (2, 50.0), (3, 0.0)].into_iter().collect();
         let dealt = Lanes {
             items: vec![vec![0, 1], vec![2]],
             tops: vec![vec![0.0, 80.0, 130.0], vec![0.0, 40.0]],
@@ -1670,7 +1787,7 @@ mod tests {
     #[test]
     fn staggered_items_go_to_the_shortest_lane_and_stay() {
         let keys = [1, 2, 3, 4];
-        let mut assigned = HashMap::new();
+        let mut assigned = KeyMap::default();
         let known = heights(&[(1, 100.0), (2, 30.0), (3, 30.0)]);
         let content = LazyContent::new().padding_each(10.0, 5.0);
         let lanes = assign_lanes(&keys, &mut assigned, &known, 20.0, 2, &content);
