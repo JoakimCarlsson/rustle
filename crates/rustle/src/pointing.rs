@@ -164,12 +164,15 @@ impl Interface {
                 _ => 1,
             };
             if let Some(region) = self.display.button_at(pointer, button) {
-                let (rect, on_event) = (region.rect, Rc::clone(&region.on_event));
+                let (rect, origin, on_event) =
+                    (region.rect, region.origin, Rc::clone(&region.on_event));
                 let event = self.pointer_event(button, PointerPhase::Press, pointer, region.origin);
                 self.held_buttons.retain(|held| held.button != button);
                 self.held_buttons.push(HeldButton {
                     button,
                     rect,
+                    origin,
+                    on_event: Rc::clone(&on_event),
                     click_count,
                 });
                 on_event(&PointerEvent {
@@ -193,7 +196,9 @@ impl Interface {
 
     /// Tells the area `button` went down on that it came up at `pointer`, in the window's
     /// logical pixels, and that it was clicked when `may_click` and `pointer` is still over
-    /// that area. The handler that runs is the area's current one, not the one from the press.
+    /// that area. The handler that runs is the area's current one, not the one from the press,
+    /// unless the press moved or resized the area: then the press's handler runs, and the
+    /// release clicks when `pointer` is still inside the place the press landed on.
     fn release_held_button(&mut self, button: PointerButton, pointer: Offset, may_click: bool) {
         let Some(index) = self
             .held_buttons
@@ -210,19 +215,24 @@ impl Interface {
             .rev()
             .find(|region| region.button == button && same_area(region.rect, held.rect))
             .map(|region| (Rc::clone(&region.on_event), region.origin));
-        let Some((on_event, origin)) = current else {
-            return;
-        };
+        let moved = current.is_none();
+        let (on_event, origin) = current.unwrap_or((Rc::clone(&held.on_event), held.origin));
         let event = |phase| PointerEvent {
             click_count: held.click_count,
             ..self.pointer_event(button, phase, pointer, origin)
         };
         on_event(&event(PointerPhase::Release));
         let over = may_click
-            && self
-                .display
-                .button_at(pointer, button)
-                .is_some_and(|region| same_area(region.rect, held.rect));
+            && if moved {
+                (held.rect.origin.x..=held.rect.origin.x + held.rect.size.width)
+                    .contains(&pointer.x)
+                    && (held.rect.origin.y..=held.rect.origin.y + held.rect.size.height)
+                        .contains(&pointer.y)
+            } else {
+                self.display
+                    .button_at(pointer, button)
+                    .is_some_and(|region| same_area(region.rect, held.rect))
+            };
         if over {
             on_event(&event(PointerPhase::Click));
         }
@@ -500,6 +510,10 @@ pub(crate) struct HeldButton {
     pub(crate) button: PointerButton,
     /// The area it went down on, which is how its handler is found again after relayout.
     pub(crate) rect: Rect,
+    /// Where the area's top-left corner was at the press, before it was cut to what is visible.
+    pub(crate) origin: Offset,
+    /// The area's handler at the press, for when relayout moved the area before the release.
+    pub(crate) on_event: Rc<dyn Fn(&PointerEvent)>,
     pub(crate) click_count: u32,
 }
 
