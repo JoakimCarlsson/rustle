@@ -2,9 +2,9 @@
 
 use rustle_graphics::{Color, DrawCommand};
 
+use crate::instances::InstanceBuffer;
 use crate::srgb_to_linear;
 use crate::uniforms::Arena;
-use wgpu::util::DeviceExt;
 
 /// The viewport the shader turns logical pixels into clip space with.
 #[repr(C)]
@@ -56,10 +56,10 @@ impl Instance {
     ];
 }
 
-/// The quads of one layer, uploaded and ready to draw.
+/// The quads of one layer, staged in the frame's instance buffer and ready to draw.
 pub(crate) struct Batch {
-    buffer: wgpu::Buffer,
-    count: u32,
+    /// Where the layer's instances lie in the instance buffer, in bytes.
+    bytes: std::ops::Range<u64>,
 }
 
 /// Where a pipeline finds the viewport: a bind group for group 0, and the offset into it.
@@ -84,6 +84,8 @@ pub(crate) struct Quads {
     viewport_groups: std::cell::RefCell<Vec<wgpu::BindGroup>>,
     /// Whether the target encodes linear values to sRGB on write.
     srgb_target: bool,
+    /// The quads of the frame, every layer's in one buffer.
+    instances: InstanceBuffer,
 }
 impl Quads {
     pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -155,6 +157,7 @@ impl Quads {
             arena: Arena::new(device),
             viewport_groups: std::cell::RefCell::new(Vec::new()),
             srgb_target: format.is_srgb(),
+            instances: InstanceBuffer::new("quads"),
         }
     }
 
@@ -205,9 +208,15 @@ impl Quads {
         }
     }
 
-    /// Starts a frame: the viewports of the last one are written over.
-    pub(crate) fn begin_frame(&self) {
+    /// Starts a frame: the viewports and instances of the last one are written over.
+    pub(crate) fn begin_frame(&mut self) {
         self.arena.begin_frame();
+        self.instances.begin_frame();
+    }
+
+    /// Writes the instances staged this frame to the GPU; called before anything is drawn.
+    pub(crate) fn flush(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.instances.flush(device, queue);
     }
 
     /// The quad that draws `command`, if it is a rectangle or a shadow.
@@ -372,27 +381,31 @@ impl Quads {
         })
     }
 
-    /// Uploads `instances`, or returns `None` if there are none.
-    pub(crate) fn upload(&self, device: &wgpu::Device, instances: &[Instance]) -> Option<Batch> {
+    /// Stages `instances` in the frame's instance buffer, or returns `None` if there are none.
+    pub(crate) fn upload(&mut self, instances: &[Instance]) -> Option<Batch> {
         if instances.is_empty() {
             return None;
         }
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("quads"),
-            contents: bytemuck::cast_slice(instances),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
         Some(Batch {
-            buffer,
-            count: instances.len() as u32,
+            bytes: self.instances.push(bytemuck::cast_slice(instances)),
         })
     }
 
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, viewport: &Viewport, batch: &Batch) {
+    /// Records drawing the quads of `batch` numbered `range` into `pass`.
+    pub(crate) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        viewport: &Viewport,
+        batch: &Batch,
+        range: std::ops::Range<u32>,
+    ) {
+        let Some(slice) = self.instances.slice(batch.bytes.clone()) else {
+            return;
+        };
         pass.set_pipeline(&self.pipeline);
         viewport.set(pass);
-        pass.set_vertex_buffer(0, batch.buffer.slice(..));
-        pass.draw(0..6, 0..batch.count);
+        pass.set_vertex_buffer(0, slice);
+        pass.draw(0..6, range);
     }
 
     /// The color as the shader takes it. An sRGB target encodes what the

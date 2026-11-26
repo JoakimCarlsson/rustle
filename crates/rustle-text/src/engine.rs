@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::kept::kept_layout;
+use crate::kept::{SpanKey, kept_layout};
 use crate::{StyledSpan, TextLayout, TextSpan, TextStyle};
 
 /// Shapes text and knows the fonts. The renderer implements this and installs it
@@ -75,7 +75,11 @@ fn engine() -> Option<Rc<dyn TextEngine>> {
 /// [`TextLayout::hit_test`] for the offset under a point. It can be called from a
 /// composable or a `canvas` closure. Before a renderer exists the layout is empty.
 pub fn layout_text(content: &str, style: &TextStyle, max_width: Option<f32>) -> TextLayout {
-    layout_spans(&[TextSpan::new(content)], style, max_width)
+    layout_keys(
+        std::iter::once(SpanKey::plain(content, style)),
+        style,
+        max_width,
+    )
 }
 
 /// Like [`layout_text`] for rich text: runs that differ in color, weight, family,
@@ -85,8 +89,11 @@ pub fn layout_text(content: &str, style: &TextStyle, max_width: Option<f32>) -> 
 /// same, so laying out text that has not changed again, as every frame that composes or
 /// paints it does, does not shape it again.
 pub fn layout_spans(spans: &[TextSpan], style: &TextStyle, max_width: Option<f32>) -> TextLayout {
-    let resolved: Vec<StyledSpan> = spans.iter().map(|span| span.resolve(style)).collect();
-    layout_resolved(resolved, style, max_width)
+    layout_keys(
+        spans.iter().map(|span| SpanKey::resolve(span, style)),
+        style,
+        max_width,
+    )
 }
 
 /// Like [`layout_spans`] for spans whose style is already resolved.
@@ -95,13 +102,13 @@ pub fn layout_styled(
     style: &TextStyle,
     max_width: Option<f32>,
 ) -> TextLayout {
-    layout_resolved(spans.to_vec(), style, max_width)
+    layout_keys(spans.iter().map(SpanKey::of), style, max_width)
 }
 
-/// `spans` laid out by the thread's engine, or kept from when they were laid out before;
-/// empty while there is no engine.
-fn layout_resolved(
-    spans: Vec<StyledSpan>,
+/// The runs `spans` laid out by the thread's engine, or kept from when they were laid out
+/// before; empty while there is no engine.
+fn layout_keys<'a>(
+    spans: impl Iterator<Item = SpanKey<'a>> + Clone,
     style: &TextStyle,
     max_width: Option<f32>,
 ) -> TextLayout {

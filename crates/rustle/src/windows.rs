@@ -366,6 +366,9 @@ impl App {
         let Some(index) = self.slot_of(id) else {
             return;
         };
+        if !crate::handler::coalescible(&event) {
+            self.flush_pending_input(event_loop);
+        }
         if self.file_drag_event(event_loop, index, id, &event) {
             self.sync_windows(event_loop);
             return;
@@ -379,6 +382,9 @@ impl App {
             return;
         }
         self.activate(index);
+        if self.coalesce(event_loop, id, &event) {
+            return;
+        }
         if self.key != MAIN && matches!(event, winit::event::WindowEvent::CloseRequested) {
             // The composition decides whether the window goes.
             REGISTRY.with(|r| r.borrow_mut().close_requests.push(self.key));

@@ -923,3 +923,68 @@ fn scrolling_within_the_composed_items_composes_nothing() {
     assert!(runs.get() > settled, "a scroll past what is composed");
     near(stage.y(25).unwrap(), 0.0);
 }
+
+/// An item at the start of the viewport of a reversed list growing, as the newest message of
+/// a chat does while it streams in, is taken in during layout: the list composes nothing
+/// again, the item stays at the bottom and the length of the list follows.
+#[test]
+fn a_growing_item_in_view_composes_the_list_nothing_again() {
+    let found = Found::default();
+    let listed = Rc::new(std::cell::Cell::new(0));
+    let grown = rustle_runtime::mutable_state(40.0_f32);
+    let state = LazyListState::default();
+    let (probes, held, counted, height) = (
+        Rc::clone(&found),
+        state.clone(),
+        Rc::clone(&listed),
+        grown.clone(),
+    );
+    let mut stage = Stage::new(100.0, 200.0, &found, move || {
+        let state = held.clone();
+        let probes = Rc::clone(&probes);
+        let counted = Rc::clone(&counted);
+        let height = height.clone();
+        lazy_list_with(
+            Modifier::new().size(100.0, 200.0),
+            &state,
+            LazyContent::new().reverse_layout(true),
+            20,
+            move |index| {
+                if index == 0 {
+                    counted.set(counted.get() + 1);
+                }
+                index
+            },
+            move |index| {
+                let height = height.clone();
+                let probes = Rc::clone(&probes);
+                rustle_ui::restartable(index, move || {
+                    let length = if index == 0 { height.get() } else { 40.0 };
+                    probe(
+                        &probes,
+                        index,
+                        Modifier::new().fill_max_width().height(length),
+                    )
+                })
+            },
+        );
+    });
+    near(stage.y(0).unwrap(), 160.0);
+    let settled = listed.get();
+    let length = state.scroll().content_length();
+    grown.set(90.0);
+    stage.frame(16);
+    assert_eq!(listed.get(), settled, "the list composed again");
+    near(stage.y(0).unwrap(), 110.0);
+    near(stage.y(1).unwrap(), 70.0);
+    near(state.scroll().content_length(), length + 50.0);
+    assert_eq!(state.scroll().offset(), 0.0);
+    assert_eq!(
+        state.layout_info().visible_items_info[0],
+        LazyListItemInfo {
+            index: 0,
+            offset: 0.0,
+            size: 90.0
+        }
+    );
+}

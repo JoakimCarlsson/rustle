@@ -1202,3 +1202,61 @@ fn live_picture_upload_cost() {
         );
     }
 }
+
+/// Lines of a code view: each cut to its own row, with a background and text.
+fn code_lines(count: usize, isolate: bool) -> Vec<DrawCommand> {
+    let mut commands = Vec::new();
+    for line in 0..count {
+        let y = line as f32 * 24.0;
+        let row = area(0.0, y, 200.0, 24.0);
+        if isolate {
+            commands.push(DrawCommand::PushLayer {
+                rect: row,
+                alpha: 1.0,
+                rotation: 0.0,
+                scale: 1.0,
+            });
+        }
+        commands.push(DrawCommand::PushClip { rect: row });
+        let shade = if line % 2 == 0 { RED } else { BLUE };
+        commands.push(fill(area(0.0, y, 200.0, 24.0), shade));
+        commands.push(words(4.0, y));
+        commands.push(DrawCommand::PopClip);
+        if isolate {
+            commands.push(DrawCommand::PopLayer);
+        }
+    }
+    commands
+}
+
+#[test]
+fn clipped_lines_that_do_not_overlap_share_one_layer() {
+    let Some(mut renderer) = renderer(256) else {
+        return;
+    };
+    let shared = draw(&mut renderer, &code_lines(10, false));
+    assert!(
+        renderer.text_renderers.len() <= 1,
+        "{} text renderers for one layer of lines",
+        renderer.text_renderers.len()
+    );
+    let Some(mut reference) = self::renderer(256) else {
+        return;
+    };
+    let isolated = draw(&mut reference, &code_lines(10, true));
+    assert_eq!(differing(&shared, &isolated, (0, 0, 256, 256), 2), 0);
+}
+
+#[test]
+fn a_rectangle_over_earlier_text_still_paints_over_it() {
+    let Some(mut renderer) = renderer(128) else {
+        return;
+    };
+    let picture = draw(
+        &mut renderer,
+        &[words(8.0, 8.0), fill(area(0.0, 0.0, 128.0, 48.0), RED)],
+    );
+    for x in (8..80).step_by(4) {
+        picture.expect(x, 20, [255, 0, 0, 255], 2);
+    }
+}

@@ -313,6 +313,28 @@ impl Interface {
         }
     }
 
+    /// Calls `draw` with everything that is drawn, as [`Interface::commands`] gives it, without
+    /// copying the display list: the feedback and what is carried are appended to it for the
+    /// call and taken off again after. Returns what `draw` returned.
+    pub(crate) fn with_commands<R>(&mut self, draw: impl FnOnce(&[DrawCommand]) -> R) -> R {
+        let display = &self.display;
+        let carried = carrying_overlay(display, self.carrying.as_ref(), self.pointer);
+        let feedback = if carried.is_some() {
+            None
+        } else {
+            feedback(display, self.pointer, &self.pressed)
+        };
+        if feedback.is_none() && carried.is_none() {
+            return draw(&self.display.commands);
+        }
+        let painted = self.display.commands.len();
+        self.display.commands.extend(feedback);
+        self.display.commands.extend(carried.into_iter().flatten());
+        let drawn = draw(&self.display.commands);
+        self.display.commands.truncate(painted);
+        drawn
+    }
+
     /// The pointer left the area.
     pub(crate) fn pointer_left(&mut self) {
         self.pointer = None;

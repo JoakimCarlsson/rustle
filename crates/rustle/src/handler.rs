@@ -74,6 +74,7 @@ impl App {
     /// is due, or for the next event.
     pub(crate) fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.sync_windows(event_loop);
+        self.flush_pending_input(event_loop);
         if self.composition.run_timers(self.started.elapsed()) {
             self.woken();
         }
@@ -95,16 +96,33 @@ impl App {
         });
     }
 
-    /// Answers what the platform's accessibility API asked, composes and lays out again what
-    /// state changes dirtied, and keeps frames coming.
+    /// Answers what the platform's accessibility API asked and keeps frames coming.
+    ///
+    /// What state changes dirtied is composed and laid out once, by the next frame: the
+    /// windows are asked for a redraw and [`App::run_frame`] does the work then, however many
+    /// wake-ups came before it. Without an open window there is no frame to wait for, so the
+    /// work is done at once.
     pub(crate) fn woken(&mut self) {
         while let Ok((window, request)) = self.requested.try_recv() {
             self.accessibility_event_for(window, request);
         }
-        if self.composition.recompose() {
-            self.relayout_all();
+        if self.native_windows().next().is_none() {
+            if self.composition.recompose() {
+                self.relayout_all();
+            }
+            self.follow_phases();
+        } else {
+            let phases = self.composition.phase_observer();
+            let relayout = phases.take_relayout();
+            let redraw = phases.take_redraw();
+            self.deferred_phases.0 |= relayout;
+            self.deferred_phases.1 |= redraw;
+            if self.composition.is_dirty() || relayout || redraw {
+                for state in self.native_windows() {
+                    state.window.request_redraw();
+                }
+            }
         }
-        self.follow_phases();
         self.apply_focus_request();
         self.apply_effects();
         self.request_redraw_for_frames();
@@ -228,16 +246,7 @@ impl App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let scale_factor = state.window.scale_factor() as f32;
-                // A line of a mouse wheel scrolls this many logical pixels.
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (x * 48.0, y * 48.0),
-                    MouseScrollDelta::PixelDelta(delta) => {
-                        (delta.x as f32 / scale_factor, delta.y as f32 / scale_factor)
-                    }
-                    _ => (0.0, 0.0),
-                };
-                self.ui.wheel(Offset::new(dx, dy));
+                self.ui.wheel(wheel_delta(delta, state.window.scale_factor()));
             }
             WindowEvent::PinchGesture { delta, .. } => self.ui.pinch(delta as f32),
             WindowEvent::ThemeChanged(theme) => self.set_dark(theme == WindowTheme::Dark),
@@ -265,9 +274,12 @@ impl App {
             WindowEvent::RedrawRequested => {
                 crate::shadow::fit(&*state.window, self.options.shadow.as_ref());
                 let scale_factor = state.window.scale_factor() as f32;
-                let commands = self.ui.commands();
-                let built = Instant::now();
-                match state.renderer.render(&commands, scale_factor) {
+                let renderer = &mut state.renderer;
+                let (built, rendered) = self.ui.with_commands(|commands| {
+                    let built = Instant::now();
+                    (built, renderer.render(commands, scale_factor))
+                });
+                match rendered {
                     Ok(true) => crate::frame_timing::observe(crate::FrameTiming {
                         scene: built - started,
                         render: built.elapsed(),
@@ -283,6 +295,76 @@ impl App {
         self.apply_effects();
     }
 
+    /// Holds back `event` of the window `id`, the active one, if it is a mouse move or a
+    /// scroll, to be handled with the ones like it that follow before the next frame: the
+    /// latest move stands for the moves before it, and scrolls are summed. A move held back
+    /// is handled before a scroll is held, and the other way round, so they keep their order.
+    /// Returns whether `event` was held back.
+    pub(crate) fn coalesce(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        event: &WindowEvent,
+    ) -> bool {
+        if !coalescible(event) {
+            return false;
+        }
+        let Some(scale_factor) = self.window.as_ref().map(|state| state.window.scale_factor())
+        else {
+            return false;
+        };
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            let delta = wheel_delta(*delta, scale_factor);
+            if self.pending_move.is_some()
+                || self
+                    .pending_wheel
+                    .as_ref()
+                    .is_some_and(|(window, _)| *window != id)
+            {
+                self.flush_pending_input(event_loop);
+            }
+            match &mut self.pending_wheel {
+                Some((_, sum)) => *sum = Offset::new(sum.x + delta.x, sum.y + delta.y),
+                None => self.pending_wheel = Some((id, delta)),
+            }
+        } else {
+            if self.pending_wheel.is_some()
+                || self
+                    .pending_move
+                    .as_ref()
+                    .is_some_and(|(window, _)| *window != id)
+            {
+                self.flush_pending_input(event_loop);
+            }
+            self.pending_move = Some((id, event.clone()));
+        }
+        if let Some(state) = &self.window {
+            state.window.request_redraw();
+        }
+        true
+    }
+
+    /// Handles the mouse move and the summed scroll held back by [`App::coalesce`], in the
+    /// windows they happened in, leaving the active window as it was.
+    pub(crate) fn flush_pending_input(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let before = self.active;
+        if let Some((id, event)) = self.pending_move.take()
+            && let Some(index) = self.slot_of(id)
+        {
+            self.activate(index);
+            self.window_event(event_loop, event);
+        }
+        if let Some((id, delta)) = self.pending_wheel.take()
+            && let Some(index) = self.slot_of(id)
+        {
+            self.activate(index);
+            self.ui.wheel(delta);
+            self.apply_focus_request();
+            self.apply_effects();
+        }
+        self.activate(before);
+    }
+
     /// A finger or pen `id` of `kind` touched, moved, lifted or was taken away at `at`,
     /// pressing with `force`.
     fn contact(
@@ -295,6 +377,31 @@ impl App {
     ) {
         let pressure = force.map_or(0.5, |force| force.normalized(None).clamp(0.0, 1.0) as f32);
         self.ui.contact(id, kind, phase, at, pressure);
+    }
+}
+
+/// Whether `event` is a mouse move or a scroll, which [`App::coalesce`] may hold back.
+pub(crate) fn coalescible(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::PointerMoved {
+            source: PointerSource::Mouse,
+            ..
+        } | WindowEvent::MouseWheel { .. }
+    )
+}
+
+/// How far `delta` scrolls, in logical pixels, on a screen with `scale_factor`. A line of a
+/// mouse wheel scrolls 48 logical pixels.
+fn wheel_delta(delta: MouseScrollDelta, scale_factor: f64) -> Offset {
+    let scale_factor = scale_factor as f32;
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) => Offset::new(x * 48.0, y * 48.0),
+        MouseScrollDelta::PixelDelta(delta) => Offset::new(
+            delta.x as f32 / scale_factor,
+            delta.y as f32 / scale_factor,
+        ),
+        _ => Offset::new(0.0, 0.0),
     }
 }
 

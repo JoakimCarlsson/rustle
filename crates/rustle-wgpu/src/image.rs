@@ -1,12 +1,12 @@
 //! Pictures drawn as instanced quads by the image shader in `rustle-shaders`.
 
+use crate::instances::InstanceBuffer;
 use crate::quad::Viewport;
 use crate::srgb_to_linear;
 use std::collections::HashMap;
 
 use rustle_geometry::Rect;
 use rustle_graphics::{Color, DrawCommand, ImageData, ImageKey, PixelFormat, PixelRect};
-use wgpu::util::DeviceExt;
 
 /// One picture as the shader reads it, in physical pixels.
 #[repr(C)]
@@ -51,7 +51,8 @@ fn placement(rect: Rect, image: &ImageData, scale: f32) -> ([f32; 2], [f32; 2]) 
 
 /// The pictures of one layer: their instances and which texture each uses.
 pub(crate) struct Batch {
-    buffer: wgpu::Buffer,
+    /// Where the instances lie in the frame's instance buffer, in bytes.
+    bytes: std::ops::Range<u64>,
     ids: Vec<u64>,
 }
 
@@ -77,6 +78,10 @@ pub(crate) struct Images {
     textures: HashMap<u64, Cached>,
     srgb_target: bool,
     frame: u64,
+    /// The pictures of the frame, every layer's in one buffer.
+    instances: InstanceBuffer,
+    /// Where instances are gathered before they are staged, kept to reuse its memory.
+    raw: Vec<Instance>,
 }
 
 impl Images {
@@ -168,11 +173,19 @@ impl Images {
             textures: HashMap::new(),
             srgb_target: format.is_srgb(),
             frame: 0,
+            instances: InstanceBuffer::new("pictures"),
+            raw: Vec::new(),
         }
+    }
+
+    /// Writes the instances staged this frame to the GPU; called before anything is drawn.
+    pub(crate) fn flush(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.instances.flush(device, queue);
     }
 
     /// Starts a frame; pictures not drawn for a while are forgotten.
     pub(crate) fn begin_frame(&mut self) {
+        self.instances.begin_frame();
         self.frame += 1;
         let frame = self.frame;
         self.textures
@@ -362,32 +375,36 @@ impl Images {
         self.textures.len()
     }
 
-    /// Uploads `instances`, or returns `None` if there are none.
-    pub(crate) fn upload(
-        &self,
-        device: &wgpu::Device,
-        instances: &[(u64, Instance)],
-    ) -> Option<Batch> {
+    /// Stages `instances` in the frame's instance buffer, or returns `None` if there are none.
+    pub(crate) fn upload(&mut self, instances: &[(u64, Instance)]) -> Option<Batch> {
         if instances.is_empty() {
             return None;
         }
-        let raw: Vec<Instance> = instances.iter().map(|(_, instance)| *instance).collect();
+        self.raw.clear();
+        self.raw
+            .extend(instances.iter().map(|(_, instance)| *instance));
         Some(Batch {
-            buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("pictures"),
-                contents: bytemuck::cast_slice(&raw),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
+            bytes: self.instances.push(bytemuck::cast_slice(&self.raw)),
             ids: instances.iter().map(|(id, _)| *id).collect(),
         })
     }
 
-    /// Draws `batch`, each picture with its own texture.
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, viewport: &Viewport, batch: &Batch) {
+    /// Draws the pictures of `batch` numbered `range`, each with its own texture.
+    pub(crate) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        viewport: &Viewport,
+        batch: &Batch,
+        range: std::ops::Range<u32>,
+    ) {
+        let Some(slice) = self.instances.slice(batch.bytes.clone()) else {
+            return;
+        };
         pass.set_pipeline(&self.pipeline);
         viewport.set(pass);
-        pass.set_vertex_buffer(0, batch.buffer.slice(..));
-        for (index, id) in batch.ids.iter().enumerate() {
+        pass.set_vertex_buffer(0, slice);
+        let (start, end) = (range.start as usize, range.end as usize);
+        for (index, id) in batch.ids.iter().enumerate().take(end).skip(start) {
             if let Some(cached) = self.textures.get(id) {
                 pass.set_bind_group(1, &cached.group, &[]);
                 pass.draw(0..6, index as u32..index as u32 + 1);

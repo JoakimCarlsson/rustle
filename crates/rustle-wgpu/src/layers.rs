@@ -1,14 +1,15 @@
 //! Splitting draw commands into layers, groups and the clips they are cut to.
 
-use std::rc::Rc;
-
 use glyphon::Color;
 use rustle_geometry::Rect;
 use rustle_graphics::DrawCommand;
 
 use crate::composite::{Mask, Placement};
 use crate::quad::Instance;
-use crate::text::{Content, Setting, Shaped, legible_color, legible_weight, shape};
+use crate::text::{
+    Content, Ink, Setting, Shaped, legible_color, legible_weight, plain_shape_key, rich_shape_key,
+    shape,
+};
 use crate::{Renderer, image, path, shaders};
 
 impl Renderer {
@@ -24,13 +25,14 @@ impl Renderer {
         let mut clips: Vec<Rect> = Vec::new();
         // Whether each of `clips` is rounded, and so has a group of its own.
         let mut rounded: Vec<bool> = Vec::new();
-        let mut current = Layer::new(scissor(&clips, scale_factor, target));
+        let mut clip = scissor(&clips, scale_factor, target);
+        let mut current = Layer::new();
         for command in commands {
             // Nothing outside the clip or the target can show, so it is not
             // shaped, tessellated or uploaded. Long lists that are not lazy
             // would otherwise pay for every row on every frame.
             if let Some(bounds) = bounds(command) {
-                let visible = current.scissor.unwrap_or((0, 0, target.0, target.1));
+                let visible = clip.unwrap_or((0, 0, target.0, target.1));
                 if outside(bounds, visible, scale_factor) {
                     continue;
                 }
@@ -59,7 +61,7 @@ impl Renderer {
                         scissor,
                         region: whole(scissor, target),
                     });
-                    current = Layer::new(scissor);
+                    current = Layer::new();
                 }
                 DrawCommand::PushEffect { rect, effect } => {
                     push_layer(&mut frames, current.take());
@@ -98,7 +100,7 @@ impl Renderer {
                         scissor: outer,
                         region,
                     });
-                    current = Layer::new(inner);
+                    current = Layer::new();
                 }
                 DrawCommand::BackdropBlur {
                     rect,
@@ -121,7 +123,7 @@ impl Renderer {
                     if let Some(frame) = frames.last_mut() {
                         frame.items.push(item);
                     }
-                    current = Layer::new(scissor(&clips, scale_factor, target));
+                    current = Layer::new();
                 }
                 DrawCommand::Shader {
                     rect,
@@ -145,28 +147,29 @@ impl Renderer {
                     if let Some(frame) = frames.last_mut() {
                         frame.items.push(item);
                     }
-                    current = Layer::new(scissor(&clips, scale_factor, target));
+                    current = Layer::new();
                 }
                 DrawCommand::PopLayer | DrawCommand::PopEffect => {
                     push_layer(&mut frames, current.take());
                     if frames.len() > 1 {
                         close_group(&mut frames);
                     }
-                    current = Layer::new(scissor(&clips, scale_factor, target));
+                    current = Layer::new();
                 }
                 DrawCommand::PushClip { rect } => {
-                    push_layer(&mut frames, current.take());
                     clips.push(*rect);
                     rounded.push(false);
-                    current = Layer::new(scissor(&clips, scale_factor, target));
+                    clip = scissor(&clips, scale_factor, target);
                 }
                 DrawCommand::PushRoundedClip { rect, radii } => {
-                    push_layer(&mut frames, current.take());
                     clips.push(*rect);
                     let scissor = scissor(&clips, scale_factor, target);
+                    clip = scissor;
                     if radii.iter().all(|radius| *radius <= 0.0) {
                         rounded.push(false);
                     } else {
+                        push_layer(&mut frames, current.take());
+                        current = Layer::new();
                         rounded.push(true);
                         let pixels = |value: f32| value * scale_factor;
                         frames.push(Frame {
@@ -187,15 +190,17 @@ impl Renderer {
                             region: whole(scissor, target),
                         });
                     }
-                    current = Layer::new(scissor);
                 }
                 DrawCommand::PopClip => {
-                    push_layer(&mut frames, current.take());
                     clips.pop();
-                    if rounded.pop() == Some(true) && frames.len() > 1 {
-                        close_group(&mut frames);
+                    clip = scissor(&clips, scale_factor, target);
+                    if rounded.pop() == Some(true) {
+                        push_layer(&mut frames, current.take());
+                        current = Layer::new();
+                        if frames.len() > 1 {
+                            close_group(&mut frames);
+                        }
                     }
-                    current = Layer::new(scissor(&clips, scale_factor, target));
                 }
                 DrawCommand::Rect { .. }
                 | DrawCommand::Shadow { .. }
@@ -204,24 +209,24 @@ impl Renderer {
                 | DrawCommand::SweepGradient { .. }
                 | DrawCommand::Arc { .. }
                 | DrawCommand::Line { .. } => {
-                    // A rectangle after an outline, text or a picture must paint over it, so it starts a new layer.
-                    if !current.texts.is_empty()
-                        || !current.images.is_empty()
-                        || !current.paths.is_empty()
-                    {
-                        let scissor = current.scissor;
+                    let area = covered(command, clip, scale_factor, target);
+                    if current.hides(area, Kind::Quad) {
                         push_layer(&mut frames, current.take());
-                        current = Layer::new(scissor);
+                        current = Layer::new();
                     }
-                    current.quads.extend(self.quads.instance(command));
+                    if let Some(instance) = self.quads.instance(command) {
+                        let start = current.quads.len();
+                        current.quads.push(instance);
+                        extend(&mut current.quad_runs, clip, start, current.quads.len());
+                    }
                 }
                 DrawCommand::Path { .. } => {
-                    // An outline after text or a picture must paint over it.
-                    if !current.texts.is_empty() || !current.images.is_empty() {
-                        let scissor = current.scissor;
+                    let area = covered(command, clip, scale_factor, target);
+                    if current.hides(area, Kind::Path) {
                         push_layer(&mut frames, current.take());
-                        current = Layer::new(scissor);
+                        current = Layer::new();
                     }
+                    let start = current.paths.len();
                     self.paths.push(
                         &self.device,
                         &self.queue,
@@ -229,23 +234,30 @@ impl Renderer {
                         command,
                         scale_factor,
                     );
+                    let end = current.paths.len();
+                    if end > start {
+                        extend(&mut current.path_runs, clip, start, end);
+                        current.cover(area, Kind::Path);
+                    }
                 }
                 DrawCommand::Image { .. } | DrawCommand::Mask { .. } | DrawCommand::Svg { .. } => {
-                    // A picture after text, an outline or a rectangle must paint over it.
-                    if !current.texts.is_empty()
-                        || !current.quads.is_empty()
-                        || !current.paths.is_empty()
-                    {
-                        let scissor = current.scissor;
+                    let area = covered(command, clip, scale_factor, target);
+                    if current.hides(area, Kind::Image) {
                         push_layer(&mut frames, current.take());
-                        current = Layer::new(scissor);
+                        current = Layer::new();
                     }
+                    let start = current.images.len();
                     current.images.extend(self.images.instance(
                         &self.device,
                         &self.queue,
                         command,
                         scale_factor,
                     ));
+                    let end = current.images.len();
+                    if end > start {
+                        extend(&mut current.image_runs, clip, start, end);
+                        current.cover(area, Kind::Image);
+                    }
                 }
                 DrawCommand::Text {
                     x,
@@ -264,46 +276,45 @@ impl Renderer {
                     ligatures,
                     wrap,
                 } => {
-                    let font_weight = &legible_weight(*font_weight, *color);
-                    let generation = self.font_generation.get();
-                    let cache_key = format!(
-                        "{content}\u{0}{font_weight}{font_family:?}{font_size}{line_height}{align:?}{max_lines:?}{width}{italic}{letter_spacing}{ligatures}{wrap:?}{generation}"
+                    let font_weight = legible_weight(*font_weight, *color);
+                    let key = plain_shape_key(
+                        content,
+                        font_weight,
+                        *font_family,
+                        *font_size,
+                        *line_height,
+                        (*align, *max_lines, *width, *wrap),
+                        (*italic, *letter_spacing, *ligatures),
+                        self.font_generation.get(),
                     );
-                    let buffer = match self.shaped.get_mut(&cache_key) {
-                        Some((buffer, used)) => {
-                            *used = self.frame;
-                            Rc::clone(buffer)
-                        }
-                        None => {
-                            let buffer = Rc::new(shape(
-                                &mut self.font_system.borrow_mut(),
-                                Setting {
-                                    content: Content::Plain {
-                                        text: content,
-                                        font_weight: *font_weight,
-                                        font_family: *font_family,
-                                        italic: *italic,
-                                        letter_spacing: *letter_spacing,
-                                        ligatures: *ligatures,
-                                    },
-                                    font_size: *font_size,
-                                    line_height: *line_height,
-                                    align: *align,
-                                    max_lines: *max_lines,
-                                    wrap: *wrap,
+                    let (buffer, ink) = self.kept(key, scale_factor, |font_system| {
+                        shape(
+                            font_system,
+                            Setting {
+                                content: Content::Plain {
+                                    text: content,
+                                    font_weight,
+                                    font_family: *font_family,
+                                    italic: *italic,
+                                    letter_spacing: *letter_spacing,
+                                    ligatures: *ligatures,
                                 },
-                                Some(*width + 1.0),
-                            ));
-                            self.shaped
-                                .insert(cache_key, (Rc::clone(&buffer), self.frame));
-                            buffer
-                        }
-                    };
-                    current.texts.push(Shaped {
+                                font_size: *font_size,
+                                line_height: *line_height,
+                                align: *align,
+                                max_lines: *max_lines,
+                                wrap: *wrap,
+                            },
+                            Some(*width + 1.0),
+                        )
+                    });
+                    let text = Shaped {
                         position: (*x, *y),
                         color: legible_color(*color),
                         buffer,
-                    });
+                        clip,
+                    };
+                    add_text(&mut frames, &mut current, text, ink, scale_factor, target);
                 }
                 DrawCommand::RichText {
                     x,
@@ -316,47 +327,46 @@ impl Renderer {
                     max_lines,
                     wrap,
                 } => {
-                    // Shaping rich text is the costly part, so it is kept like plain text.
-                    let generation = self.font_generation.get();
-                    let cache_key = format!(
-                        "{spans:?}\u{1}{font_size}{line_height}{align:?}{max_lines:?}{width}{wrap:?}{generation}"
+                    let key = rich_shape_key(
+                        spans,
+                        *font_size,
+                        *line_height,
+                        (*align, *max_lines, *width, *wrap),
+                        self.font_generation.get(),
                     );
-                    let buffer = match self.shaped.get_mut(&cache_key) {
-                        Some((buffer, used)) => {
-                            *used = self.frame;
-                            Rc::clone(buffer)
-                        }
-                        None => {
-                            let buffer = Rc::new(shape(
-                                &mut self.font_system.borrow_mut(),
-                                Setting {
-                                    content: Content::Rich(spans),
-                                    font_size: *font_size,
-                                    line_height: *line_height,
-                                    align: *align,
-                                    max_lines: *max_lines,
-                                    wrap: *wrap,
-                                },
-                                Some(*width + 1.0),
-                            ));
-                            self.shaped
-                                .insert(cache_key, (Rc::clone(&buffer), self.frame));
-                            buffer
-                        }
-                    };
-                    current.texts.push(Shaped {
+                    let (buffer, ink) = self.kept(key, scale_factor, |font_system| {
+                        shape(
+                            font_system,
+                            Setting {
+                                content: Content::Rich(spans),
+                                font_size: *font_size,
+                                line_height: *line_height,
+                                align: *align,
+                                max_lines: *max_lines,
+                                wrap: *wrap,
+                            },
+                            Some(*width + 1.0),
+                        )
+                    });
+                    let text = Shaped {
                         position: (*x, *y),
                         color: Color::rgb(255, 255, 255),
                         buffer,
-                    });
+                        clip,
+                    };
+                    add_text(&mut frames, &mut current, text, ink, scale_factor, target);
                 }
             }
         }
         self.frame += 1;
         self.paths.end_frame();
-        let frame = self.frame;
-        self.shaped.retain(|_, (_, used)| frame - *used < 240);
-        self.measured.retain(|_, (_, used)| frame - *used < 240);
+        if self.frame.is_multiple_of(SWEEP_FRAMES) {
+            let frame = self.frame;
+            self.shaped
+                .retain(|_, kept| frame - kept.used < KEPT_FRAMES);
+            self.measured
+                .retain(|_, (_, used)| frame - *used < KEPT_FRAMES);
+        }
         push_layer(&mut frames, current.take());
         while frames.len() > 1 {
             close_group(&mut frames);
@@ -365,24 +375,219 @@ impl Renderer {
     }
 }
 
-/// A run of rectangles with the text over them, cut to a clip.
+/// How many frames pass between sweeps of the text caches.
+const SWEEP_FRAMES: u64 = 60;
+
+/// How many frames shaped and measured text is kept after it was last used.
+const KEPT_FRAMES: u64 = 240;
+
+/// A scissor rectangle: left, top, width and height in physical pixels of the target.
+pub(super) type Scissor = (u32, u32, u32, u32);
+
+/// A rectangle as left, top, right and bottom in physical pixels of the target.
+type Area = (i32, i32, i32, i32);
+
+/// The kinds of primitive a layer draws, in the order it draws them.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    Quad,
+    Path,
+    Image,
+    Text,
+}
+
+/// Instances of one kind drawn with one scissor: those numbered `start..end`.
+pub(super) struct Run {
+    /// `None` is the whole target.
+    pub(super) scissor: Option<Scissor>,
+    pub(super) start: u32,
+    pub(super) end: u32,
+}
+
+/// Records that the instances numbered `start..end` are cut to `scissor`, lengthening the
+/// last of `runs` when it has the same scissor and ends where they start.
+fn extend(runs: &mut Vec<Run>, scissor: Option<Scissor>, start: usize, end: usize) {
+    let (start, end) = (start as u32, end as u32);
+    if start == end {
+        return;
+    }
+    match runs.last_mut() {
+        Some(last) if last.scissor == scissor && last.end == start => last.end = end,
+        _ => runs.push(Run {
+            scissor,
+            start,
+            end,
+        }),
+    }
+}
+
+/// The areas a layer's primitives of one kind cover, to tell whether something drawn later
+/// would land under them if it joined the layer.
+#[derive(Default)]
+struct Cover {
+    /// Everything in `areas` together.
+    union: Option<Area>,
+    areas: Vec<Area>,
+}
+
+impl Cover {
+    /// Adds `area` to what is covered.
+    fn add(&mut self, area: Area) {
+        self.union = Some(self.union.map_or(area, |union| {
+            (
+                union.0.min(area.0),
+                union.1.min(area.1),
+                union.2.max(area.2),
+                union.3.max(area.3),
+            )
+        }));
+        self.areas.push(area);
+    }
+
+    /// Whether any covered area shares a pixel with `area`.
+    fn meets(&self, area: Area) -> bool {
+        self.union.is_some_and(|union| meet(union, area))
+            && self.areas.iter().any(|covered| meet(*covered, area))
+    }
+}
+
+/// Whether two areas share a pixel.
+fn meet(a: Area, b: Area) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
+/// Where `command`, cut to `clip`, can draw in physical pixels of `target`: from
+/// [`bounds`] grown by a pixel, so it errs on the large side. `None` when it draws nothing.
+fn covered(
+    command: &DrawCommand,
+    clip: Option<Scissor>,
+    scale_factor: f32,
+    target: (u32, u32),
+) -> Option<Area> {
+    let (left, top, right, bottom) = bounds(command)?;
+    let area = (
+        (left * scale_factor).floor() as i32 - 1,
+        (top * scale_factor).floor() as i32 - 1,
+        (right * scale_factor).ceil() as i32 + 1,
+        (bottom * scale_factor).ceil() as i32 + 1,
+    );
+    cut(area, clip, target)
+}
+
+/// `area` cut to `clip`, the whole target when `None`; `None` if nothing is left.
+fn cut(area: Area, clip: Option<Scissor>, target: (u32, u32)) -> Option<Area> {
+    let (x, y, width, height) = whole(clip, target);
+    let (x, y) = (x as i32, y as i32);
+    let cut = (
+        area.0.max(x),
+        area.1.max(y),
+        area.2.min(x + width as i32),
+        area.3.min(y + height as i32),
+    );
+    (cut.0 < cut.2 && cut.1 < cut.3).then_some(cut)
+}
+
+/// Adds `text`, whose glyphs land as `ink` says, to `current`, first ending the layer when
+/// some of its text reaches outside its line boxes and does not share one clip with the rest.
+fn add_text(
+    frames: &mut [Frame],
+    current: &mut Layer,
+    text: Shaped,
+    ink: Ink,
+    scale_factor: f32,
+    target: (u32, u32),
+) {
+    let shared = current.texts.iter().all(|other| other.clip == text.clip);
+    if (ink.overhang || current.text_overhang) && !shared {
+        push_layer(frames, std::mem::replace(current, Layer::new()).take());
+    }
+    current.text_overhang |= ink.overhang;
+    let origin = (
+        (text.position.0 * scale_factor).round() as i32,
+        (text.position.1 * scale_factor).round() as i32,
+    );
+    let area = ink.rect.and_then(|(left, top, right, bottom)| {
+        cut(
+            (
+                origin.0 + left,
+                origin.1 + top,
+                origin.0 + right,
+                origin.1 + bottom,
+            ),
+            text.clip,
+            target,
+        )
+    });
+    current.cover(area, Kind::Text);
+    current.texts.push(text);
+}
+
+/// Rectangles, outlines, pictures and text drawn together, each kind after the one before
+/// and every primitive cut to its own scissor. A primitive only joins a layer when nothing
+/// of a kind drawn after its own already lies where it draws.
 pub(super) struct Layer {
-    /// In physical pixels as x, y, width and height; `None` is the whole target.
-    pub(super) scissor: Option<(u32, u32, u32, u32)>,
     pub(super) quads: Vec<Instance>,
+    pub(super) quad_runs: Vec<Run>,
     pub(super) paths: path::Geometry,
+    pub(super) path_runs: Vec<Run>,
     pub(super) images: Vec<(u64, image::Instance)>,
+    pub(super) image_runs: Vec<Run>,
     pub(super) texts: Vec<Shaped>,
+    /// Whether a text reaches outside its line boxes, so that all the layer's text shares
+    /// one clip and is cut by the scissor rather than by glyphon's bounds.
+    text_overhang: bool,
+    /// Where the outlines, pictures and text lie, by kind.
+    covers: [Cover; 3],
 }
 
 impl Layer {
-    fn new(scissor: Option<(u32, u32, u32, u32)>) -> Self {
+    /// An empty layer.
+    fn new() -> Self {
         Self {
-            scissor,
             quads: Vec::new(),
+            quad_runs: Vec::new(),
             paths: path::Geometry::default(),
+            path_runs: Vec::new(),
             images: Vec::new(),
+            image_runs: Vec::new(),
             texts: Vec::new(),
+            text_overhang: false,
+            covers: Default::default(),
+        }
+    }
+
+    /// Whether a primitive of `kind` drawn in `area` would land under something of a kind
+    /// the layer draws after it, so it must go in a layer of its own.
+    fn hides(&self, area: Option<Area>, kind: Kind) -> bool {
+        let Some(area) = area else {
+            return false;
+        };
+        [Kind::Path, Kind::Image, Kind::Text]
+            .into_iter()
+            .zip(&self.covers)
+            .any(|(later, cover)| later > kind && cover.meets(area))
+    }
+
+    /// Records that a primitive of `kind` lies in `area`.
+    fn cover(&mut self, area: Option<Area>, kind: Kind) {
+        let index = match kind {
+            Kind::Quad => return,
+            Kind::Path => 0,
+            Kind::Image => 1,
+            Kind::Text => 2,
+        };
+        if let Some(area) = area {
+            self.covers[index].add(area);
+        }
+    }
+
+    /// The clip all the layer's text is cut to by the scissor, when it shares one because
+    /// some of it reaches outside its line boxes; `None` when each text is cut to its own.
+    pub(super) fn text_clip(&self) -> Option<Option<Scissor>> {
+        if self.text_overhang {
+            self.texts.first().map(|text| text.clip)
+        } else {
+            None
         }
     }
 

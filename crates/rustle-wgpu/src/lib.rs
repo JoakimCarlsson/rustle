@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
 
-use glyphon::{Buffer, Cache, FontSystem, SwashCache, TextAtlas, TextRenderer, Viewport};
+use glyphon::{Cache, FontSystem, SwashCache, TextAtlas, TextRenderer, Viewport};
 
 mod blur;
 mod composite;
@@ -19,6 +19,7 @@ mod device;
 mod engine;
 mod frame;
 mod image;
+mod instances;
 mod layers;
 mod path;
 mod quad;
@@ -83,8 +84,8 @@ pub struct Renderer {
     font_system: Rc<RefCell<FontSystem>>,
     /// Counts fonts registered at run time, so cached text is shaped again.
     font_generation: Rc<Cell<u64>>,
-    /// Shaped text kept between frames, with the frame it was last used in.
-    shaped: HashMap<String, (Rc<Buffer>, u64)>,
+    /// Shaped text kept between frames, keyed by a hash of what decides its shape.
+    shaped: HashMap<u64, text::Kept>,
     /// Sizes text measured for layout, keyed by a hash of what was measured,
     /// with the frame they were last used in.
     measured: HashMap<u64, (rustle_geometry::Size, u64)>,

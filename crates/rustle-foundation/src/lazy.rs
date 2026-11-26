@@ -134,7 +134,9 @@ enum Request {
     End,
 }
 
-/// Where the items of a list were when it last composed.
+/// Where the items of a list were when it last composed, kept from one composition to
+/// the next and placed afresh only when the items, the padding or the estimate for items
+/// not measured change, or a length learned could not be taken in during layout.
 #[derive(Default)]
 struct Placed {
     /// The key of each item.
@@ -143,6 +145,261 @@ struct Placed {
     tops: Vec<f32>,
     /// How tall the viewport was.
     viewport: f32,
+    /// The length of each item, measured or estimated, summed in a Fenwick tree.
+    lengths: Lengths,
+    /// Whether each item's length was measured rather than estimated.
+    measured: Vec<bool>,
+    /// The index of each item, by key.
+    index: KeyMap<usize>,
+    /// The length counted for items not measured.
+    estimate: f32,
+    /// The padding before the first item and after the last.
+    padding: (f32, f32),
+    /// Lengths learned since the list composed that the next composition places, by index.
+    pending: Vec<(usize, f32)>,
+    /// The end of the items the latest composition composed around the viewport.
+    last: usize,
+    /// Whether two items share a key, so lengths are looked up by key every composition.
+    duplicates: bool,
+    /// Whether a length learned at or past the item at the start of the viewport is taken
+    /// in during layout rather than by composing again.
+    remeasure_in_place: bool,
+}
+
+/// What [`Placed::remeasure`] did with a length learned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Remeasured {
+    /// The item is not among those placed: the next composition finds the length by key.
+    Unplaced,
+    /// The length waits for the next composition, which keeps the view where it was.
+    Deferred,
+    /// The length was taken in where the list is, and what was composed still covers the
+    /// viewport.
+    Absorbed,
+    /// The length was taken in, but the items composed no longer cover the viewport.
+    Uncovered,
+}
+
+impl Placed {
+    /// Places `keys` with `estimate` for items not measured and `padding` at both ends,
+    /// reusing what was placed when nothing changed. Lengths are looked up in `heights`
+    /// only when the keys changed or `rehash` asks for it.
+    ///
+    /// Returns the keys and tops placed before, when the items were placed afresh, or
+    /// `None` when what was placed stands as it was.
+    fn update(
+        &mut self,
+        keys: Vec<u64>,
+        heights: &KeyMap<f32>,
+        estimate: f32,
+        padding: (f32, f32),
+        rehash: bool,
+    ) -> Option<(Vec<u64>, Vec<f32>)> {
+        let same = !rehash && !self.duplicates && !self.tops.is_empty() && self.keys == keys;
+        let estimate_moved = estimate.to_bits() != self.estimate.to_bits()
+            && self.measured.iter().any(|measured| !measured);
+        if same && self.pending.is_empty() && padding == self.padding && !estimate_moved {
+            return None;
+        }
+        let old_tops = std::mem::take(&mut self.tops);
+        let mut values = std::mem::take(&mut self.lengths).values;
+        let old_keys = if same {
+            for (index, length) in std::mem::take(&mut self.pending) {
+                values[index] = length;
+                self.measured[index] = true;
+            }
+            for (value, measured) in values.iter_mut().zip(&self.measured) {
+                if !measured {
+                    *value = estimate;
+                }
+            }
+            keys
+        } else {
+            self.pending.clear();
+            self.measured.clear();
+            values.clear();
+            self.index.clear();
+            for (position, key) in keys.iter().enumerate() {
+                let height = heights.get(key).copied();
+                self.measured.push(height.is_some());
+                values.push(height.unwrap_or(estimate));
+                self.index.insert(*key, position);
+            }
+            self.duplicates = self.index.len() != keys.len();
+            std::mem::replace(&mut self.keys, keys)
+        };
+        let mut tops = Vec::with_capacity(values.len() + 1);
+        let mut y = padding.0;
+        for value in &values {
+            tops.push(y);
+            y += value;
+        }
+        tops.push(y + padding.1);
+        self.tops = tops;
+        self.lengths = Lengths::new(values);
+        self.estimate = estimate;
+        self.padding = padding;
+        Some((old_keys, old_tops))
+    }
+
+    /// Takes in that the item with `key` is now `height` long, while the list is scrolled
+    /// to `offset`, with `request` pending and following its end if `stick_to_end`.
+    ///
+    /// A length at or past the item at the start of the viewport, which moves nothing in
+    /// view, is taken in at once: the item's length in the tree, the tops after it and the
+    /// stretch `covered` are moved by the difference. Any other waits in `pending` for the
+    /// next composition, which keeps the view where it was.
+    fn remeasure(
+        &mut self,
+        key: u64,
+        height: f32,
+        offset: f32,
+        follow: (bool, bool),
+        covered: &Cell<(f32, f32)>,
+    ) -> Remeasured {
+        let (stick_to_end, requested) = follow;
+        let Some(&index) = self.index.get(&key) else {
+            return Remeasured::Unplaced;
+        };
+        let count = self.keys.len();
+        if index >= count || self.keys[index] != key {
+            return Remeasured::Unplaced;
+        }
+        let delta = height - self.lengths.get(index);
+        if !self.remeasure_in_place
+            || requested
+            || self.duplicates
+            || self.pending.iter().any(|(waiting, _)| *waiting == index)
+            || !self.stays_in_view(index, delta, offset, stick_to_end)
+        {
+            self.pending.push((index, height));
+            return Remeasured::Deferred;
+        }
+        self.lengths.set(index, height);
+        self.measured[index] = true;
+        for top in &mut self.tops[index + 1..] {
+            *top += delta;
+        }
+        let (from, mut to) = covered.get();
+        if index < self.last && to.is_finite() {
+            to += delta;
+            covered.set((from, to));
+        }
+        if offset + self.viewport > to {
+            Remeasured::Uncovered
+        } else {
+            Remeasured::Absorbed
+        }
+    }
+
+    /// Whether item `index` growing by `delta` leaves the list at `offset` where the next
+    /// composition would keep it: the item is at or past the one at the start of the
+    /// viewport, and a list following its end stays at it.
+    fn stays_in_view(&self, index: usize, delta: f32, offset: f32, stick_to_end: bool) -> bool {
+        let Some(&old_total) = self.tops.last() else {
+            return false;
+        };
+        let new_max = (old_total + delta - self.viewport).max(0.0);
+        if offset > new_max + 0.05 {
+            return false;
+        }
+        let old_end = (old_total - self.viewport).max(0.0);
+        if stick_to_end && offset >= old_end - END_TOLERANCE {
+            return (new_max - offset).abs() <= 0.05;
+        }
+        if offset <= 0.0 {
+            return true;
+        }
+        let anchor = self
+            .lengths
+            .index_at(offset - self.padding.0)
+            .min(self.keys.len().saturating_sub(1));
+        index >= anchor
+    }
+}
+
+/// The lengths of a list's items in a Fenwick tree, so one length changes, and the sum
+/// of those before an item or the item at a distance is found, in logarithmic time.
+#[derive(Default)]
+struct Lengths {
+    /// The length of each item.
+    values: Vec<f32>,
+    /// The tree, one-based: entry `i` sums the `i & -i` lengths ending with item `i - 1`.
+    tree: Vec<f32>,
+}
+
+impl Lengths {
+    /// The tree over `values`, built in linear time.
+    fn new(values: Vec<f32>) -> Self {
+        let count = values.len();
+        let mut tree = vec![0.0; count + 1];
+        for position in 1..=count {
+            tree[position] += values[position - 1];
+            let parent = position + position.isolate_lowest_one();
+            if parent <= count {
+                tree[parent] += tree[position];
+            }
+        }
+        Self { values, tree }
+    }
+
+    /// The length of item `index`.
+    ///
+    /// # Panics
+    ///
+    /// If `index` is past the last item.
+    fn get(&self, index: usize) -> f32 {
+        self.values[index]
+    }
+
+    /// Makes item `index` `length` long.
+    ///
+    /// # Panics
+    ///
+    /// If `index` is past the last item.
+    fn set(&mut self, index: usize, length: f32) {
+        let delta = length - self.values[index];
+        self.values[index] = length;
+        let mut position = index + 1;
+        while position < self.tree.len() {
+            self.tree[position] += delta;
+            position += position.isolate_lowest_one();
+        }
+    }
+
+    /// The sum of the lengths of the items before `end`.
+    #[cfg(test)]
+    fn prefix(&self, end: usize) -> f32 {
+        let mut position = end.min(self.values.len());
+        let mut sum = 0.0;
+        while position > 0 {
+            sum += self.tree[position];
+            position &= position - 1;
+        }
+        sum
+    }
+
+    /// The index of the item `distance` from the start of the first, which is the count
+    /// of items when it is at or past the end: the last `i` whose items before it sum to
+    /// no more than `distance`.
+    fn index_at(&self, distance: f32) -> usize {
+        if distance < 0.0 {
+            return 0;
+        }
+        let count = self.values.len();
+        let mut position = 0;
+        let mut left = distance;
+        let mut step = count.next_power_of_two();
+        while step > 0 {
+            let next = position + step;
+            if next <= count && self.tree[next] <= left {
+                position = next;
+                left -= self.tree[next];
+            }
+            step >>= 1;
+        }
+        position
+    }
 }
 
 struct ListInner {
@@ -151,6 +408,13 @@ struct ListInner {
     /// The sum of `heights`, for the average that estimates the rest.
     sum: Cell<f32>,
     placed: RefCell<Placed>,
+    /// Whether the next composition places every item afresh by key, as a length was
+    /// learned while what was placed could not be reached.
+    rehash: Cell<bool>,
+    /// The length of the viewport, as layout last measured it, when the variable-size list
+    /// last composed: a resize composes the list again, while a change of the content's
+    /// length alone, which the same scroll state holds, does not.
+    composed_viewport: Cell<Option<f32>>,
     stick_to_end: Cell<bool>,
     request: Cell<Option<Request>>,
     /// How many lanes the staggered grid had and the lane of each item, by key.
@@ -247,6 +511,8 @@ impl ListInner {
             heights: RefCell::default(),
             sum: Cell::new(0.0),
             placed: RefCell::default(),
+            rehash: Cell::new(false),
+            composed_viewport: Cell::new(None),
             stick_to_end: Cell::new(false),
             request: Cell::new(None),
             lanes: RefCell::default(),
@@ -474,7 +740,11 @@ impl LazyListState {
             let (start, length) =
                 rustle_runtime::untracked(|| (scroll.offset(), scroll.viewport_length()));
             let (from, to) = inner.covered.get();
-            if start < from || start + length > to {
+            let resized = inner
+                .composed_viewport
+                .get()
+                .is_some_and(|composed| composed.to_bits() != length.to_bits());
+            if resized || start < from || start + length > to {
                 inner.uncovered.set(true);
                 version.update(|version| *version += 1);
             }
@@ -482,17 +752,49 @@ impl LazyListState {
         *self.inner.watch.borrow_mut() = Some(handle);
     }
 
+    /// Learns that the item with `key` is `height` long, as layout measured it.
+    ///
+    /// The list composes again when the item was not measured before, or its length
+    /// moved by more than half a pixel and could not be taken in during layout: a length
+    /// at or past the item at the start of the viewport, such as the newest message of a
+    /// chat streaming in, only moves the tops after it and composes nothing.
     fn record(&self, key: u64, height: f32) {
-        let changed = {
+        let old = {
             let mut heights = self.inner.heights.borrow_mut();
             let old = heights.insert(key, height);
             self.inner
                 .sum
                 .set(self.inner.sum.get() + height - old.unwrap_or(0.0));
-            old.is_none_or(|old| (old - height).abs() > 0.5)
+            old
         };
-        if changed {
-            self.bump();
+        if old.is_some_and(|old| old.to_bits() == height.to_bits()) {
+            return;
+        }
+        let significant = old.is_none_or(|old| (old - height).abs() > 0.5);
+        let offset = rustle_runtime::untracked(|| self.scroll.offset());
+        let follow = (
+            self.inner.stick_to_end.get(),
+            self.inner.request.get().is_some(),
+        );
+        let remeasured = match self.inner.placed.try_borrow_mut() {
+            Ok(mut placed) => placed.remeasure(key, height, offset, follow, &self.inner.covered),
+            Err(_) => {
+                self.inner.rehash.set(true);
+                Remeasured::Deferred
+            }
+        };
+        match remeasured {
+            Remeasured::Absorbed => {}
+            Remeasured::Uncovered => {
+                if !self.inner.uncovered.replace(true) {
+                    self.bump();
+                }
+            }
+            Remeasured::Unplaced | Remeasured::Deferred => {
+                if significant {
+                    self.bump();
+                }
+            }
         }
     }
 }
@@ -523,6 +825,7 @@ fn item_at(tops: &[f32], offset: f32) -> usize {
 
 /// The tops of items with the given `keys`, ending with the end of the list.
 /// Items not measured count as `estimate`.
+#[cfg(test)]
 fn place(keys: &[u64], heights: &KeyMap<f32>, estimate: f32) -> Vec<f32> {
     let mut tops = Vec::with_capacity(keys.len() + 1);
     let mut y = 0.0;
@@ -988,54 +1291,61 @@ fn list_impl<K: Hash>(
         let _ = state.version.get();
         state.watch_scroll();
         state.inner.uncovered.set(false);
+        let measured_viewport = rustle_runtime::untracked(|| state.scroll.viewport_length());
+        state.inner.composed_viewport.set(Some(measured_viewport));
         let keys: Vec<u64> = (0..count).map(|index| hash_key(key_of(index))).collect();
         let scrolled = || rustle_runtime::untracked(|| state.scroll.offset());
-        let (new_tops, offset, viewport) = {
+        let (offset, viewport) = {
             let heights = state.inner.heights.borrow();
             let estimate = if heights.is_empty() {
                 axis.default_estimate()
             } else {
                 state.inner.sum.get() / heights.len() as f32
             };
-            let mut new_tops = place(&keys, &heights, estimate);
-            for top in &mut new_tops {
-                *top += content.padding_start;
-            }
-            if let Some(end) = new_tops.last_mut() {
-                *end += content.padding_end;
-            }
-            let viewport = match state.scroll.viewport_length() {
+            let viewport = match measured_viewport {
                 length if length > 0.0 => length,
                 _ => 1200.0,
             };
             let mut placed = state.inner.placed.borrow_mut();
+            placed.remeasure_in_place = true;
+            let old_viewport = placed.viewport;
+            let previous = placed.update(
+                keys,
+                &heights,
+                estimate,
+                (content.padding_start, content.padding_end),
+                state.inner.rehash.replace(false),
+            );
+            let (old_keys, old_tops) = previous
+                .as_ref()
+                .map_or((&placed.keys[..], &placed.tops[..]), |(keys, tops)| {
+                    (&keys[..], &tops[..])
+                });
             let wanted = Reposition {
                 offset: scrolled(),
                 viewport,
-                old_viewport: placed.viewport,
+                old_viewport,
                 stick_to_end: state.inner.stick_to_end.get(),
-                request: if state.scroll.viewport_length() > 0.0 {
+                request: if measured_viewport > 0.0 {
                     state.inner.request.get()
                 } else {
                     None
                 },
-                old_keys: &placed.keys,
-                old_tops: &placed.tops,
-                new_keys: &keys,
-                new_tops: &new_tops,
+                old_keys,
+                old_tops,
+                new_keys: &placed.keys,
+                new_tops: &placed.tops,
                 spacing: content.spacing,
             }
             .offset();
-            if !placed.keys.is_empty() && placed.keys != keys {
+            if !old_keys.is_empty() && old_keys != placed.keys.as_slice() {
                 state
                     .inner
                     .slide_until
                     .set(Some(frame_clock().now() + SLIDE_WINDOW));
             }
-            placed.keys.clone_from(&keys);
-            placed.tops.clone_from(&new_tops);
             placed.viewport = viewport;
-            (new_tops, wanted, viewport)
+            (wanted, viewport)
         };
         let held = if state.inner.request.get().is_some() {
             0.0
@@ -1045,19 +1355,24 @@ fn list_impl<K: Hash>(
         if (offset - scrolled()).abs() > 0.05 {
             state.scroll.jump_to(offset);
         }
-
-        let seen = if content.reverse_layout {
-            offset.min((new_tops[count] - viewport).max(0.0))
-        } else {
-            offset
+        let (first, last) = {
+            let placed = state.inner.placed.borrow();
+            let new_tops = &placed.tops;
+            let seen = if content.reverse_layout {
+                offset.min((new_tops[count] - viewport).max(0.0))
+            } else {
+                offset
+            };
+            let margin = viewport * COMPOSED_MARGIN;
+            let first = item_at(new_tops, seen - margin).min(count);
+            let last = new_tops
+                .partition_point(|top| *top < seen + viewport + margin)
+                .min(count);
+            (first.saturating_sub(1), (last + 1).min(count))
         };
-        let margin = viewport * COMPOSED_MARGIN;
-        let first = item_at(&new_tops, seen - margin).min(count);
-        let last = new_tops
-            .partition_point(|top| *top < seen + viewport + margin)
-            .min(count);
-        let first = first.saturating_sub(1);
-        let last = (last + 1).min(count);
+        state.inner.placed.borrow_mut().last = last;
+        let placed = state.inner.placed.borrow();
+        let (keys, new_tops) = (&placed.keys[..], &placed.tops[..]);
         state.inner.covered.set((
             if first == 0 {
                 f32::NEG_INFINITY
@@ -1082,7 +1397,7 @@ fn list_impl<K: Hash>(
                 && keys[first..last]
                     .iter()
                     .all(|key| heights.contains_key(key));
-            if settled && state.scroll.viewport_length() > 0.0 {
+            if settled && measured_viewport > 0.0 {
                 state.inner.request.set(None);
             }
         }
@@ -1098,13 +1413,13 @@ fn list_impl<K: Hash>(
             }
         };
 
-        let composed = composed_items(&keys, first, last, &state.inner.pinned.borrow());
+        let composed = composed_items(keys, first, last, &state.inner.pinned.borrow());
 
         if content.reverse_layout {
             let cells = Cells {
                 axis,
                 state,
-                tops: &new_tops,
+                tops: new_tops,
                 spacing: content.spacing,
                 padding_end: content.padding_end,
                 animate_item: content.animate_item,
@@ -1112,7 +1427,7 @@ fn list_impl<K: Hash>(
                 held,
             };
             along(axis, scroll_modifier, || {
-                reversed_items(&cells, &keys, &composed, &item)
+                reversed_items(&cells, keys, &composed, &item)
             });
             return;
         }
@@ -1326,6 +1641,7 @@ fn sticky_impl<K: Hash>(
                 &key_of,
                 &item,
             );
+            state.inner.placed.borrow_mut().remeasure_in_place = false;
             let pinned = {
                 let placed = state.inner.placed.borrow();
                 let heights = state.inner.heights.borrow();
@@ -1670,6 +1986,27 @@ mod tests {
 
     fn heights(pairs: &[(u64, f32)]) -> KeyMap<f32> {
         pairs.iter().copied().collect()
+    }
+
+    /// The Fenwick tree sums, finds and updates lengths as a running sum over them does.
+    #[test]
+    fn lengths_sum_find_and_change_items() {
+        let mut lengths = Lengths::new(vec![10.0, 20.0, 0.0, 30.0, 5.0]);
+        let sums = [0.0, 10.0, 30.0, 30.0, 60.0, 65.0];
+        for (end, sum) in sums.iter().enumerate() {
+            assert_eq!(lengths.prefix(end), *sum);
+        }
+        assert_eq!(lengths.index_at(-1.0), 0);
+        assert_eq!(lengths.index_at(9.9), 0);
+        assert_eq!(lengths.index_at(10.0), 1);
+        assert_eq!(lengths.index_at(30.0), 3);
+        assert_eq!(lengths.index_at(64.0), 4);
+        assert_eq!(lengths.index_at(100.0), 5);
+        lengths.set(1, 50.0);
+        assert_eq!(lengths.get(1), 50.0);
+        assert_eq!(lengths.prefix(2), 60.0);
+        assert_eq!(lengths.prefix(5), 95.0);
+        assert_eq!(lengths.index_at(60.0), 3);
     }
 
     #[test]

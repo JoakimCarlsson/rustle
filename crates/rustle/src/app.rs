@@ -201,6 +201,16 @@ pub(crate) struct App {
     /// Which of `slots` is in the fields above. The main window is always slot 0.
     pub(crate) active: usize,
     pub(crate) error: Option<String>,
+    /// A relayout and a repaint that state read while laying out or drawing asked for, kept
+    /// until the next frame does them once.
+    pub(crate) deferred_phases: (bool, bool),
+    /// The latest mouse move not handled yet, and the window it happened in. Moves are
+    /// handled once a frame, or before the next event that is not a move.
+    pub(crate) pending_move: Option<(winit::window::WindowId, winit::event::WindowEvent)>,
+    /// What the wheel scrolled, in logical pixels, since it was last handled, and the window
+    /// it scrolled in. Scrolls are summed and handled once a frame, or before the next event
+    /// that is not a scroll.
+    pub(crate) pending_wheel: Option<(winit::window::WindowId, rustle_geometry::Offset)>,
 }
 
 pub(crate) struct NativeWindow {
@@ -258,6 +268,9 @@ impl App {
             slots: vec![crate::windows::WindowCtx::default()],
             active: 0,
             error: None,
+            deferred_phases: (false, false),
+            pending_move: None,
+            pending_wheel: None,
         }
     }
 
@@ -333,8 +346,9 @@ impl App {
     /// laying out or drawing changed since the windows were last laid out or drawn.
     pub(crate) fn follow_phases(&mut self) {
         let phases = self.composition.phase_observer();
-        let relayout = phases.take_relayout();
-        let redraw = phases.take_redraw();
+        let (deferred_relayout, deferred_redraw) = std::mem::take(&mut self.deferred_phases);
+        let relayout = phases.take_relayout() | deferred_relayout;
+        let redraw = phases.take_redraw() | deferred_redraw;
         if relayout {
             self.relayout_all();
         } else if redraw {

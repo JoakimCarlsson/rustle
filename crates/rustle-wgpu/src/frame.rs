@@ -5,7 +5,7 @@ use std::rc::Rc;
 use rustle_graphics::{BlendMode, DrawCommand};
 
 use crate::composite::{Canvas, Mask, Placement};
-use crate::layers::{Item, grow, intersection};
+use crate::layers::{Item, Run, grow, intersection};
 use crate::quad::Viewport;
 use crate::{Renderer, Result, image, path, quad, shaders};
 
@@ -188,6 +188,7 @@ impl Renderer {
         let target = (self.surface_config.width, self.surface_config.height);
         self.images.begin_frame();
         self.quads.begin_frame();
+        self.paths.begin_frame();
         self.composite.begin_frame();
         self.blur.begin_frame();
         self.layer_pool.borrow_mut().begin_frame(self.frame);
@@ -206,6 +207,9 @@ impl Renderer {
         let items = self.layers(commands, scale_factor, target);
         let mut next_text = 0;
         let prepared = self.prepare_items(items, scale_factor, root, &mut next_text)?;
+        self.quads.flush(&self.device, &self.queue);
+        self.paths.flush(&self.device, &self.queue);
+        self.images.flush(&self.device, &self.queue);
         if !has_backdrop(&prepared) {
             return self.draw_items(
                 encoder,
@@ -264,23 +268,30 @@ impl Renderer {
         for item in items {
             prepared.push(match item {
                 Item::Layer(layer) => {
-                    let quads = self.quads.upload(&self.device, &layer.quads);
-                    let paths = self.paths.upload(&self.device, &layer.paths);
-                    let images = self.images.upload(&self.device, &layer.images);
+                    let quads = self.quads.upload(&layer.quads);
+                    let paths = self.paths.upload(&layer.paths);
+                    let images = self.images.upload(&layer.images);
+                    let text_clip = layer.text_clip();
                     let text = if layer.texts.is_empty() {
                         None
                     } else {
                         let index = *next_text;
                         *next_text += 1;
-                        self.prepare_text(index, &layer.texts, scale_factor, canvas)?;
+                        self.prepare_text(
+                            index,
+                            &layer.texts,
+                            text_clip.is_some(),
+                            scale_factor,
+                            canvas,
+                        )?;
                         Some(index)
                     };
                     PreparedItem::Layer(Prepared {
-                        scissor: layer.scissor,
-                        quads,
-                        paths,
-                        images,
+                        quads: quads.map(|batch| (batch, layer.quad_runs)),
+                        paths: paths.map(|batch| (batch, layer.path_runs)),
+                        images: images.map(|batch| (batch, layer.image_runs)),
                         text,
+                        text_clip,
                     })
                 }
                 Item::Shader { scissor, call } => match self.shaders.prepare(&self.device, &call) {
@@ -651,20 +662,30 @@ impl Renderer {
         canvas: Canvas,
         viewport: &Viewport,
     ) -> Result<()> {
-        let Some((x, y, width, height)) = local_scissor(layer.scissor, canvas) else {
-            return Ok(());
-        };
-        pass.set_scissor_rect(x, y, width, height);
-        if let Some(quads) = &layer.quads {
-            self.quads.draw(pass, viewport, quads);
+        if let Some((batch, runs)) = &layer.quads {
+            for (scissor, range) in scissored(runs, canvas) {
+                pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                self.quads.draw(pass, viewport, batch, range);
+            }
         }
-        if let Some(paths) = &layer.paths {
-            self.paths.draw(pass, viewport, paths);
+        if let Some((batch, runs)) = &layer.paths {
+            for (scissor, range) in scissored(runs, canvas) {
+                pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                self.paths.draw(pass, viewport, batch, range);
+            }
         }
-        if let Some(images) = &layer.images {
-            self.images.draw(pass, viewport, images);
+        if let Some((batch, runs)) = &layer.images {
+            for (scissor, range) in scissored(runs, canvas) {
+                pass.set_scissor_rect(scissor.0, scissor.1, scissor.2, scissor.3);
+                self.images.draw(pass, viewport, batch, range);
+            }
         }
         if let Some(index) = layer.text {
+            let Some((x, y, width, height)) = local_scissor(layer.text_clip.flatten(), canvas)
+            else {
+                return Ok(());
+            };
+            pass.set_scissor_rect(x, y, width, height);
             self.text_renderers[index].render(
                 &self.atlas,
                 &self.text_viewports[&canvas.size],
@@ -713,7 +734,7 @@ fn has_backdrop(items: &[PreparedItem]) -> bool {
 
 /// `scissor` (target pixels; `None` is everything) cut to the texture at `canvas` and made
 /// relative to it, or `None` if nothing of it is left.
-fn local_scissor(
+pub(crate) fn local_scissor(
     scissor: Option<(u32, u32, u32, u32)>,
     canvas: Canvas,
 ) -> Option<(u32, u32, u32, u32)> {
@@ -774,14 +795,27 @@ impl LayerPool {
     }
 }
 
-/// What is ready to draw of a layer.
+/// What is ready to draw of a layer: each kind's instances with the scissors they are cut to.
 struct Prepared {
-    scissor: Option<(u32, u32, u32, u32)>,
-    quads: Option<quad::Batch>,
-    paths: Option<path::Batch>,
-    images: Option<image::Batch>,
+    quads: Option<(quad::Batch, Vec<Run>)>,
+    paths: Option<(path::Batch, Vec<Run>)>,
+    images: Option<(image::Batch, Vec<Run>)>,
     /// Which text renderer holds the layer's text.
     text: Option<usize>,
+    /// The clip the scissor cuts all the layer's text to, when glyphon's bounds cannot;
+    /// `None` when glyphon cuts each text to its own.
+    text_clip: Option<Option<(u32, u32, u32, u32)>>,
+}
+
+/// The runs of `runs` that show in the texture at `canvas`, with their scissors made
+/// relative to it and the instances each draws.
+fn scissored(
+    runs: &[Run],
+    canvas: Canvas,
+) -> impl Iterator<Item = ((u32, u32, u32, u32), std::ops::Range<u32>)> + '_ {
+    runs.iter().filter_map(move |run| {
+        local_scissor(run.scissor, canvas).map(|scissor| (scissor, run.start..run.end))
+    })
 }
 
 enum PreparedItem {

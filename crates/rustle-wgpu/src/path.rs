@@ -13,6 +13,7 @@ use crate::quad::Viewport;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use crate::instances::InstanceBuffer;
 use rustle_graphics::{Color, DrawCommand, FillRule, Path, PathCommand};
 use wgpu::util::DeviceExt;
 use zeno::{Command, Fill, Mask as ZenoMask, Placement, Point, Scratch, Transform};
@@ -72,12 +73,17 @@ impl Geometry {
     pub(crate) fn is_empty(&self) -> bool {
         self.instances.is_empty()
     }
+
+    /// How many outlines the layer draws.
+    pub(crate) fn len(&self) -> usize {
+        self.instances.len()
+    }
 }
 
-/// The outlines of one layer, uploaded and ready to draw.
+/// The outlines of one layer, staged in the frame's instance buffer and ready to draw.
 pub(crate) struct Batch {
-    /// The instances, in drawing order.
-    buffer: wgpu::Buffer,
+    /// Where the instances lie in the instance buffer, in bytes, in drawing order.
+    bytes: std::ops::Range<u64>,
     /// The mask each instance samples.
     keys: Vec<Key>,
 }
@@ -116,6 +122,10 @@ pub(crate) struct Paths {
     scratch: Scratch,
     /// The number of the current frame.
     frame: u64,
+    /// The outlines of the frame, every layer's in one buffer.
+    instances: InstanceBuffer,
+    /// Where instances are gathered before they are staged, kept to reuse its memory.
+    raw: Vec<Instance>,
 }
 
 impl Paths {
@@ -207,6 +217,8 @@ impl Paths {
             masks: HashMap::new(),
             scratch: Scratch::new(),
             frame: 0,
+            instances: InstanceBuffer::new("path instances"),
+            raw: Vec::new(),
         }
     }
 
@@ -326,32 +338,46 @@ impl Paths {
             .retain(|_, mask| frame - mask.last_used < UNUSED_FRAMES);
     }
 
-    /// Uploads `geometry`, or returns `None` if it is empty.
-    pub(crate) fn upload(&self, device: &wgpu::Device, geometry: &Geometry) -> Option<Batch> {
+    /// Starts a frame: the instances of the last one are written over.
+    pub(crate) fn begin_frame(&mut self) {
+        self.instances.begin_frame();
+    }
+
+    /// Writes the instances staged this frame to the GPU; called before anything is drawn.
+    pub(crate) fn flush(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.instances.flush(device, queue);
+    }
+
+    /// Stages `geometry` in the frame's instance buffer, or returns `None` if it is empty.
+    pub(crate) fn upload(&mut self, geometry: &Geometry) -> Option<Batch> {
         if geometry.is_empty() {
             return None;
         }
-        let raw: Vec<Instance> = geometry
-            .instances
-            .iter()
-            .map(|(_, instance)| *instance)
-            .collect();
+        self.raw.clear();
+        self.raw
+            .extend(geometry.instances.iter().map(|(_, instance)| *instance));
         Some(Batch {
-            buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("path instances"),
-                contents: bytemuck::cast_slice(&raw),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
+            bytes: self.instances.push(bytemuck::cast_slice(&self.raw)),
             keys: geometry.instances.iter().map(|(key, _)| *key).collect(),
         })
     }
 
-    /// Records drawing `batch` into `pass`.
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, viewport: &Viewport, batch: &Batch) {
+    /// Records drawing the outlines of `batch` numbered `range` into `pass`.
+    pub(crate) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        viewport: &Viewport,
+        batch: &Batch,
+        range: std::ops::Range<u32>,
+    ) {
+        let Some(slice) = self.instances.slice(batch.bytes.clone()) else {
+            return;
+        };
         pass.set_pipeline(&self.pipeline);
         viewport.set(pass);
-        pass.set_vertex_buffer(0, batch.buffer.slice(..));
-        for (index, key) in batch.keys.iter().enumerate() {
+        pass.set_vertex_buffer(0, slice);
+        let (start, end) = (range.start as usize, range.end as usize);
+        for (index, key) in batch.keys.iter().enumerate().take(end).skip(start) {
             if let Some(group) = self.masks.get(key).and_then(|mask| mask.group.as_ref()) {
                 pass.set_bind_group(1, group, &[]);
                 pass.draw(0..6, index as u32..index as u32 + 1);

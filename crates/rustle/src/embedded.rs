@@ -586,8 +586,10 @@ impl Embedded {
         let Backend::Drawing(renderer) = &mut self.backend else {
             return Err("this interface was made without a renderer".into());
         };
-        let commands = self.ui.commands().into_owned();
-        renderer.render_into(encoder, view, size, &commands, self.scale_factor, clear)
+        let scale_factor = self.scale_factor;
+        self.ui.with_commands(|commands| {
+            renderer.render_into(encoder, view, size, commands, scale_factor, clear)
+        })
     }
 
     /// Draws the interface once into a picture the size given to [`resize`](Embedded::resize),
@@ -603,8 +605,9 @@ impl Embedded {
         let Backend::Drawing(renderer) = &mut self.backend else {
             return Err("this interface was made without a renderer".into());
         };
-        let commands = self.ui.commands().into_owned();
-        renderer.snapshot(&commands, self.scale_factor)
+        let scale_factor = self.scale_factor;
+        self.ui
+            .with_commands(|commands| renderer.snapshot(commands, scale_factor))
     }
 
     /// Lays the latest tree out for the area's size, again if laying out changed state.
