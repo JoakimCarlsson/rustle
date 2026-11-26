@@ -164,6 +164,9 @@ struct Placed {
     /// Whether a length learned at or past the item at the start of the viewport is taken
     /// in during layout rather than by composing again.
     remeasure_in_place: bool,
+    /// Whether the list is laid out from its end, its offset counted from there, so an item
+    /// grows away from the offset's origin at its near side.
+    reverse: bool,
 }
 
 /// What [`Placed::remeasure`] did with a length learned.
@@ -294,7 +297,10 @@ impl Placed {
 
     /// Whether item `index` growing by `delta` leaves the list at `offset` where the next
     /// composition would keep it: the item is at or past the one at the start of the
-    /// viewport, and a list following its end stays at it.
+    /// viewport, and a list following its end stays at it. In a list laid out from its end
+    /// and scrolled away from it, an item grows at the side nearer the end, so one at or
+    /// before the item at the start of the viewport would move what is in view: that waits
+    /// for the next composition, which keeps what is in view where it was.
     fn stays_in_view(&self, index: usize, delta: f32, offset: f32, stick_to_end: bool) -> bool {
         let Some(&old_total) = self.tops.last() else {
             return false;
@@ -314,6 +320,9 @@ impl Placed {
             .lengths
             .index_at(offset - self.padding.0)
             .min(self.keys.len().saturating_sub(1));
+        if self.reverse {
+            return index > anchor;
+        }
         index >= anchor
     }
 }
@@ -851,6 +860,8 @@ struct Reposition<'a> {
     new_tops: &'a [f32],
     /// The space after each item but the last, which is part of its measured length.
     spacing: f32,
+    /// Whether the list is laid out from its end, its offset counted from there.
+    reverse: bool,
 }
 
 impl Reposition<'_> {
@@ -898,12 +909,23 @@ impl Reposition<'_> {
         if self.stick_to_end && self.offset >= old_end - END_TOLERANCE {
             return max;
         }
+        if self.reverse && self.offset <= END_TOLERANCE {
+            return 0.0;
+        }
         if self.old_keys.is_empty() || self.offset <= 0.0 {
             return self.offset;
         }
         let anchor = item_at(self.old_tops, self.offset).min(self.old_keys.len() - 1);
-        let moved_by = self.offset - self.old_tops[anchor];
         let key = self.old_keys[anchor];
+        if self.reverse {
+            let short_of_end = self.old_tops[anchor + 1] - self.offset;
+            let now = self.new_keys.iter().position(|candidate| *candidate == key);
+            return match now {
+                Some(index) => self.new_tops[index + 1] - short_of_end,
+                None => self.offset,
+            };
+        }
+        let moved_by = self.offset - self.old_tops[anchor];
         let now = if self.new_keys.get(anchor) == Some(&key) {
             Some(anchor)
         } else {
@@ -1308,6 +1330,7 @@ fn list_impl<K: Hash>(
             };
             let mut placed = state.inner.placed.borrow_mut();
             placed.remeasure_in_place = true;
+            placed.reverse = content.reverse_layout;
             let old_viewport = placed.viewport;
             let previous = placed.update(
                 keys,
@@ -1336,6 +1359,7 @@ fn list_impl<K: Hash>(
                 new_keys: &placed.keys,
                 new_tops: &placed.tops,
                 spacing: content.spacing,
+                reverse: content.reverse_layout,
             }
             .offset();
             if !old_keys.is_empty() && old_keys != placed.keys.as_slice() {
@@ -2047,7 +2071,54 @@ mod tests {
             new_keys: new.0,
             new_tops: new.1,
             spacing: 0.0,
+            reverse: false,
         }
+    }
+
+    /// A list laid out from its end and scrolled away from it keeps what is in view where
+    /// it was when the item in view grows at its near side, as a streamed reply does, and
+    /// when the newest item below the view grows; scrolled back to within a few pixels of
+    /// its end, it follows the end again.
+    #[test]
+    fn a_reversed_list_scrolled_away_keeps_its_view_as_items_grow() {
+        let keys = [1, 2, 3];
+        let old = [0.0, 60.0, 120.0, 180.0];
+        let grown_in_view = [0.0, 60.0, 150.0, 210.0];
+        let mut list = reposition(90.0, (&keys, &old), (&keys, &grown_in_view));
+        list.reverse = true;
+        assert_eq!(list.offset(), 120.0);
+        let grown_below = [0.0, 100.0, 160.0, 220.0];
+        let mut list = reposition(90.0, (&keys, &old), (&keys, &grown_below));
+        list.reverse = true;
+        assert_eq!(list.offset(), 130.0);
+        let mut near_end = reposition(1.5, (&keys, &old), (&keys, &grown_below));
+        near_end.reverse = true;
+        assert_eq!(near_end.offset(), 0.0);
+    }
+
+    /// A length learned for the item at the start of the view of a reversed list scrolled
+    /// away from its end waits for the next composition rather than moving what is in view,
+    /// while one for an item past it is taken in at once.
+    #[test]
+    fn a_reversed_list_scrolled_away_defers_growth_at_its_view() {
+        let mut placed = Placed {
+            remeasure_in_place: true,
+            reverse: true,
+            viewport: 100.0,
+            ..Placed::default()
+        };
+        let heights: KeyMap<f32> = [1, 2, 3, 4].into_iter().map(|key| (key, 60.0)).collect();
+        placed.update(vec![1, 2, 3, 4], &heights, 60.0, (0.0, 0.0), false);
+        placed.last = 4;
+        let covered = Cell::new((0.0, f32::INFINITY));
+        assert_eq!(
+            placed.remeasure(2, 90.0, 70.0, (false, false), &covered),
+            Remeasured::Deferred
+        );
+        assert_eq!(
+            placed.remeasure(4, 90.0, 70.0, (false, false), &covered),
+            Remeasured::Absorbed
+        );
     }
 
     #[test]
