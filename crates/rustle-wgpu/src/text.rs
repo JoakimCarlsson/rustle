@@ -1,134 +1,101 @@
-//! Text: shaping with glyphon, drawing it, and measuring it for layout.
+//! Text: shaping with cosmic-text, drawing it, and measuring it for layout.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 
 use glyphon::cosmic_text::{
     Align, Ellipsize, EllipsizeHeightLimit, FeatureTag, FontFeatures, Hinting, Style,
 };
-use glyphon::{
-    Attrs, Buffer, Color, Family, FontSystem, Metrics, Resolution, SwashCache, TextArea,
-    TextBounds, TextRenderer, Viewport, Weight, Wrap,
-};
+use glyphon::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Weight, Wrap};
 use rustle_geometry::Size;
 use rustle_graphics::{FontFamily, StyledSpan, TextAlign, TextWrap};
 use rustle_text::{TextLayout, TextMeasurer, TextStyle};
 
 use crate::composite::Canvas;
-use crate::frame::local_scissor;
+use crate::glyphs::{Edges, Laid};
 use crate::paragraphs::{self, RunStyle, Runs};
 
 use std::hash::{Hash, Hasher};
 
-use crate::{Renderer, Result};
+use crate::Renderer;
 
 impl Renderer {
-    /// Prepares text renderer `index` to draw `texts` into the texture at `canvas`, making
-    /// it first if there is none yet. Each text is cut to its own clip, unless `whole` is
-    /// set, when the pass's scissor cuts them all and only the canvas bounds them here.
-    ///
-    /// # Errors
-    ///
-    /// Fails if glyphon cannot prepare the text, such as when its atlas is full.
-    pub(super) fn prepare_text(
+    /// Stages the glyphs of `texts` for drawing into the texture at `canvas`, and returns
+    /// where they lie in the frame's glyphs. Each text is cut to its own clip, unless `whole`
+    /// is set, when the pass's scissor cuts them all and only the canvas bounds them here.
+    pub(super) fn stage_text(
         &mut self,
-        index: usize,
         texts: &[Shaped],
         whole: bool,
         scale_factor: f32,
         canvas: Canvas,
-    ) -> Result<()> {
-        self.text_viewport(canvas.size);
-        while self.text_renderers.len() <= index {
-            self.text_renderers.push(TextRenderer::new(
-                &mut self.atlas,
-                &self.device,
-                wgpu::MultisampleState::default(),
-                None,
-            ));
-        }
-        let canvas_bounds = TextBounds {
-            left: 0,
-            top: 0,
-            right: canvas.size.0 as i32,
-            bottom: canvas.size.1 as i32,
-        };
-        let (shift_x, shift_y) = (canvas.origin.0 as f32, canvas.origin.1 as f32);
-        let areas = texts.iter().filter_map(|text| {
-            let bounds = if whole {
-                canvas_bounds
-            } else {
-                let (x, y, width, height) = local_scissor(text.clip, canvas)?;
-                TextBounds {
-                    left: x as i32,
-                    top: y as i32,
-                    right: (x + width) as i32,
-                    bottom: (y + height) as i32,
-                }
+    ) -> Range<u32> {
+        let start = self.glyphs.staged();
+        let (left, top) = (canvas.origin.0 as i32, canvas.origin.1 as i32);
+        let area = (
+            left,
+            top,
+            left + canvas.size.0 as i32,
+            top + canvas.size.1 as i32,
+        );
+        for text in texts {
+            let bounds = match text.clip {
+                Some((x, y, width, height)) if !whole => (
+                    area.0.max(x as i32),
+                    area.1.max(y as i32),
+                    area.2.min((x + width) as i32),
+                    area.3.min((y + height) as i32),
+                ),
+                _ => area,
             };
-            Some(TextArea {
-                buffer: &text.buffer,
-                left: (text.position.0 * scale_factor).round() - shift_x,
-                top: (text.position.1 * scale_factor).round() - shift_y,
-                scale: scale_factor,
-                bounds,
-                default_color: text.color,
-                custom_glyphs: &[],
-            })
-        });
-        self.text_renderers[index].prepare(
-            &self.device,
-            &self.queue,
-            &mut self.font_system.borrow_mut(),
-            &mut self.atlas,
-            &self.text_viewports[&canvas.size],
-            areas,
-            &mut self.swash_cache,
-        )?;
-        Ok(())
+            if bounds.0 >= bounds.2 || bounds.1 >= bounds.3 {
+                continue;
+            }
+            let origin = (
+                (text.position.0 * scale_factor).round() as i32,
+                (text.position.1 * scale_factor).round() as i32,
+            );
+            self.glyphs.stage(&text.laid, origin, text.color.0, bounds);
+        }
+        start..self.glyphs.staged()
     }
 
-    /// The shaped text kept under `key`, shaping it with `make` if none is, and where its
-    /// glyphs land at `scale`. Marks it used this frame.
+    /// The shaped text kept under `key`, shaping it with `make` if none is, with where its
+    /// glyphs land at `scale`, placed in the glyph atlases. Marks it used this frame.
     pub(super) fn kept(
         &mut self,
         key: u64,
         scale: f32,
         make: impl FnOnce(&mut FontSystem) -> Buffer,
-    ) -> (Rc<Buffer>, Ink) {
+    ) -> (Rc<Laid>, Ink) {
         let frame = self.frame;
         let font_system = &mut *self.font_system.borrow_mut();
         let kept = self.shaped.entry(key).or_insert_with(|| Kept {
-            buffer: Rc::new(make(font_system)),
+            buffer: make(font_system),
             used: frame,
-            ink: None,
+            laid: None,
         });
         kept.used = frame;
-        let ink = match kept.ink {
-            Some((bits, ink)) if bits == scale.to_bits() => ink,
-            _ => {
-                let ink = ink(&kept.buffer, font_system, &mut self.swash_cache, scale);
-                kept.ink = Some((scale.to_bits(), ink));
-                ink
-            }
-        };
-        (Rc::clone(&kept.buffer), ink)
-    }
-    /// Makes sure glyphon has a viewport for textures of `size`, which text drawn into
-    /// them is positioned against.
-    pub(super) fn text_viewport(&mut self, size: (u32, u32)) {
-        let viewport = self
-            .text_viewports
-            .entry(size)
-            .or_insert_with(|| Viewport::new(&self.device, &self.text_cache));
-        viewport.update(
+        let generation = self.glyphs.generation();
+        if let Some((laid, ink)) = &kept.laid
+            && laid.fits(scale, generation)
+        {
+            return (Rc::clone(laid), *ink);
+        }
+        let (laid, rect, overhang) = self.glyphs.lay(
+            &self.device,
             &self.queue,
-            Resolution {
-                width: size.0,
-                height: size.1,
-            },
+            font_system,
+            &mut self.swash_cache,
+            &kept.buffer,
+            scale,
         );
+        let laid = Rc::new(laid);
+        let ink = Ink { rect, overhang };
+        kept.laid = Some((Rc::clone(&laid), ink));
+        (laid, ink)
     }
 }
 
@@ -137,71 +104,31 @@ pub(super) struct Shaped {
     /// Where the text starts, in logical pixels.
     pub(super) position: (f32, f32),
     pub(super) color: Color,
-    pub(super) buffer: Rc<Buffer>,
+    /// Its glyphs, placed from its origin.
+    pub(super) laid: Rc<Laid>,
     /// The pixels of the target it is cut to; `None` is the whole target.
     pub(super) clip: Option<(u32, u32, u32, u32)>,
 }
 
 /// Shaped text kept between frames.
 pub(crate) struct Kept {
-    buffer: Rc<Buffer>,
+    buffer: Buffer,
     /// The frame it was last drawn in.
     pub(super) used: u64,
-    /// Where its glyphs land, with the bits of the scale that was worked out for.
-    ink: Option<(u32, Ink)>,
+    /// Where its glyphs land, and where their pictures do, for the scale and the atlases they
+    /// were placed in.
+    laid: Option<(Rc<Laid>, Ink)>,
 }
 
-/// Where the glyphs of a shaped text land, as glyphon draws them.
+/// Where the glyphs of a shaped text land.
 #[derive(Clone, Copy)]
 pub(super) struct Ink {
     /// Left, top, right and bottom in physical pixels from the text's rounded origin,
     /// grown by a pixel; `None` when no glyph shows anything.
-    pub(super) rect: Option<(i32, i32, i32, i32)>,
-    /// Whether a glyph reaches outside the box of its line, which glyphon tests against a
+    pub(super) rect: Option<Edges>,
+    /// Whether a glyph reaches outside the box of its line, which is tested against a
     /// text's bounds to skip whole lines, so the text must be cut by a scissor instead.
     pub(super) overhang: bool,
-}
-
-/// Where the glyphs of `buffer` land at `scale` when drawn from the origin, from the
-/// glyph pictures `swash_cache` makes, placed as glyphon places them.
-fn ink(
-    buffer: &Buffer,
-    font_system: &mut FontSystem,
-    swash_cache: &mut SwashCache,
-    scale: f32,
-) -> Ink {
-    let mut rect: Option<(i32, i32, i32, i32)> = None;
-    let mut overhang = false;
-    for run in buffer.layout_runs() {
-        let start = (run.line_top * scale) as i32;
-        let end = start + (run.line_height * scale) as i32;
-        let baseline = (run.line_y * scale).round() as i32;
-        for glyph in run.glyphs {
-            let physical = glyph.physical((0.0, 0.0), scale);
-            let Some(image) = swash_cache.get_image(font_system, physical.cache_key) else {
-                continue;
-            };
-            let placement = image.placement;
-            if placement.width == 0 || placement.height == 0 {
-                continue;
-            }
-            let left = physical.x + placement.left;
-            let top = baseline + physical.y - placement.top;
-            let right = left + placement.width as i32;
-            let bottom = top + placement.height as i32;
-            overhang |= top < start + 1 || bottom > end;
-            let grown = (left - 1, top - 1, right + 1, bottom + 1);
-            rect = Some(rect.map_or(grown, |(l, t, r, b)| {
-                (
-                    l.min(grown.0),
-                    t.min(grown.1),
-                    r.max(grown.2),
-                    b.max(grown.3),
-                )
-            }));
-        }
-    }
-    Ink { rect, overhang }
 }
 
 /// Identifies the shape of plain text: its content, every style field that changes its
@@ -299,12 +226,42 @@ impl TextMeasurer for Renderer {
     }
 }
 
-/// A hash identifying a text measurement, from what `fill` feeds the hasher.
-fn measure_key(fill: impl FnOnce(&mut std::collections::hash_map::DefaultHasher)) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+/// A hash identifying a text measurement, from what `fill` feeds the hasher: foldhash's
+/// quality hash with a fixed seed, several times faster than SipHash on the text and styles
+/// hashed for every text of every frame, and as unlikely to collide.
+fn measure_key(fill: impl FnOnce(&mut foldhash::quality::FoldHasher<'static>)) -> u64 {
+    let mut hasher = std::hash::BuildHasher::build_hasher(
+        &foldhash::quality::FixedState::with_seed(0x5275_7374_6c65),
+    );
     fill(&mut hasher);
     hasher.finish()
 }
+
+/// A hasher for maps whose keys are already hashes, which it passes through.
+#[derive(Default)]
+pub(crate) struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    /// The key written last.
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    /// Folds bytes in, for keys that are not a single `u64`.
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*byte);
+        }
+    }
+
+    /// Takes the key as it is.
+    fn write_u64(&mut self, key: u64) {
+        self.0 = key;
+    }
+}
+
+/// A map keyed by hashes, which are not hashed again.
+pub(crate) type KeyMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<KeyHasher>>;
 
 /// Identifies plain text, its complete style, width bits and registered-font generation.
 fn plain_measure_key(content: &str, style: &TextStyle, max_width: f32, generation: u64) -> u64 {

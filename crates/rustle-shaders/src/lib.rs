@@ -6,7 +6,8 @@
 /// Rounded, bordered, optionally blurred rectangles, one instanced quad each.
 pub const QUAD: &str = include_str!("quad.wgsl");
 
-/// Glyphs, one instanced quad each, sampled from a coverage atlas.
+/// Glyphs, one instanced quad each on whole physical pixels, sampled texel for texel from a
+/// coverage atlas and tinted, or from a color atlas as they are.
 pub const GLYPH: &str = include_str!("glyph.wgsl");
 
 /// Pictures, one instanced quad each, sampled from a full-colour texture, and coverage masks

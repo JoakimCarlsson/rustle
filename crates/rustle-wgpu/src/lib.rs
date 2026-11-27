@@ -7,11 +7,10 @@
 //! then the text that follows them, so later commands paint over earlier ones.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::error::Error;
 use std::rc::Rc;
 
-use glyphon::{Cache, FontSystem, SwashCache, TextAtlas, TextRenderer, Viewport};
+use glyphon::{FontSystem, SwashCache};
 
 mod block;
 mod blur;
@@ -19,6 +18,7 @@ mod composite;
 mod device;
 mod engine;
 mod frame;
+mod glyphs;
 mod image;
 mod instances;
 mod layers;
@@ -91,18 +91,14 @@ pub struct Renderer {
     /// Counts fonts registered at run time, so cached text is shaped again.
     font_generation: Rc<Cell<u64>>,
     /// Shaped text kept between frames, keyed by a hash of what decides its shape.
-    shaped: HashMap<u64, text::Kept>,
+    shaped: text::KeyMap<text::Kept>,
     /// Sizes text measured for layout, keyed by a hash of what was measured,
     /// with the frame they were last used in.
-    measured: HashMap<u64, (rustle_geometry::Size, u64)>,
+    measured: text::KeyMap<(rustle_geometry::Size, u64)>,
     frame: u64,
     swash_cache: SwashCache,
-    text_cache: Cache,
-    /// What glyphon positions text against, one per size of texture drawn into.
-    text_viewports: HashMap<(u32, u32), Viewport>,
-    atlas: TextAtlas,
-    /// One per layer that has text, grown as needed and reused across frames.
-    text_renderers: Vec<TextRenderer>,
+    /// The glyph atlases and the pipeline text is drawn with.
+    glyphs: glyphs::Glyphs,
     quads: Quads,
     images: Images,
     paths: Paths,

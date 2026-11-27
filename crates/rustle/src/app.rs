@@ -295,6 +295,27 @@ impl App {
         }
     }
 
+    /// Takes in a new size or scale of the current window: tells its content, and leaves the
+    /// layout to the next frame, which composes what the new size changed and lays the
+    /// windows out once, however many sizes the desktop sent before it, as an interactive
+    /// resize sends one for nearly every pointer move.
+    pub(crate) fn defer_relayout(&mut self) {
+        let Some(state) = &self.window else {
+            return;
+        };
+        let scale_factor = state.window.scale_factor() as f32;
+        let size = state.window.surface_size();
+        if let Some(info) = crate::window::window_info(self.key) {
+            info.set_size(Size::new(
+                size.width as f32 / scale_factor,
+                size.height as f32 / scale_factor,
+            ));
+            info.set_density(scale_factor);
+        }
+        state.request_frame();
+        self.deferred_phases.0 = true;
+    }
+
     /// Lays the latest tree out for the current window and asks for a redraw.
     ///
     /// Text is measured by the renderer, so this waits until the window exists

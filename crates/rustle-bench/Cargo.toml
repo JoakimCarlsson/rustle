@@ -12,6 +12,7 @@ rustle-graphics.workspace = true
 rustle-text.workspace = true
 rustle-ui.workspace = true
 rustle-wgpu.workspace = true
+wgpu = "30.0.1"
 
 [[bench]]
 name = "text"
@@ -23,4 +24,8 @@ harness = false
 
 [[bench]]
 name = "renderer"
+harness = false
+
+[[bench]]
+name = "frame"
 harness = false

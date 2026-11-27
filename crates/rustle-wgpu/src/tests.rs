@@ -1234,12 +1234,9 @@ fn clipped_lines_that_do_not_overlap_share_one_layer() {
     let Some(mut renderer) = renderer(256) else {
         return;
     };
+    let layers = renderer.build_layers(&code_lines(10, false), 1.0);
+    assert!(layers <= 1, "{layers} layers for one layer of lines");
     let shared = draw(&mut renderer, &code_lines(10, false));
-    assert!(
-        renderer.text_renderers.len() <= 1,
-        "{} text renderers for one layer of lines",
-        renderer.text_renderers.len()
-    );
     let Some(mut reference) = self::renderer(256) else {
         return;
     };

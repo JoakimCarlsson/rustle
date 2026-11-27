@@ -154,11 +154,11 @@ impl App {
             }
             WindowEvent::SurfaceResized(size) => {
                 state.renderer.resize(size.width, size.height);
-                self.relayout();
+                self.defer_relayout();
                 self.observe_window_state();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                self.relayout();
+                self.defer_relayout();
                 self.observe_window_state();
             }
             WindowEvent::Moved(_) | WindowEvent::Occluded(_) => self.observe_window_state(),
@@ -288,6 +288,7 @@ impl App {
                     Ok(false) => state.request_frame(),
                     Err(error) => return self.fail(event_loop, error),
                 }
+                rustle_ui::drop_retired();
                 self.request_redraw_for_frames();
             }
             _ => {}

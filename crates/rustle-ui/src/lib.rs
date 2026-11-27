@@ -21,6 +21,7 @@ mod modifier;
 mod pinnable;
 pub mod pointer;
 mod popup;
+mod retired;
 mod scroll;
 mod semantics;
 mod text_input;
@@ -80,6 +81,7 @@ pub use popup::{
     PopupPlacement, PopupPositionProvider, PopupProperties, PositionAtPoint,
     popup_position_provider_at_position,
 };
+pub use retired::{drop_retired, retire};
 pub use scroll::{
     LOCAL_SCROLLBAR_STYLE, ScrollState, ScrollbarStyle, ScrollbarVisibility, remember_scroll_state,
 };

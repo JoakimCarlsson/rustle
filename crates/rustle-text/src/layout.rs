@@ -97,6 +97,14 @@ impl Cluster {
 
     /// The x of the boundary at `offset`, which must lie from `start` to `end`.
     fn x_at(&self, text: &str, offset: usize) -> f32 {
+        if offset <= self.start || offset >= self.end {
+            let at_end = offset >= self.end && self.end > self.start;
+            return if at_end != self.rtl {
+                self.x + self.width
+            } else {
+                self.x
+            };
+        }
         let total = self.char_count(text) as f32;
         let before = text
             .get(self.start..offset.clamp(self.start, self.end))
@@ -368,11 +376,16 @@ impl TextLayout {
         if start == end {
             return rects;
         }
-        for (index, line) in self.lines.iter().enumerate() {
+        let first = self.lines.partition_point(|line| line.end < start);
+        let mut spans: Vec<(f32, f32)> = Vec::new();
+        for (index, line) in self.lines.iter().enumerate().skip(first) {
+            if line.start > end {
+                break;
+            }
             if end < line.start || start > line.end {
                 continue;
             }
-            let mut spans: Vec<(f32, f32)> = Vec::new();
+            spans.clear();
             for cluster in &line.clusters {
                 let (from, to) = (start.max(cluster.start), end.min(cluster.end));
                 if from >= to {
@@ -381,13 +394,25 @@ impl TextLayout {
                 let (a, b) = (cluster.x_at(&self.text, from), cluster.x_at(&self.text, to));
                 spans.push((a.min(b), a.max(b)));
             }
-            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let mut merged: Vec<(f32, f32)> = Vec::new();
-            for (left, right) in spans {
-                match merged.last_mut() {
-                    Some(last) if left <= last.1 + 0.5 => last.1 = last.1.max(right),
-                    _ => merged.push((left, right)),
+            if !spans.is_sorted_by(|a, b| a.0 <= b.0) {
+                spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            }
+            let first_rect = rects.len();
+            let widen = |rects: &mut Vec<Rect>, left: f32, right: f32, slack: f32| match rects
+                [first_rect..]
+                .last_mut()
+            {
+                Some(last) if left <= last.origin.x + last.size.width + slack => {
+                    let far = (last.origin.x + last.size.width).max(right);
+                    last.size.width = far - last.origin.x;
                 }
+                _ => rects.push(Rect::new(
+                    Offset::new(left, line.top),
+                    Size::new(right - left, line.height),
+                )),
+            };
+            for &(left, right) in &spans {
+                widen(&mut rects, left, right, 0.5);
             }
             if line.hard_break
                 && index + 1 < self.lines.len()
@@ -396,16 +421,12 @@ impl TextLayout {
             {
                 let at = line.x_at(&self.text, line.end);
                 let extra = line.height * 0.3;
-                match merged.last_mut() {
-                    Some(last) if (last.1 - at).abs() < 0.5 => last.1 += extra,
-                    _ => merged.push((at, at + extra)),
+                match rects[first_rect..].last_mut() {
+                    Some(last) if (last.origin.x + last.size.width - at).abs() < 0.5 => {
+                        last.size.width += extra
+                    }
+                    _ => widen(&mut rects, at, at + extra, f32::NEG_INFINITY),
                 }
-            }
-            for (left, right) in merged {
-                rects.push(Rect::new(
-                    Offset::new(left, line.top),
-                    Size::new(right - left, line.height),
-                ));
             }
         }
         rects

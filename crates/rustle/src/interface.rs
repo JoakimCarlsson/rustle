@@ -198,7 +198,9 @@ impl Interface {
         let previous = mem::take(&mut self.display);
         self.display = self.paint(&laid_out, self.pointer_state(), previous);
         self.follow_listeners();
-        self.laid_out = Some(laid_out);
+        if let Some(replaced) = self.laid_out.replace(laid_out) {
+            rustle_ui::retire(replaced);
+        }
         self.follow_focused_area();
         self.update_pointer_event_hover();
     }

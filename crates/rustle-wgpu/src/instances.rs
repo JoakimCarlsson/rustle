@@ -43,6 +43,10 @@ impl InstanceBuffer {
         start..self.staged.len() as u64
     }
 
+    /// How many bytes of instances the frame has staged so far.
+    pub(crate) fn len(&self) -> usize {
+        self.staged.len()
+    }
     /// Writes the frame's instances into the buffer with `queue`, first making a buffer
     /// twice as large (or more) on `device` if they no longer fit.
     pub(crate) fn flush(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {

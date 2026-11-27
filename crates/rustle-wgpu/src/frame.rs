@@ -46,7 +46,6 @@ impl Renderer {
         let commands = self.encode(commands, scale_factor, &view)?;
         self.queue.submit(Some(commands));
         self.queue.present(frame);
-        self.atlas.trim();
         Ok(true)
     }
 
@@ -68,7 +67,6 @@ impl Renderer {
     ) -> Result<()> {
         self.resize(size.0, size.1);
         self.record(encoder, commands, scale_factor, view, clear)?;
-        self.atlas.trim();
         Ok(())
     }
 
@@ -133,7 +131,6 @@ impl Renderer {
             },
         );
         self.queue.submit(Some(encoder_commands.finish()));
-        self.atlas.trim();
 
         let slice = buffer.slice(..);
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -192,9 +189,7 @@ impl Renderer {
         self.composite.begin_frame();
         self.blur.begin_frame();
         self.layer_pool.borrow_mut().begin_frame(self.frame);
-        if self.text_viewports.len() > 64 {
-            self.text_viewports.clear();
-        }
+        self.glyphs.begin_frame();
         let root = Canvas {
             origin: (0, 0),
             size: target,
@@ -205,11 +200,11 @@ impl Renderer {
         };
 
         let items = self.layers(commands, scale_factor, target);
-        let mut next_text = 0;
-        let prepared = self.prepare_items(items, scale_factor, root, &mut next_text)?;
+        let prepared = self.prepare_items(items, scale_factor, root)?;
         self.quads.flush(&self.device, &self.queue);
         self.paths.flush(&self.device, &self.queue);
         self.images.flush(&self.device, &self.queue);
+        self.glyphs.flush(&self.device, &self.queue);
         if !has_backdrop(&prepared) {
             return self.draw_items(
                 encoder,
@@ -262,7 +257,6 @@ impl Renderer {
         items: Vec<Item>,
         scale_factor: f32,
         canvas: Canvas,
-        next_text: &mut usize,
     ) -> Result<Vec<PreparedItem>> {
         let mut prepared = Vec::with_capacity(items.len());
         for item in items {
@@ -272,20 +266,8 @@ impl Renderer {
                     let paths = self.paths.upload(&layer.paths);
                     let images = self.images.upload(&layer.images);
                     let text_clip = layer.text_clip();
-                    let text = if layer.texts.is_empty() {
-                        None
-                    } else {
-                        let index = *next_text;
-                        *next_text += 1;
-                        self.prepare_text(
-                            index,
-                            &layer.texts,
-                            text_clip.is_some(),
-                            scale_factor,
-                            canvas,
-                        )?;
-                        Some(index)
-                    };
+                    let text =
+                        self.stage_text(&layer.texts, text_clip.is_some(), scale_factor, canvas);
                     PreparedItem::Layer(Prepared {
                         quads: quads.map(|batch| (batch, layer.quad_runs)),
                         paths: paths.map(|batch| (batch, layer.path_runs)),
@@ -324,7 +306,7 @@ impl Renderer {
                         scissor,
                         region,
                         canvas: inner,
-                        items: self.prepare_items(items, scale_factor, inner, next_text)?,
+                        items: self.prepare_items(items, scale_factor, inner)?,
                     }
                 }
             });
@@ -680,17 +662,13 @@ impl Renderer {
                 self.images.draw(pass, viewport, batch, range);
             }
         }
-        if let Some(index) = layer.text {
+        if !layer.text.is_empty() {
             let Some((x, y, width, height)) = local_scissor(layer.text_clip.flatten(), canvas)
             else {
                 return Ok(());
             };
             pass.set_scissor_rect(x, y, width, height);
-            self.text_renderers[index].render(
-                &self.atlas,
-                &self.text_viewports[&canvas.size],
-                pass,
-            )?;
+            self.glyphs.draw(pass, viewport, layer.text.clone());
         }
         Ok(())
     }
@@ -800,10 +778,10 @@ struct Prepared {
     quads: Option<(quad::Batch, Vec<Run>)>,
     paths: Option<(path::Batch, Vec<Run>)>,
     images: Option<(image::Batch, Vec<Run>)>,
-    /// Which text renderer holds the layer's text.
-    text: Option<usize>,
-    /// The clip the scissor cuts all the layer's text to, when glyphon's bounds cannot;
-    /// `None` when glyphon cuts each text to its own.
+    /// Where the layer's glyphs lie in the frame's glyphs.
+    text: std::ops::Range<u32>,
+    /// The clip the scissor cuts all the layer's text to, when the glyphs cannot each be
+    /// cut to their own; `None` when each text is cut to its own.
     text_clip: Option<Option<(u32, u32, u32, u32)>>,
 }
 

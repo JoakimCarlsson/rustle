@@ -295,7 +295,7 @@ impl Renderer {
                         (*italic, *letter_spacing, *ligatures),
                         self.font_generation.get(),
                     );
-                    let (buffer, ink) = self.kept(key, scale_factor, |font_system| {
+                    let (laid, ink) = self.kept(key, scale_factor, |font_system| {
                         shape(
                             font_system,
                             Setting {
@@ -319,7 +319,7 @@ impl Renderer {
                     let text = Shaped {
                         position: (*x, *y),
                         color: legible_color(*color),
-                        buffer,
+                        laid,
                         clip,
                     };
                     add_text(&mut frames, &mut current, text, ink, scale_factor, target);
@@ -342,7 +342,7 @@ impl Renderer {
                         (*align, *max_lines, *width, *wrap),
                         self.font_generation.get(),
                     );
-                    let (buffer, ink) = self.kept(key, scale_factor, |font_system| {
+                    let (laid, ink) = self.kept(key, scale_factor, |font_system| {
                         shape(
                             font_system,
                             Setting {
@@ -359,7 +359,7 @@ impl Renderer {
                     let text = Shaped {
                         position: (*x, *y),
                         color: Color::rgb(255, 255, 255),
-                        buffer,
+                        laid,
                         clip,
                     };
                     add_text(&mut frames, &mut current, text, ink, scale_factor, target);
@@ -505,11 +505,19 @@ fn add_text(
     scale_factor: f32,
     target: (u32, u32),
 ) {
-    let shared = current.texts.iter().all(|other| other.clip == text.clip);
+    let shared = !current.mixed_text_clips
+        && current
+            .texts
+            .first()
+            .is_none_or(|first| first.clip == text.clip);
     if (ink.overhang || current.text_overhang) && !shared {
         push_layer(frames, std::mem::replace(current, Layer::new()).take());
     }
     current.text_overhang |= ink.overhang;
+    current.mixed_text_clips |= current
+        .texts
+        .first()
+        .is_some_and(|first| first.clip != text.clip);
     let origin = (
         (text.position.0 * scale_factor).round() as i32,
         (text.position.1 * scale_factor).round() as i32,
@@ -544,6 +552,8 @@ pub(super) struct Layer {
     /// Whether a text reaches outside its line boxes, so that all the layer's text shares
     /// one clip and is cut by the scissor rather than by glyphon's bounds.
     text_overhang: bool,
+    /// Whether the layer's texts are cut to more than one clip.
+    mixed_text_clips: bool,
     /// Where the outlines, pictures and text lie, by kind.
     covers: [Cover; 3],
 }
@@ -560,6 +570,7 @@ impl Layer {
             image_runs: Vec::new(),
             texts: Vec::new(),
             text_overhang: false,
+            mixed_text_clips: false,
             covers: Default::default(),
         }
     }

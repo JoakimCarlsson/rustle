@@ -204,7 +204,8 @@ impl Embedded {
     /// Tells the interface its area is `size` physical pixels with `scale_factor` physical
     /// pixels to a logical one, and lays it out. The content reads the size from
     /// [`LOCAL_WINDOW_INFO`](crate::LOCAL_WINDOW_INFO) and the scale from
-    /// [`LOCAL_DENSITY`](crate::LOCAL_DENSITY), and composes again when either changed.
+    /// [`LOCAL_DENSITY`](crate::LOCAL_DENSITY); what read them is composed again first, so the
+    /// interface is laid out once, at the new size, with what the size changed.
     pub fn resize(&mut self, size: (u32, u32), scale_factor: f32) {
         if let Backend::Drawing(renderer) = &mut self.backend {
             renderer.resize(size.0, size.1);
@@ -213,6 +214,7 @@ impl Embedded {
         self.size = Size::new(size.0 as f32 / scale_factor, size.1 as f32 / scale_factor);
         self.info.set_size(self.size);
         self.info.set_density(scale_factor);
+        self.composition.recompose();
         self.lay_out();
         self.ui.after_input();
     }
@@ -273,8 +275,10 @@ impl Embedded {
     /// [`new`](Embedded::new) was called.
     ///
     /// Returns whether the interface needs to be drawn again: it changed, input changed how it
-    /// looks, or an animation wants another frame.
+    /// looks, or an animation wants another frame. What the last frame replaced, its old
+    /// measured tree and display list, is dropped first, between frames.
     pub fn update(&mut self) -> bool {
+        rustle_ui::drop_retired();
         let started = Instant::now();
         if self.composition.has_pending_frame() {
             self.composition.run_frame(self.frame_time());

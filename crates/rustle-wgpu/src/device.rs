@@ -1,8 +1,7 @@
 //! Creating the renderer: the device, the surface and what is built on them.
 
-use glyphon::{Cache, FontSystem, SwashCache, TextAtlas};
+use glyphon::{FontSystem, SwashCache};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::blur::Blur;
@@ -222,14 +221,8 @@ impl Renderer {
         create_surface: Option<SurfaceFactory>,
     ) -> Self {
         let (font_system, font_generation) = shared_fonts();
-        let cache = Cache::new(&device);
-        let color_mode = if format.is_srgb() {
-            glyphon::ColorMode::Accurate
-        } else {
-            glyphon::ColorMode::Web
-        };
-        let atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, color_mode);
         let quads = Quads::new(&device, format);
+        let glyphs = crate::glyphs::Glyphs::new(&device, format, quads.viewport_layout());
         let images = Images::new(&device, format, quads.viewport_layout());
         let paths = Paths::new(&device, format, quads.viewport_layout());
         let composite = Composite::new(&device, &queue, format);
@@ -253,14 +246,11 @@ impl Renderer {
             surface_config,
             font_system,
             font_generation,
-            shaped: HashMap::new(),
-            measured: HashMap::new(),
+            shaped: crate::text::KeyMap::default(),
+            measured: crate::text::KeyMap::default(),
             frame: 0,
             swash_cache: SwashCache::new(),
-            text_cache: cache,
-            text_viewports: HashMap::new(),
-            atlas,
-            text_renderers: Vec::new(),
+            glyphs,
             quads,
             images,
             paths,

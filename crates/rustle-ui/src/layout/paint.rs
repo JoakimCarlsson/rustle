@@ -331,8 +331,12 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// The list painted, keeping what the next paint can reuse.
+    /// The list painted, keeping what the next paint can reuse. What is left of the list
+    /// painted before is retired, to be dropped once the frame is shown.
     fn finish(mut self) -> DisplayList {
+        if let Some(previous) = self.previous.take() {
+            crate::retire(previous);
+        }
         self.list.reuse = self.kept.into_reuse();
         self.list
     }
