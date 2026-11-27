@@ -51,3 +51,30 @@ BENCH_ROWS=600 BENCH_FRAMES=300 cargo run --release -p rustle --example bench
 This reports composition, layout/paint and render-plus-readback medians, and
 total frame median, p95 and p99. `BENCH_SCENARIO=effects` or `list` runs one
 scenario.
+
+The `rustle-bench` crate holds benchmarks of the separate stages, run with a
+small harness of its own on the standard library alone:
+
+```sh
+make bench
+CARGO_TARGET_DIR=build cargo bench -p rustle-bench
+CARGO_TARGET_DIR=build cargo bench -p rustle-bench --bench text -- streamed
+```
+
+Words after `--` keep only the benchmarks whose names hold one of them. Each
+benchmark prints its median, 95th percentile, slowest and mean run in
+microseconds, the total and how many runs were measured.
+
+| Bench | What it measures |
+| --- | --- |
+| `text` | Measuring and laying out text without a GPU: a short label, a long paragraph in one style and with markdown's bold words and links, a paragraph with a run per word, a paragraph streamed in three words a frame with its newest characters fading in, and such a paragraph after six finished ones. |
+| `interface` | Composing, measuring, painting and painting again unchanged a list of 600 rows beside a value that changes every frame, and scrolling lazy lists of 10 000 items, as tall as their text or all as tall. |
+| `renderer` | Splitting a frame's draw commands into layers and shaping their text, without the GPU: the 600 rows, and a streamed paragraph. It needs a GPU adapter for the renderer, and skips itself without one. |
+
+Text is shaped with cosmic-text from crates.io. Rustle keeps it cheap itself
+(see `crates/rustle-wgpu/src/paragraphs.rs`): neighbouring runs set alike are
+merged and the commonest style becomes the default, so cosmic-text, which
+checks every word against every span of its paragraph, sees few spans;
+paragraphs are kept shaped and laid out between texts; and a long paragraph
+that grows is handed over as pieces cut where it last wrapped, so only its last
+lines are shaped again.

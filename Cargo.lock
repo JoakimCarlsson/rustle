@@ -1549,6 +1549,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
 ]
 
 [[package]]
@@ -2213,6 +2214,10 @@ dependencies = [
  "accesskit_unix",
  "accesskit_windows",
  "arboard",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "pollster",
  "rustix",
  "rustle-animation",
@@ -2243,6 +2248,17 @@ version = "0.1.2"
 dependencies = [
  "rustle-graphics",
  "rustle-runtime",
+]
+
+[[package]]
+name = "rustle-bench"
+version = "0.1.2"
+dependencies = [
+ "rustle",
+ "rustle-graphics",
+ "rustle-text",
+ "rustle-ui",
+ "rustle-wgpu",
 ]
 
 [[package]]
@@ -2353,8 +2369,8 @@ version = "0.1.2"
 dependencies = [
  "bytemuck",
  "cosmic-text",
+ "foldhash 0.2.0",
  "glyphon",
- "pollster",
  "rustle-geometry",
  "rustle-graphics",
  "rustle-shaders",

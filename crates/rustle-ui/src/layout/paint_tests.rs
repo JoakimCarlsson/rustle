@@ -54,32 +54,7 @@ impl TextMeasurer for FixedText {
 
 /// Paints a measured tree once, including all deferred descendants.
 fn paint_once(measured: &Measured) -> DisplayList {
-    let mut painter = Painter {
-        pending_end: None,
-        deferred: Vec::new(),
-        alpha: 1.0,
-        merging: 0,
-        clearing: 0,
-        parents: Vec::new(),
-        merged_text: Vec::new(),
-        merged_labels: Vec::new(),
-        list: DisplayList::default(),
-        clips: Vec::new(),
-        clip_radii: Vec::new(),
-        window: measured.size,
-        grid: None,
-        focus: None,
-        requester: None,
-        scroll_parents: Vec::new(),
-        focus_observers: Vec::new(),
-        key_scopes: Vec::new(),
-        focused_flag: None,
-        group: None,
-        pointer: PointerState::default(),
-        resolved: None,
-        anchors: Vec::new(),
-        pointer_event_parents: Vec::new(),
-    };
+    let mut painter = Painter::new(measured.size, None, PointerState::default(), None);
     painter.paint(measured, Offset::default());
     painter.paint_deferred();
     painter.list

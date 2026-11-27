@@ -115,7 +115,7 @@ impl Shaders {
             multiview_mask: None,
             cache: None,
         });
-        match pollster::block_on(scope.pop()) {
+        match crate::block::block_on(scope.pop()) {
             Some(error) => {
                 eprintln!("rustle: a custom shader was rejected and is not drawn: {error}");
                 None

@@ -79,12 +79,13 @@ impl Renderer {
             Box::new(move |instance| instance.create_surface(target.clone()));
         let surface = create_surface(&instance)?;
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))?;
+        let adapter =
+            crate::block::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                compatible_surface: Some(&surface),
+                ..Default::default()
+            }))?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+            crate::block::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -154,10 +155,11 @@ impl Renderer {
     /// through [`Renderer::snapshot`]. It needs a GPU but no display.
     pub fn offscreen(width: u32, height: u32) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
+        let adapter = crate::block::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        )?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
+            crate::block::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -292,10 +294,11 @@ mod tests {
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .ok()?;
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        let adapter = crate::block::block_on(
+            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+        )
+        .ok()?;
+        crate::block::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
     #[test]

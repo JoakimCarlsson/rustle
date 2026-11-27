@@ -988,3 +988,223 @@ fn a_growing_item_in_view_composes_the_list_nothing_again() {
         }
     );
 }
+
+/// A uniform list of `count` items 20 tall with `content`, in a 100 by 200 window.
+fn uniform(count: usize, content: LazyContent) -> (Stage, LazyListState) {
+    let found = Found::default();
+    let kept: Rc<RefCell<Option<LazyListState>>> = Rc::default();
+    let (probes, state_slot) = (Rc::clone(&found), Rc::clone(&kept));
+    let stage = Stage::new(100.0, 200.0, &found, move || {
+        let state = remember_lazy_list_state();
+        *state_slot.borrow_mut() = Some(state.clone());
+        let probes = Rc::clone(&probes);
+        uniform_list(
+            Modifier::new().size(100.0, 200.0),
+            &state,
+            content,
+            count,
+            20.0,
+            move |index| probe(&probes, index, Modifier::new().fill_max_size()),
+        );
+    });
+    let state = kept.borrow().clone().expect("state");
+    (stage, state)
+}
+
+/// Rows of a list of items that take one, two or no rows in turn, the third hidden.
+struct Varied {
+    /// The first row of each item and, last, how many rows there are.
+    starts: Vec<usize>,
+}
+
+impl Varied {
+    /// `count` items taking one, two and no rows in turn.
+    fn new(count: usize) -> Self {
+        let mut starts = vec![0];
+        for index in 0..count {
+            let rows = [1, 2, 0][index % 3];
+            starts.push(starts[index] + rows);
+        }
+        Self { starts }
+    }
+}
+
+impl UniformRows for Varied {
+    /// How many items there are.
+    fn items(&self) -> usize {
+        self.starts.len() - 1
+    }
+
+    /// How many rows they take.
+    fn rows(&self) -> usize {
+        self.starts[self.starts.len() - 1]
+    }
+
+    /// The first row of `item`.
+    fn first_row(&self, item: usize) -> usize {
+        self.starts[item.min(self.items())]
+    }
+
+    /// The item drawn in `row`.
+    fn item_at_row(&self, row: usize) -> usize {
+        if row >= self.rows() {
+            return self.items();
+        }
+        self.starts.partition_point(|start| *start <= row) - 1
+    }
+}
+
+#[test]
+fn a_uniform_list_places_items_on_rows_and_composes_only_those_near_the_view() {
+    let (mut stage, state) = uniform(100_000, LazyContent::new().padding_each(5.0, 7.0));
+    near(stage.y(0).unwrap(), 5.0);
+    near(stage.y(3).unwrap(), 65.0);
+    near(stage.rect(3).unwrap().size.height, 20.0);
+    near(
+        state.scroll().content_length(),
+        5.0 + 100_000.0 * 20.0 + 7.0,
+    );
+    assert!(stage.items().len() <= 16, "{:?}", stage.items());
+    state.scroll().scroll_to(5.0 + 50_000.0 * 20.0 + 4.0);
+    stage.settle();
+    near(stage.y(50_000).unwrap(), -4.0);
+    near(stage.y(50_001).unwrap(), 16.0);
+    assert!(stage.y(0).is_none());
+    let items = stage.items();
+    assert!(
+        items.len() <= 16 && items[0] >= 49_996 && items[items.len() - 1] <= 50_016,
+        "{items:?}"
+    );
+    assert_eq!(state.first_visible_item(), Some(50_000));
+    near(state.first_visible_item_scroll_offset(), 4.0);
+    let info = state.layout_info();
+    assert_eq!(info.total_items_count, 100_000);
+    assert_eq!(info.visible_items_info[0].index, 50_000);
+    assert_eq!(info.visible_items_info.len(), 11);
+}
+
+#[test]
+fn a_uniform_list_scrolls_to_items_as_asked() {
+    let (mut stage, state) = uniform(1_000, LazyContent::new().padding(10.0));
+    state.scroll_to_item(100, ItemAlign::Start);
+    stage.settle();
+    near(stage.y(100).unwrap(), 0.0);
+    state.scroll_to_item(100, ItemAlign::Center);
+    stage.settle();
+    near(stage.y(100).unwrap(), 90.0);
+    state.scroll_to_item(100, ItemAlign::End);
+    stage.settle();
+    near(stage.y(100).unwrap(), 180.0);
+    state.scroll_to_item_offset(200, 5.0);
+    stage.settle();
+    near(stage.y(200).unwrap(), -5.0);
+    state.scroll_to_end();
+    stage.settle();
+    near(stage.y(999).unwrap(), 200.0 - 10.0 - 20.0);
+    near(state.scroll().offset(), state.scroll().max_offset());
+    state.scroll_to_item(5_000, ItemAlign::Start);
+    stage.settle();
+    near(state.scroll().offset(), state.scroll().max_offset());
+    state.scroll_to_item_offset(0, -10.0);
+    stage.settle();
+    near(state.scroll().offset(), 0.0);
+    near(stage.y(0).unwrap(), 10.0);
+}
+
+#[test]
+fn a_uniform_list_with_rows_gives_items_their_rows_and_skips_hidden_ones() {
+    let found = Found::default();
+    let kept: Rc<RefCell<Option<LazyListState>>> = Rc::default();
+    let (probes, state_slot) = (Rc::clone(&found), Rc::clone(&kept));
+    let mut stage = Stage::new(100.0, 200.0, &found, move || {
+        let state = remember_lazy_list_state();
+        *state_slot.borrow_mut() = Some(state.clone());
+        let probes = Rc::clone(&probes);
+        uniform_list_with(
+            Modifier::new().size(100.0, 200.0),
+            &state,
+            LazyContent::new(),
+            10.0,
+            &Varied::new(3_000),
+            |index| index,
+            move |index| probe(&probes, index, Modifier::new().fill_max_size()),
+        );
+    });
+    let state = kept.borrow().clone().expect("state");
+    near(stage.y(1).unwrap(), 10.0);
+    near(stage.rect(1).unwrap().size.height, 20.0);
+    near(stage.y(3).unwrap(), 30.0);
+    near(state.scroll().content_length(), 3_000.0 * 10.0);
+    state.scroll_to_item(1_501, ItemAlign::Start);
+    stage.settle();
+    near(stage.y(1_501).unwrap(), 0.0);
+    assert_eq!(state.first_visible_item(), Some(1_501));
+    state.scroll().scroll_to(1_501.0 * 10.0 + 15.0);
+    stage.settle();
+    assert_eq!(state.first_visible_item(), Some(1_501));
+    near(state.first_visible_item_scroll_offset(), 15.0);
+    let info = state.layout_info();
+    assert_eq!(info.visible_items_info[0].index, 1_501);
+    assert!(
+        info.visible_items_info
+            .iter()
+            .all(|item| item.index % 3 != 2)
+    );
+}
+
+impl Stage {
+    /// Lays out once, as a frame drawn without settling would, and returns whether the
+    /// layout asked the list to compose again: the frame shows what that one pass placed.
+    fn single_pass(&mut self) -> bool {
+        self.found.borrow_mut().clear();
+        let tree = self.composition.output().cloned().expect("composed");
+        display_list(&tree, Constraints::loose(self.window), &mut NoText);
+        self.composition.recompose()
+    }
+}
+
+/// How many of `frames` frames, each scrolling `step` and laid out once, drew an item
+/// somewhere other than where settling put it, in a list of varied heights scrolled from
+/// `start`.
+fn stale_frames(start: f32, step: f32, frames: usize, reverse: bool) -> usize {
+    let heights = Rc::new(RefCell::new(
+        (0..400)
+            .map(|index| 20.0 + ((index * 37) % 90) as f32)
+            .collect::<Vec<f32>>(),
+    ));
+    let (mut stage, state) = vertical(heights, LazyContent::new().reverse_layout(reverse));
+    state.scroll().scroll_to(start);
+    stage.settle();
+    let mut stale = 0;
+    for _ in 0..frames {
+        state.scroll().scroll_by(step);
+        stage.composition.recompose();
+        stage.single_pass();
+        let drawn = stage.found.borrow().clone();
+        let offset = state.scroll().offset();
+        stage.settle();
+        let settled = stage.found.borrow().clone();
+        let moved = drawn.iter().any(|(index, rect)| {
+            settled
+                .get(index)
+                .is_some_and(|other| (other.origin.y - rect.origin.y).abs() > 0.25)
+                && rect.origin.y < 200.0
+                && rect.origin.y + rect.size.height > 0.0
+        });
+        if moved || (state.scroll().offset() - offset).abs() > 0.25 {
+            stale += 1;
+        }
+    }
+    stale
+}
+
+/// Items newly in view below take in their measured lengths during the layout that measures
+/// them, but those scrolled into view above wait for the next composition, so a frame laid
+/// out once while scrolling back up shows them out of place: why a window composes and lays
+/// out again before drawing while layout changes what composition reads.
+#[test]
+fn only_items_measured_above_the_view_need_a_second_pass() {
+    assert_eq!(stale_frames(0.0, 13.0, 200, false), 0);
+    assert_eq!(stale_frames(0.0, 13.0, 200, true), 0);
+    assert!(stale_frames(20_000.0, -13.0, 200, false) > 0);
+}

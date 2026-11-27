@@ -14,6 +14,10 @@ use rustle_ui::{
 
 use crate::linear::{column_with, row_with, spacer, stack_with};
 
+mod uniform;
+
+pub use uniform::{OneRowEach, UniformRows, uniform_list, uniform_list_with};
+
 /// Emits a vertically scrolling list of `count` items, each `item_height` tall,
 /// composing only the items near the viewport. `item` emits the item at an index.
 ///
@@ -188,8 +192,8 @@ impl Placed {
     /// reusing what was placed when nothing changed. Lengths are looked up in `heights`
     /// only when the keys changed or `rehash` asks for it.
     ///
-    /// Returns the keys and tops placed before, when the items were placed afresh, or
-    /// `None` when what was placed stands as it was.
+    /// Returns the keys and tops placed before, with whether each was measured, when the
+    /// items were placed afresh, or `None` when what was placed stands as it was.
     fn update(
         &mut self,
         keys: Vec<u64>,
@@ -197,7 +201,7 @@ impl Placed {
         estimate: f32,
         padding: (f32, f32),
         rehash: bool,
-    ) -> Option<(Vec<u64>, Vec<f32>)> {
+    ) -> Option<(Vec<u64>, Vec<f32>, Vec<bool>)> {
         let same = !rehash && !self.duplicates && !self.tops.is_empty() && self.keys == keys;
         let estimate_moved = estimate.to_bits() != self.estimate.to_bits()
             && self.measured.iter().any(|measured| !measured);
@@ -205,6 +209,7 @@ impl Placed {
             return None;
         }
         let old_tops = std::mem::take(&mut self.tops);
+        let old_measured = self.measured.clone();
         let mut values = std::mem::take(&mut self.lengths).values;
         let old_keys = if same {
             for (index, length) in std::mem::take(&mut self.pending) {
@@ -242,7 +247,7 @@ impl Placed {
         self.lengths = Lengths::new(values);
         self.estimate = estimate;
         self.padding = padding;
-        Some((old_keys, old_tops))
+        Some((old_keys, old_tops, old_measured))
     }
 
     /// Takes in that the item with `key` is now `height` long, while the list is scrolled
@@ -316,14 +321,14 @@ impl Placed {
         if offset <= 0.0 {
             return true;
         }
-        let anchor = self
+        let top = self
             .lengths
             .index_at(offset - self.padding.0)
             .min(self.keys.len().saturating_sub(1));
         if self.reverse {
-            return index > anchor;
+            return index > top;
         }
-        index >= anchor
+        index >= steady_anchor(top, offset + self.viewport, &self.tops, &self.measured)
     }
 }
 
@@ -447,6 +452,9 @@ struct ListInner {
     /// The watch on scrolls that asks the list to compose again once the viewport leaves
     /// what it covers, kept while the list is.
     watch: RefCell<Option<rustle_runtime::ObserverHandle>>,
+    /// What a uniform list placed when it last composed, while one scrolls by this state
+    /// rather than a list that measures its items.
+    uniform: RefCell<Option<uniform::Uniform>>,
 }
 
 /// One item a lazy list laid out in view, like Compose's `LazyListItemInfo`.
@@ -532,6 +540,7 @@ impl ListInner {
             covered: Cell::new((f32::NEG_INFINITY, f32::INFINITY)),
             uncovered: Cell::new(false),
             watch: RefCell::default(),
+            uniform: RefCell::default(),
         }
     }
 }
@@ -616,6 +625,9 @@ impl LazyListState {
     /// The index of the first item in view as of the latest composition, if any. In a
     /// [`lazy_vertical_grid_spanned`] it is the first item of the first row in view.
     pub fn first_visible_item(&self) -> Option<usize> {
+        if let Some(uniform) = self.inner.uniform.borrow().as_ref() {
+            return uniform.first_visible_item(self.scroll.offset());
+        }
         let placed = self.inner.placed.borrow();
         let count = placed.keys.len();
         let row =
@@ -630,6 +642,9 @@ impl LazyListState {
     /// [`lazy_vertical_grid_spanned`] every item of a row in view is listed with the row's
     /// place and length.
     pub fn layout_info(&self) -> LazyListLayoutInfo {
+        if let Some(uniform) = self.inner.uniform.borrow().as_ref() {
+            return uniform.layout_info(self.scroll.offset());
+        }
         let placed = self.inner.placed.borrow();
         let count = placed.keys.len();
         let offset = self.scroll.offset();
@@ -715,6 +730,9 @@ impl LazyListState {
     /// How far the start of the viewport is past the start of the first item in
     /// view, in logical pixels: Compose's `firstVisibleItemScrollOffset`.
     pub fn first_visible_item_scroll_offset(&self) -> f32 {
+        if let Some(uniform) = self.inner.uniform.borrow().as_ref() {
+            return uniform.first_visible_item_scroll_offset(self.scroll.offset());
+        }
         let placed = self.inner.placed.borrow();
         let count = placed.keys.len();
         if count == 0 {
@@ -832,6 +850,21 @@ fn item_at(tops: &[f32], offset: f32) -> usize {
     tops.partition_point(|top| *top <= offset).saturating_sub(1)
 }
 
+/// The item a list keeps in place while lengths change above it, for a list whose item
+/// `top` is at the start of a viewport ending at `end`: the first item in view whose length
+/// was measured, as it was drawn where it is, or `top` when none in view was. An item first
+/// measured above it, such as one scrolled into view from above by a guess, then grows
+/// upward rather than pushing what was already in view down.
+fn steady_anchor(top: usize, end: f32, tops: &[f32], measured: &[bool]) -> usize {
+    if measured.get(top).is_none_or(|measured| *measured) {
+        return top;
+    }
+    (top + 1..measured.len())
+        .take_while(|&index| tops.get(index).is_some_and(|start| *start < end))
+        .find(|&index| measured[index])
+        .unwrap_or(top)
+}
+
 /// The tops of items with the given `keys`, ending with the end of the list.
 /// Items not measured count as `estimate`.
 #[cfg(test)]
@@ -856,6 +889,8 @@ struct Reposition<'a> {
     request: Option<Request>,
     old_keys: &'a [u64],
     old_tops: &'a [f32],
+    /// Whether each item placed before was measured; empty when all count as measured.
+    old_measured: &'a [bool],
     new_keys: &'a [u64],
     new_tops: &'a [f32],
     /// The space after each item but the last, which is part of its measured length.
@@ -915,7 +950,17 @@ impl Reposition<'_> {
         if self.old_keys.is_empty() || self.offset <= 0.0 {
             return self.offset;
         }
-        let anchor = item_at(self.old_tops, self.offset).min(self.old_keys.len() - 1);
+        let top = item_at(self.old_tops, self.offset).min(self.old_keys.len() - 1);
+        let anchor = if self.reverse {
+            top
+        } else {
+            steady_anchor(
+                top,
+                self.offset + self.old_viewport,
+                self.old_tops,
+                self.old_measured,
+            )
+        };
         let key = self.old_keys[anchor];
         if self.reverse {
             let short_of_end = self.old_tops[anchor + 1] - self.offset;
@@ -933,6 +978,31 @@ impl Reposition<'_> {
         };
         match now {
             Some(index) => self.new_tops[index] + moved_by,
+            None => self.offset_by_survivor(anchor),
+        }
+    }
+
+    /// The offset that keeps in place the first item after `anchor`, the item at the top of
+    /// the viewport that is gone, that was in view and is still in the list, as a
+    /// placeholder replaced by what it stood for leaves what was below it where it was;
+    /// the offset unchanged when none in view is.
+    fn offset_by_survivor(&self, anchor: usize) -> f32 {
+        let end = self.offset + self.old_viewport.max(self.viewport);
+        let wanted: KeyMap<usize> = (anchor + 1..self.old_keys.len())
+            .take_while(|&index| self.old_tops[index] < end)
+            .map(|index| (self.old_keys[index], index))
+            .collect();
+        if wanted.is_empty() {
+            return self.offset;
+        }
+        let found = self
+            .new_keys
+            .iter()
+            .enumerate()
+            .filter_map(|(now, key)| wanted.get(key).map(|&old| (old, now)))
+            .min();
+        match found {
+            Some((old, now)) => self.new_tops[now] - (self.old_tops[old] - self.offset),
             None => self.offset,
         }
     }
@@ -1313,6 +1383,7 @@ fn list_impl<K: Hash>(
         let _ = state.version.get();
         state.watch_scroll();
         state.inner.uncovered.set(false);
+        state.inner.uniform.replace(None);
         let measured_viewport = rustle_runtime::untracked(|| state.scroll.viewport_length());
         state.inner.composed_viewport.set(Some(measured_viewport));
         let keys: Vec<u64> = (0..count).map(|index| hash_key(key_of(index))).collect();
@@ -1339,11 +1410,10 @@ fn list_impl<K: Hash>(
                 (content.padding_start, content.padding_end),
                 state.inner.rehash.replace(false),
             );
-            let (old_keys, old_tops) = previous
-                .as_ref()
-                .map_or((&placed.keys[..], &placed.tops[..]), |(keys, tops)| {
-                    (&keys[..], &tops[..])
-                });
+            let (old_keys, old_tops, old_measured) = previous.as_ref().map_or(
+                (&placed.keys[..], &placed.tops[..], &[][..]),
+                |(keys, tops, measured)| (&keys[..], &tops[..], &measured[..]),
+            );
             let wanted = Reposition {
                 offset: scrolled(),
                 viewport,
@@ -1356,6 +1426,7 @@ fn list_impl<K: Hash>(
                 },
                 old_keys,
                 old_tops,
+                old_measured,
                 new_keys: &placed.keys,
                 new_tops: &placed.tops,
                 spacing: content.spacing,
@@ -2068,11 +2139,30 @@ mod tests {
             request: None,
             old_keys: old.0,
             old_tops: old.1,
+            old_measured: &[],
             new_keys: new.0,
             new_tops: new.1,
             spacing: 0.0,
             reverse: false,
         }
+    }
+
+    /// An item scrolled into view from above by a guess that turns out longer grows upward,
+    /// keeping the first item in view that was measured where it was drawn; and a guessed
+    /// item at the top of the view that is replaced keeps the next item in view in place.
+    #[test]
+    fn items_guessed_above_what_was_drawn_grow_upward() {
+        let keys = [1, 2, 3];
+        let old = [0.0, 50.0, 100.0, 150.0];
+        let grown = [0.0, 50.0, 250.0, 300.0];
+        let mut list = reposition(80.0, (&keys, &old), (&keys, &grown));
+        let measured = [true, false, true];
+        list.old_measured = &measured;
+        assert_eq!(list.offset(), 230.0);
+        let replaced = [1, 4, 5, 3];
+        let new = [0.0, 50.0, 150.0, 300.0, 350.0];
+        let list = reposition(80.0, (&keys, &old), (&replaced, &new));
+        assert_eq!(list.offset(), 280.0);
     }
 
     /// A list laid out from its end and scrolled away from it keeps what is in view where

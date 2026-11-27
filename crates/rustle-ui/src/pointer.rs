@@ -236,6 +236,7 @@ impl PointerEvent {
 pub type PointerEventHandler = Rc<dyn Fn(&PointerEvent)>;
 
 /// An area that listens to one type of pointer event in one pass, cut to what is visible.
+#[derive(Clone)]
 pub struct PointerEventRegion {
     /// The part of the area that is visible, in the window.
     pub rect: Rect,

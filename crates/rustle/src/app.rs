@@ -211,12 +211,32 @@ pub(crate) struct App {
     /// it scrolled in. Scrolls are summed and handled once a frame, or before the next event
     /// that is not a scroll.
     pub(crate) pending_wheel: Option<(winit::window::WindowId, rustle_geometry::Offset)>,
+    /// A trackpad's scrolls in pixels not shown yet, handed out evenly over the frames of the
+    /// window they scrolled in, and that window.
+    pub(crate) resampled_wheel: (
+        crate::wheel_pacing::WheelResampler,
+        Option<winit::window::WindowId>,
+    ),
 }
 
 pub(crate) struct NativeWindow {
     pub(crate) adapter: Adapter,
     pub(crate) renderer: Renderer,
     pub(crate) window: Arc<dyn Window>,
+    /// Paces the window's frames to its display.
+    pub(crate) pacer: crate::frame_pacing::FramePacer,
+}
+
+/// The most times one frame composes and lays out again while laying out keeps changing
+/// what composition or layout reads, before the frame is drawn as it stands.
+const SETTLE_ROUNDS: usize = 4;
+
+impl NativeWindow {
+    /// Asks for the window to be drawn again: at the display's next refresh where frames are
+    /// paced to it, and otherwise as soon as the platform lets it.
+    pub(crate) fn request_frame(&self) {
+        self.pacer.request(&*self.window);
+    }
 }
 
 impl App {
@@ -271,6 +291,7 @@ impl App {
             deferred_phases: (false, false),
             pending_move: None,
             pending_wheel: None,
+            resampled_wheel: Default::default(),
         }
     }
 
@@ -316,7 +337,7 @@ impl App {
             });
         self.ui.show(laid_out);
         self.ui.redraw = false;
-        state.window.request_redraw();
+        state.request_frame();
         self.ui.update_hover();
         self.refresh_cursor();
         self.sync_ime_area();
@@ -332,19 +353,31 @@ impl App {
 
     /// Runs what animations asked for at this frame and applies the state
     /// changes it caused, so the frame about to be drawn shows them.
+    ///
+    /// Composing and laying out repeat, up to [`SETTLE_ROUNDS`] times, while laying out
+    /// changed state that composition or layout reads, as a lazy list does when it learns
+    /// the real length of an item it placed by a guess: the frame drawn is the settled one
+    /// rather than one with items out of place that the next frame corrects.
     pub(crate) fn run_frame(&mut self) {
         if self.composition.has_pending_frame() {
             self.composition.run_frame(self.started.elapsed());
         }
-        if self.composition.recompose() {
-            self.relayout_all();
+        for _ in 0..SETTLE_ROUNDS {
+            let recomposed = self.composition.recompose();
+            if recomposed {
+                self.relayout_all();
+            }
+            let relaid = self.follow_phases();
+            if !recomposed && !relaid {
+                break;
+            }
         }
-        self.follow_phases();
     }
 
     /// Lays every window out again, or draws every window again, when state read only while
-    /// laying out or drawing changed since the windows were last laid out or drawn.
-    pub(crate) fn follow_phases(&mut self) {
+    /// laying out or drawing changed since the windows were last laid out or drawn. Returns
+    /// whether the windows were laid out again.
+    pub(crate) fn follow_phases(&mut self) -> bool {
         let phases = self.composition.phase_observer();
         let (deferred_relayout, deferred_redraw) = std::mem::take(&mut self.deferred_phases);
         let relayout = phases.take_relayout() | deferred_relayout;
@@ -354,13 +387,14 @@ impl App {
         } else if redraw {
             self.repaint_all();
         }
+        relayout
     }
 
     /// Keeps frames coming for as long as something wants one.
     pub(crate) fn request_redraw_for_frames(&self) {
         if self.composition.has_pending_frame() {
             for state in self.native_windows() {
-                state.window.request_redraw();
+                state.request_frame();
             }
         }
     }

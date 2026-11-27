@@ -9,7 +9,7 @@ use glyphon::{Buffer, FontSystem};
 use rustle_graphics::StyledSpan;
 use rustle_text::{Cluster, LineLayout, TextEngine, TextLayout, TextStyle};
 
-use crate::text::{Content, Setting, shape};
+use crate::text::{Content, Setting, with_shaped};
 
 /// Shares the renderer's font system, so fonts registered through it are the
 /// ones the renderer draws with.
@@ -103,7 +103,15 @@ pub(super) fn layout_spans(
     width: Option<f32>,
 ) -> TextLayout {
     let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-    let buffer = shape(
+    let mut end = 0;
+    let span_ends: Vec<usize> = spans
+        .iter()
+        .map(|span| {
+            end += span.text.len();
+            end
+        })
+        .collect();
+    let lines = with_shaped(
         font_system,
         Setting {
             content: Content::Rich(spans),
@@ -114,8 +122,8 @@ pub(super) fn layout_spans(
             wrap: style.wrap,
         },
         width,
+        |buffer| lines_of(buffer, &text, &span_ends, style),
     );
-    let lines = lines_of(&buffer, &text, style);
     TextLayout::new(text, spans.to_vec(), style.font_size, lines)
 }
 
@@ -126,8 +134,21 @@ fn next_start(run: &glyphon::LayoutRun<'_>, first: usize) -> Option<usize> {
     run.glyphs.iter().map(|glyph| first + glyph.start).min()
 }
 
-/// The visual lines of a shaped buffer, with offsets into the whole text.
-fn lines_of(buffer: &Buffer, text: &str, style: &TextStyle) -> Vec<LineLayout> {
+/// The index of the span holding byte `offset` of the text, given where each span ends.
+fn span_at(span_ends: &[usize], offset: usize) -> usize {
+    span_ends
+        .partition_point(|end| *end <= offset)
+        .min(span_ends.len().saturating_sub(1))
+}
+
+/// The visual lines of a shaped buffer, with offsets into the whole text and the span each
+/// cluster is in, found by where each span ends in `span_ends`.
+fn lines_of(
+    buffer: &Buffer,
+    text: &str,
+    span_ends: &[usize],
+    style: &TextStyle,
+) -> Vec<LineLayout> {
     let mut starts = Vec::with_capacity(buffer.lines.len());
     let mut total = 0;
     for line in &buffer.lines {
@@ -137,10 +158,22 @@ fn lines_of(buffer: &Buffer, text: &str, style: &TextStyle) -> Vec<LineLayout> {
     let runs: Vec<_> = buffer.layout_runs().collect();
     let mut lines: Vec<LineLayout> = Vec::new();
     let mut bottom = 0.0_f32;
+    let mut next_run = 0;
     for (paragraph, line) in buffer.lines.iter().enumerate() {
         let first = starts[paragraph];
         let length = line.text().len();
-        let mine: Vec<_> = runs.iter().filter(|run| run.line_i == paragraph).collect();
+        let from = next_run
+            + runs[next_run..]
+                .iter()
+                .take_while(|run| run.line_i < paragraph)
+                .count();
+        next_run = from
+            + runs[from..]
+                .iter()
+                .take_while(|run| run.line_i == paragraph)
+                .count();
+        let mine: Vec<_> = runs[from..next_run].iter().collect();
+        let goes_on = crate::paragraphs::continues(line);
         if mine.is_empty() {
             // An empty line (or one cut off by an ellipsis) has no run; an empty one still takes room.
             if style.max_lines.is_none() {
@@ -162,7 +195,7 @@ fn lines_of(buffer: &Buffer, text: &str, style: &TextStyle) -> Vec<LineLayout> {
         let mut start = first;
         for (index, run) in mine.iter().enumerate() {
             let mut clusters: Vec<Cluster> = Vec::new();
-            for glyph in run.glyphs {
+            for glyph in crate::paragraphs::line_glyphs(buffer, run) {
                 let (cluster_start, cluster_end) = (first + glyph.start, first + glyph.end);
                 let right = glyph.x + glyph.w;
                 match clusters.last_mut() {
@@ -177,7 +210,7 @@ fn lines_of(buffer: &Buffer, text: &str, style: &TextStyle) -> Vec<LineLayout> {
                         x: glyph.x,
                         width: glyph.w,
                         rtl: glyph.level.is_rtl(),
-                        span: glyph.metadata,
+                        span: span_at(span_ends, cluster_start),
                     }),
                 }
             }
@@ -194,9 +227,9 @@ fn lines_of(buffer: &Buffer, text: &str, style: &TextStyle) -> Vec<LineLayout> {
                 top: run.line_top,
                 height: run.line_height,
                 baseline: run.line_y,
-                width: run.line_w,
+                width: crate::paragraphs::line_width(buffer, run),
                 rtl: run.rtl,
-                hard_break: last,
+                hard_break: last && !goes_on,
                 clusters,
             });
             start = end;
@@ -234,6 +267,79 @@ mod tests {
     fn layout(text: &str, style: &TextStyle, width: Option<f32>) -> TextLayout {
         let spans = [TextSpan::new(text).resolve(style)];
         layout_spans(&mut fonts(), &spans, style, width)
+    }
+
+    /// A paragraph streamed in a few words at a time, with bold words, a link and its
+    /// newest characters fading in, lays out the same, line for line and cluster for
+    /// cluster, as when it is shaped whole each time, at two widths in turn as measuring
+    /// and drawing do.
+    #[test]
+    fn a_growing_paragraph_lays_out_as_when_shaped_whole() {
+        let style = TextStyle::default();
+        let vocabulary = [
+            "streaming",
+            "text",
+            "grows",
+            "by",
+            "a",
+            "few",
+            "words",
+            "every",
+            "frame",
+            "and",
+            "its",
+            "newest",
+            "characters",
+            "fade",
+            "in",
+            "while",
+            "older",
+            "lines",
+            "stay",
+        ];
+        let words: Vec<&str> = (0..400)
+            .map(|index| vocabulary[(index * 7 + index / 3) % vocabulary.len()])
+            .collect();
+        let mut fonts = fonts();
+        let cut_before = crate::paragraphs::paragraphs_cut();
+        for step in (40..400).step_by(9) {
+            let shown = words[..step].join(" ");
+            let fade = shown.len() - 24;
+            let mut spans = Vec::new();
+            let mut at = 0;
+            for (index, word) in shown[..fade].split_inclusive(' ').enumerate() {
+                let mut span = TextSpan::new(word).resolve(&style);
+                if index % 11 == 3 {
+                    span.font_weight = 700;
+                }
+                if index % 29 == 5 {
+                    span.color = Color::rgb(90, 140, 250);
+                }
+                spans.push(span);
+                at += word.len();
+            }
+            for (index, piece) in shown.as_bytes()[at..].chunks(6).enumerate() {
+                let mut span =
+                    TextSpan::new(std::str::from_utf8(piece).expect("ascii")).resolve(&style);
+                span.color.a = 250 - ((index + step % 7) * 30 % 240) as u8;
+                spans.push(span);
+            }
+            for width in [320.0, 321.0] {
+                let grown = layout_spans(&mut fonts, &spans, &style, Some(width));
+                let whole = crate::paragraphs::shaped_whole(|| {
+                    layout_spans(&mut fonts, &spans, &style, Some(width))
+                });
+                assert_eq!(
+                    grown.line_count(),
+                    whole.line_count(),
+                    "{step} words at {width}"
+                );
+                for (line, (grown, whole)) in grown.lines().iter().zip(whole.lines()).enumerate() {
+                    assert_eq!(grown, whole, "line {line} of {step} words at {width}");
+                }
+            }
+        }
+        assert!(crate::paragraphs::paragraphs_cut() > cut_before + 40);
     }
 
     #[test]

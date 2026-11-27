@@ -96,6 +96,7 @@ pub type TransferDataFn = Rc<dyn Fn(Offset) -> Option<DragAndDropTransferData>>;
 pub type ShouldStartFn = Rc<dyn Fn(&DragAndDropEvent) -> bool>;
 
 /// An area a drag and drop can start from, cut to what is visible.
+#[derive(Clone)]
 pub struct DragAndDropSourceRegion {
     /// The part of the area that is visible, in the window.
     pub rect: Rect,
@@ -110,6 +111,7 @@ pub struct DragAndDropSourceRegion {
 }
 
 /// An area that takes part in drags and drops, cut to what is visible.
+#[derive(Clone)]
 pub struct DragAndDropTargetRegion {
     /// The part of the area that is visible, in the window.
     pub rect: Rect,

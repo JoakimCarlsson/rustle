@@ -1,0 +1,26 @@
+[package]
+name = "rustle-bench"
+description = "Benchmarks of Rustle's text shaping, layout, painting and rendering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+rustle = { path = "../rustle" }
+rustle-graphics.workspace = true
+rustle-text.workspace = true
+rustle-ui.workspace = true
+rustle-wgpu.workspace = true
+
+[[bench]]
+name = "text"
+harness = false
+
+[[bench]]
+name = "interface"
+harness = false
+
+[[bench]]
+name = "renderer"
+harness = false

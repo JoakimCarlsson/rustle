@@ -81,6 +81,7 @@ pub struct Embedded {
     info: crate::window_info::WindowInfo,
     wake: Waker,
     timing: UpdateTiming,
+    settle_rounds: usize,
 }
 
 /// A composition of `root`, told the appearance in `dark` and the area `info` describes,
@@ -154,6 +155,7 @@ impl Embedded {
             info,
             wake,
             timing: UpdateTiming::default(),
+            settle_rounds: SETTLE_ROUNDS,
         }
         .timed()
     }
@@ -221,6 +223,13 @@ impl Embedded {
         self.composition.invalidate();
     }
 
+    /// Sets how many times one [`update`](Embedded::update) lays out again, at most, while
+    /// laying out changes state that composition or layout reads, at least once. A test sets
+    /// one to see the frame a single layout pass would draw.
+    pub fn set_settle_rounds(&mut self, rounds: usize) {
+        self.settle_rounds = rounds.max(1);
+    }
+
     /// The size of the area in logical pixels, as given to [`resize`](Embedded::resize).
     pub fn size(&self) -> Size {
         self.size
@@ -282,7 +291,7 @@ impl Embedded {
         if changed || relayout {
             self.lay_out();
         } else if repaint {
-            self.ui.repaint();
+            self.ui.repaint(true);
         }
         self.ui.after_input();
         let redraw = self.ui.take_redraw();
@@ -302,7 +311,7 @@ impl Embedded {
     /// `Cell` and read with `interaction_focused_with`. The next [`update`](Embedded::update)
     /// returns true.
     pub fn repaint(&mut self) {
-        self.ui.repaint();
+        self.ui.repaint(false);
     }
 
     /// Sets the clock that gives the time of each frame [`update`](Embedded::update) runs,
@@ -613,7 +622,7 @@ impl Embedded {
     /// Lays the latest tree out for the area's size, again if laying out changed state.
     fn lay_out(&mut self) {
         let constraints = Constraints::loose(self.size);
-        for _ in 0..SETTLE_ROUNDS {
+        for round in 1..=self.settle_rounds {
             let Some(tree) = self.composition.output().cloned() else {
                 return;
             };
@@ -631,6 +640,9 @@ impl Embedded {
             });
             self.ui.show(laid_out);
             self.timing.layout += measuring.elapsed();
+            if round == self.settle_rounds {
+                break;
+            }
             let composing = Instant::now();
             let recomposed = self.composition.recompose();
             self.timing.compose += composing.elapsed();

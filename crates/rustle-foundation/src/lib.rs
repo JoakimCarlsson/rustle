@@ -36,11 +36,12 @@ pub use ellipsized::text_ellipsized;
 pub use flow::{FlowOptions, flow_column, flow_column_with, flow_row, flow_row_with};
 pub use layouts::{backdrop, floating, floating_above, reveal, with_constraints};
 pub use lazy::{
-    ItemAlign, LazyContent, LazyListItemInfo, LazyListLayoutInfo, LazyListState, lazy_column,
-    lazy_horizontal_list, lazy_horizontal_list_keyed, lazy_horizontal_list_with,
-    lazy_horizontal_staggered_grid, lazy_horizontal_sticky_list, lazy_list, lazy_list_keyed,
-    lazy_list_with, lazy_row, lazy_sticky_list, lazy_vertical_grid, lazy_vertical_grid_spanned,
-    lazy_vertical_staggered_grid, remember_lazy_list_state,
+    ItemAlign, LazyContent, LazyListItemInfo, LazyListLayoutInfo, LazyListState, OneRowEach,
+    UniformRows, lazy_column, lazy_horizontal_list, lazy_horizontal_list_keyed,
+    lazy_horizontal_list_with, lazy_horizontal_staggered_grid, lazy_horizontal_sticky_list,
+    lazy_list, lazy_list_keyed, lazy_list_with, lazy_row, lazy_sticky_list, lazy_vertical_grid,
+    lazy_vertical_grid_spanned, lazy_vertical_staggered_grid, remember_lazy_list_state,
+    uniform_list, uniform_list_with,
 };
 pub use linear::{
     Alignment, Arrangement, column, column_arranged, column_with, row, row_arranged, row_with,

@@ -553,10 +553,51 @@ fn character_boundaries(
     (layout, boundaries)
 }
 
+/// A text layout handler and the layout it was told.
+type Told = (Rc<dyn Fn(Rc<TextLayout>)>, Rc<TextLayout>);
+
+thread_local! {
+    /// The text layouts told while measuring each cached block being measured, innermost
+    /// last, so a block whose measurement is reused tells them again.
+    static TOLD: std::cell::RefCell<Vec<Vec<Told>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes the text layouts told while measuring one cached block off the stack, also when
+/// measuring it panics.
+struct ToldGuard {
+    /// How many blocks were being measured around it.
+    depth: usize,
+}
+
+impl ToldGuard {
+    /// The text layouts told while measuring the block.
+    fn finish(self) -> Vec<Told> {
+        let told = TOLD.with(|stack| stack.borrow_mut().pop().unwrap_or_default());
+        std::mem::forget(self);
+        told
+    }
+}
+
+impl Drop for ToldGuard {
+    /// Drops what the block's measuring told when it did not finish.
+    fn drop(&mut self) {
+        TOLD.with(|stack| stack.borrow_mut().truncate(self.depth));
+    }
+}
+
+/// Notes `told` in the cached block being measured, if any.
+fn note_told(told: impl IntoIterator<Item = Told>) {
+    TOLD.with(|stack| {
+        if let Some(top) = stack.borrow_mut().last_mut() {
+            top.extend(told);
+        }
+    });
+}
+
 /// Gives the text layout `layout` makes to every
 /// [`on_text_layout`](crate::Modifier::on_text_layout) handler of `node`, making it only when
-/// there is one, and keeps the block being measured from being cached so they are told each
-/// time.
+/// there is one, and notes what each was told, so a cached measurement of the block being
+/// measured tells them again when it is reused.
 fn tell_text_layout(node: &Node, layout: impl FnOnce() -> Option<Rc<TextLayout>>) {
     let mut handlers = node
         .modifier
@@ -570,11 +611,13 @@ fn tell_text_layout(node: &Node, layout: impl FnOnce() -> Option<Rc<TextLayout>>
     if handlers.peek().is_none() {
         return;
     }
-    mark_unskippable();
     if let Some(layout) = layout() {
+        let mut told = Vec::new();
         for handler in handlers {
             handler(Rc::clone(&layout));
+            told.push((Rc::clone(handler), Rc::clone(&layout)));
         }
+        note_told(told);
     }
 }
 
@@ -585,6 +628,8 @@ struct LayoutCache {
     fonts: u64,
     reads: Reads,
     measured: Rc<Measured>,
+    /// The text layouts its measuring told, told again when it is reused.
+    told: Rc<Vec<Told>>,
 }
 
 /// Measures the node a restartable block last produced. The result is cached with the
@@ -631,18 +676,36 @@ fn measure_cached(
                 && cache.fonts == fonts
                 && cache.reads.is_current()
         })
-        .map(|cache| (Rc::clone(&cache.measured), cache.reads.clone()));
-    if let Some((measured, reads)) = hit {
+        .map(|cache| {
+            (
+                Rc::clone(&cache.measured),
+                cache.reads.clone(),
+                Rc::clone(&cache.told),
+            )
+        });
+    if let Some((measured, reads, told)) = hit {
         reads.merge();
+        for (handler, layout) in told.iter() {
+            handler(Rc::clone(layout));
+        }
+        note_told(told.iter().cloned());
         return Measured {
             size: measured.size,
             paint: Paint::Shared(measured),
         };
     }
+    let depth = TOLD.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        stack.push(Vec::new());
+        stack.len() - 1
+    });
+    let guard = ToldGuard { depth };
     let (measured, reads) = track_reads(|| {
         let node = node();
         measure_node(&node, constraints, text)
     });
+    let told = Rc::new(guard.finish());
+    note_told(told.iter().cloned());
     let measured = Rc::new(measured);
     *cache.borrow_mut() = reads.is_trackable().then(|| {
         Box::new(LayoutCache {
@@ -651,6 +714,7 @@ fn measure_cached(
             fonts,
             reads,
             measured: Rc::clone(&measured),
+            told,
         }) as Box<dyn std::any::Any>
     });
     Measured {

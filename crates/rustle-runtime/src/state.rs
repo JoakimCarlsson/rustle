@@ -348,6 +348,18 @@ pub(crate) enum Read {
 }
 
 impl Read {
+    /// What tells this read apart from others of the same thing: the address and version of a
+    /// state, or the address of a composition local; nothing for a check, which is kept as is.
+    fn key(&self) -> Option<(usize, u64)> {
+        match self {
+            Self::State(state, version) => {
+                Some((Rc::as_ptr(state).cast::<()>() as usize, *version))
+            }
+            Self::Local(local, _) => Some((*local, u64::MAX)),
+            Self::Same(_) => None,
+        }
+    }
+
     /// Whether what was read is as it was.
     pub(crate) fn is_current(&self) -> bool {
         match self {
@@ -363,6 +375,67 @@ pub(crate) struct Recording {
     pub(crate) reads: Vec<Read>,
     /// False once the block read something whose changes are not tracked.
     pub(crate) unskippable: bool,
+    /// The states, by address and version, and the composition locals, by address, among
+    /// `reads`, so each is noted once however often the block and the blocks it reused read it.
+    seen: std::collections::HashSet<(usize, u64), std::hash::BuildHasherDefault<AddressHasher>>,
+}
+
+impl Recording {
+    /// How many reads a recording holds before it keeps a set of them to look duplicates up
+    /// in; fewer are looked through.
+    const SCANNED: usize = 24;
+
+    /// Notes `read`, unless it is a state at the same version or a composition local already
+    /// noted.
+    fn push(&mut self, read: Read) {
+        let Some(key) = read.key() else {
+            self.reads.push(read);
+            return;
+        };
+        if self.seen.is_empty() && self.reads.len() < Self::SCANNED {
+            if self.reads.iter().any(|noted| noted.key() == Some(key)) {
+                return;
+            }
+        } else {
+            if self.seen.is_empty() {
+                self.seen = self.reads.iter().filter_map(Read::key).collect();
+            }
+            if !self.seen.insert(key) {
+                return;
+            }
+        }
+        self.reads.push(read);
+    }
+}
+
+/// Hashes addresses and versions by mixing their bits, which is all a set of them needs.
+#[derive(Default)]
+struct AddressHasher(u64);
+
+impl std::hash::Hasher for AddressHasher {
+    /// The mixed bits.
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    /// Mixes in `bytes`, eight at a time.
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    /// Mixes in `value`.
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    /// Mixes in `value`.
+    fn write_usize(&mut self, value: usize) {
+        self.write_u64(value as u64);
+    }
 }
 
 thread_local! {
@@ -407,24 +480,40 @@ pub(crate) fn end_recording() -> Recording {
 /// The state among `reads` also counts as read by whatever composes now, so a scope that
 /// reuses a cached result keeps being invalidated by the state that result came from.
 pub(crate) fn merge_recording(reads: Vec<Read>, unskippable: bool) {
-    for read in &reads {
+    let rest = RECORDINGS.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(top) = stack.last_mut() else {
+            return reads;
+        };
+        top.unskippable |= unskippable;
+        top.reads.reserve(reads.len());
+        let mut noted = Vec::new();
+        for read in reads {
+            let before = top.reads.len();
+            top.push(read);
+            if top.reads.len() > before
+                && let Some(Read::State(state, _)) = top.reads.last()
+            {
+                noted.push(Rc::clone(state));
+            }
+        }
+        noted
+            .into_iter()
+            .map(|state| Read::State(state, 0))
+            .collect()
+    });
+    for read in &rest {
         if let Read::State(state, _) = read {
             state.note_read();
         }
     }
-    RECORDINGS.with(|stack| {
-        if let Some(top) = stack.borrow_mut().last_mut() {
-            top.reads.extend(reads);
-            top.unskippable |= unskippable;
-        }
-    });
 }
 
 /// Notes something the enclosing skippable block read, as a check that it is unchanged.
 pub(crate) fn record_check(check: Rc<dyn Fn() -> bool>) {
     RECORDINGS.with(|stack| {
         if let Some(top) = stack.borrow_mut().last_mut() {
-            top.reads.push(Read::Same(check));
+            top.push(Read::Same(check));
         }
     });
 }
@@ -434,7 +523,7 @@ pub(crate) fn record_check(check: Rc<dyn Fn() -> bool>) {
 pub(crate) fn record_local_check(local: usize, check: Rc<dyn Fn() -> bool>) {
     RECORDINGS.with(|stack| {
         if let Some(top) = stack.borrow_mut().last_mut() {
-            top.reads.push(Read::Local(local, check));
+            top.push(Read::Local(local, check));
         }
     });
 }
@@ -558,7 +647,7 @@ impl<T: 'static> State<T> {
             }
             if let Some(top) = stack.borrow_mut().last_mut() {
                 let inner: Rc<dyn Versioned> = self.inner.clone();
-                top.reads.push(Read::State(inner, self.inner.version.get()));
+                top.push(Read::State(inner, self.inner.version.get()));
             }
         });
         self.inner.note_read();

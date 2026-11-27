@@ -8,7 +8,7 @@ use glyphon::cosmic_text::{
     Align, Ellipsize, EllipsizeHeightLimit, FeatureTag, FontFeatures, Hinting, Style,
 };
 use glyphon::{
-    Attrs, Buffer, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea,
+    Attrs, Buffer, Color, Family, FontSystem, Metrics, Resolution, SwashCache, TextArea,
     TextBounds, TextRenderer, Viewport, Weight, Wrap,
 };
 use rustle_geometry::Size;
@@ -17,6 +17,7 @@ use rustle_text::{TextLayout, TextMeasurer, TextStyle};
 
 use crate::composite::Canvas;
 use crate::frame::local_scissor;
+use crate::paragraphs::{self, RunStyle, Runs};
 
 use std::hash::{Hash, Hasher};
 
@@ -413,14 +414,18 @@ fn hash_family(family: FontFamily, hasher: &mut impl Hasher) {
     }
 }
 
-/// The size of `content` set in `style`, wrapped at `max_width` if it is finite.
+/// The size of `content` set in `style`, wrapped at `max_width` if it is finite. It is at
+/// least as many lines tall as `content` has lines, since a trailing line break leaves an
+/// empty last line the shaper does not report.
 fn measure_plain(
     font_system: &mut FontSystem,
     content: &str,
     style: &TextStyle,
     max_width: f32,
 ) -> Size {
-    let buffer = shape(
+    let breaks =
+        (content.matches('\n').count() + 1).min(style.max_lines.unwrap_or(usize::MAX)) as u32;
+    with_shaped(
         font_system,
         Setting {
             content: Content::Plain {
@@ -438,11 +443,8 @@ fn measure_plain(
             wrap: style.wrap,
         },
         max_width.is_finite().then_some(max_width),
-    );
-    // A trailing line break leaves an empty last line the shaper does not report.
-    let breaks =
-        (content.matches('\n').count() + 1).min(style.max_lines.unwrap_or(usize::MAX)) as u32;
-    size_of_buffer(&buffer, style.line_height, breaks)
+        |buffer| size_of_buffer(buffer, style.line_height, breaks),
+    )
 }
 
 /// The size of `spans` set in `style`, wrapped at `max_width` if it is finite.
@@ -452,7 +454,7 @@ fn measure_rich(
     style: &TextStyle,
     max_width: f32,
 ) -> Size {
-    let buffer = shape(
+    with_shaped(
         font_system,
         Setting {
             content: Content::Rich(spans),
@@ -463,8 +465,8 @@ fn measure_rich(
             wrap: style.wrap,
         },
         max_width.is_finite().then_some(max_width),
-    );
-    size_of_buffer(&buffer, style.line_height, 0)
+        |buffer| size_of_buffer(buffer, style.line_height, 0),
+    )
 }
 
 fn size_of_buffer(buffer: &Buffer, line_height: f32, at_least: u32) -> Size {
@@ -474,7 +476,7 @@ fn size_of_buffer(buffer: &Buffer, line_height: f32, at_least: u32) -> Size {
             .layout_runs()
             .fold((0.0_f32, 0.0_f32, 0_u32), |(width, height, lines), run| {
                 (
-                    width.max(run.line_w),
+                    width.max(crate::paragraphs::line_width(buffer, &run)),
                     height + run.line_height.max(line_height),
                     lines + 1,
                 )
@@ -710,7 +712,7 @@ fn trim_shaped_words(font_system: &mut FontSystem) {
 
 /// The attributes of a run: family, weight, slant, letter spacing, ligatures and,
 /// if it has a size of its own, the metrics that size gives.
-fn attributes(
+pub(super) fn attributes(
     font_family: FontFamily,
     font_weight: u16,
     italic: bool,
@@ -735,14 +737,41 @@ fn attributes(
     attrs
 }
 
-/// Shapes text in logical pixels, wrapping at `width` if there is one. Text limited to a
-/// number of lines keeps at most that many of its own lines, so a line break in it never
-/// shows more lines than the limit.
+/// Shapes text in logical pixels, wrapping at `width` if there is one, for a buffer that is
+/// kept, as one drawn is. Text limited to a number of lines keeps at most that many of its
+/// own lines, so a line break in it never shows more lines than the limit.
 pub(super) fn shape(
     font_system: &mut FontSystem,
     setting: Setting<'_>,
     width: Option<f32>,
 ) -> Buffer {
+    shape_lending(font_system, setting, width, false).0
+}
+
+/// Shapes text as [`shape`] does and gives `read` the buffer, which is then dropped: the
+/// paragraphs it reuses are lent to it rather than copied, and kept again afterwards.
+pub(super) fn with_shaped<T>(
+    font_system: &mut FontSystem,
+    setting: Setting<'_>,
+    width: Option<f32>,
+    read: impl FnOnce(&Buffer) -> T,
+) -> T {
+    let (buffer, borrowed) = shape_lending(font_system, setting, width, true);
+    let result = read(&buffer);
+    if let Some(borrowed) = borrowed {
+        paragraphs::give_back(buffer, borrowed);
+    }
+    result
+}
+
+/// Shapes text as [`shape`] says, the paragraphs kept from before lent to the buffer when
+/// `borrow` is set; see [`paragraphs::shape_kept`].
+fn shape_lending(
+    font_system: &mut FontSystem,
+    setting: Setting<'_>,
+    width: Option<f32>,
+    borrow: bool,
+) -> (Buffer, Option<paragraphs::Borrowed>) {
     trim_shaped_words(font_system);
     let mut buffer = Buffer::new(
         font_system,
@@ -773,7 +802,18 @@ pub(super) fn shape(
     } else {
         1.0
     };
-    match setting.content {
+    let plain =
+        |font_family, weight, italic, letter_spacing, ligatures, own_size, color| RunStyle {
+            family: font_family,
+            weight,
+            italic,
+            letter_spacing,
+            ligatures,
+            size: setting.font_size,
+            own_size,
+            color,
+        };
+    let runs = match setting.content {
         Content::Plain {
             text,
             font_weight,
@@ -781,26 +821,24 @@ pub(super) fn shape(
             italic,
             letter_spacing,
             ligatures,
-        } => buffer.set_text(
-            text,
-            &attributes(
+        } => {
+            let style = plain(
                 font_family,
                 available_weight(font_system, font_family, font_weight),
                 italic,
                 letter_spacing,
                 ligatures,
-                setting.font_size,
                 None,
-            ),
-            Shaping::Advanced,
-            alignment,
-        ),
-        Content::Rich(spans) => buffer.set_rich_text(
-            spans.iter().enumerate().map(|(index, span)| {
+                None,
+            );
+            Runs::new([(text, style)], style)
+        }
+        Content::Rich(spans) => Runs::new(
+            spans.iter().map(|span| {
                 let size = span.font_size.unwrap_or(setting.font_size);
-                (
-                    span.text.as_str(),
-                    attributes(
+                let style = RunStyle {
+                    size,
+                    ..plain(
                         span.font_family,
                         available_weight(
                             font_system,
@@ -810,28 +848,38 @@ pub(super) fn shape(
                         span.italic,
                         span.letter_spacing,
                         span.ligatures,
-                        size,
                         span.font_size.map(|size| (size, size * ratio)),
+                        Some(span.color),
                     )
-                    .metadata(index)
-                    .color(Color::rgba(
-                        span.color.r,
-                        span.color.g,
-                        span.color.b,
-                        span.color.a,
-                    )),
-                )
+                };
+                (span.text.as_str(), style)
             }),
-            &Attrs::new(),
-            Shaping::Advanced,
-            alignment,
+            plain(FontFamily::SansSerif, 400, false, 0.0, true, None, None),
         ),
-    }
+    };
+    runs.set(&mut buffer, alignment);
     if let Some(lines) = setting.max_lines {
         buffer.lines.truncate(lines.max(1));
     }
-    buffer.shape_until_scroll(font_system, false);
-    buffer
+    let layout = paragraphs::layout_key(
+        (setting.font_size, setting.line_height),
+        width,
+        setting.wrap,
+        setting.max_lines,
+    );
+    let growing = width.is_some()
+        && setting.max_lines.is_none()
+        && !matches!(setting.wrap, TextWrap::None)
+        && matches!(setting.align, TextAlign::Start | TextAlign::Left);
+    let borrowed = paragraphs::shape_kept(
+        font_system,
+        &mut buffer,
+        &runs,
+        (alignment, layout),
+        growing,
+        borrow,
+    );
+    (buffer, borrowed)
 }
 
 /// Pure cache-key coverage; no renderer or font system is constructed.

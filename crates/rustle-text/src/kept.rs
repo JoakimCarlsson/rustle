@@ -402,10 +402,16 @@ mod tests {
         epoch: u64,
     ) -> TextLayout {
         let spans = span(text);
-        kept_layout(spans.iter().map(SpanKey::of), &style, width, epoch, |spans| {
-            calls.set(calls.get() + 1);
-            TextLayout::new(spans[0].text.clone(), spans.to_vec(), 14.0, Vec::new())
-        })
+        kept_layout(
+            spans.iter().map(SpanKey::of),
+            &style,
+            width,
+            epoch,
+            |spans| {
+                calls.set(calls.get() + 1);
+                TextLayout::new(spans[0].text.clone(), spans.to_vec(), 14.0, Vec::new())
+            },
+        )
     }
 
     /// The same text, style, width and fonts are shaped once; a change in any is shaped again.

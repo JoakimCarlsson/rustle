@@ -78,9 +78,12 @@ pub struct DisplayList {
     /// Areas that take text from the input method through a session, in paint order. See
     /// [`Modifier::platform_text_input`](crate::Modifier::platform_text_input).
     pub text_inputs: Vec<crate::text_input::TextInputRegion>,
+    /// What the next paint can reuse of how this list was painted.
+    pub(crate) reuse: super::paint::Reuse,
 }
 
 /// A popup shown in the window: where it was painted and how it is dismissed.
+#[derive(Clone)]
 pub struct PopupRegion {
     /// Where the popup was painted, in the window.
     pub rect: Rect,
@@ -101,6 +104,7 @@ impl PopupRegion {
 
 /// An area drawn according to its interaction state, cut to what is visible, with what
 /// decides that state and the state it was painted in.
+#[derive(Clone)]
 pub struct InteractionRegion {
     /// The part of the area that is visible, in the window.
     pub rect: Rect,
@@ -122,6 +126,7 @@ pub struct InteractionRegion {
 
 /// Where an area that draws its own text takes text input, cut to what is visible, and the
 /// focus that must be held for it to count.
+#[derive(Clone)]
 pub struct ImeCaretRegion {
     pub rect: Rect,
     /// The focus of the nearest focusable around the area, or the first inside it; `None`
@@ -130,12 +135,14 @@ pub struct ImeCaretRegion {
 }
 
 /// An area that chooses the mouse cursor, cut to what is visible.
+#[derive(Clone)]
 pub struct CursorRegion {
     pub rect: Rect,
     pub icon: CursorIcon,
 }
 
 /// What an area means, where it is, and what activating it does.
+#[derive(Clone)]
 pub struct SemanticsNode {
     pub rect: Rect,
     pub semantics: Semantics,
@@ -147,6 +154,7 @@ pub struct SemanticsNode {
 }
 
 /// An area that can hold keyboard focus, cut to what is visible.
+#[derive(Clone)]
 pub struct FocusRegion {
     pub rect: Rect,
     pub focus: Focus,
@@ -207,6 +215,7 @@ impl TaggedNode {
 }
 
 /// An area that reacts to a press, cut to what is visible.
+#[derive(Clone)]
 pub struct PressRegion {
     pub rect: Rect,
     /// Where the area's top-left corner is, before it was cut to what is visible.
@@ -218,6 +227,7 @@ pub struct PressRegion {
 }
 
 /// An area that reacts to one pointer button, cut to what is visible.
+#[derive(Clone)]
 pub struct ButtonRegion {
     pub rect: Rect,
     /// Where the area's top-left corner is, before it was cut to what is visible.
@@ -228,6 +238,7 @@ pub struct ButtonRegion {
 }
 
 /// An area that sees key events that happen inside it, cut to what is visible.
+#[derive(Clone)]
 pub struct KeyRegion {
     pub rect: Rect,
     /// The focusable areas painted inside this one, as indices into [`DisplayList::focusables`].
@@ -243,6 +254,7 @@ pub struct KeyRegion {
 }
 
 /// An area that can be picked up, cut to what is visible.
+#[derive(Clone)]
 pub struct DragSourceRegion {
     pub rect: Rect,
     /// The button that picks the area up.
@@ -256,18 +268,21 @@ pub struct DragSourceRegion {
 }
 
 /// An area something dragged can be dropped on, cut to what is visible.
+#[derive(Clone)]
 pub struct DropTargetRegion {
     pub rect: Rect,
     pub on_drop: DropHandler,
 }
 
 /// An area files can be dropped on, cut to what is visible.
+#[derive(Clone)]
 pub struct FileDropRegion {
     pub rect: Rect,
     pub on_drop: Rc<dyn Fn(std::path::PathBuf)>,
 }
 
 /// An area that sees the raw pointer stream, cut to what is visible.
+#[derive(Clone)]
 pub struct PointerInputRegion {
     pub rect: Rect,
     /// Where the area's top-left corner is, before it was cut to what is visible.
@@ -276,12 +291,14 @@ pub struct PointerInputRegion {
 }
 
 /// An area that reacts to a pinch gesture, cut to what is visible.
+#[derive(Clone)]
 pub struct PinchRegion {
     pub rect: Rect,
     pub on_pinch: Rc<dyn Fn(f32)>,
 }
 
 /// An area that follows the pointer over it, cut to what is visible.
+#[derive(Clone)]
 pub struct PointerMoveRegion {
     pub rect: Rect,
     /// Where the area's top-left corner is, before it was cut to what is visible.
@@ -292,6 +309,7 @@ pub struct PointerMoveRegion {
 }
 
 /// An area that reacts to a long press, cut to what is visible.
+#[derive(Clone)]
 pub struct LongPressRegion {
     pub rect: Rect,
     pub on_long_press: Rc<dyn Fn()>,
@@ -301,6 +319,7 @@ pub struct LongPressRegion {
 }
 
 /// An area that wants to know when the pointer is over it, cut to what is visible.
+#[derive(Clone)]
 pub struct HoverRegion {
     pub rect: Rect,
     pub on_hover: Rc<dyn Fn(bool)>,
@@ -309,6 +328,7 @@ pub struct HoverRegion {
 }
 
 /// An area that follows a drag, cut to what is visible.
+#[derive(Clone)]
 pub struct DragRegion {
     /// What to run when this drag ends, if the area said.
     pub on_end: Option<Rc<dyn Fn()>>,
@@ -325,6 +345,7 @@ pub struct DragRegion {
 }
 
 /// An area that runs a handler when clicked, cut to what is visible.
+#[derive(Clone)]
 pub struct HitRegion {
     pub rect: Rect,
     /// The corner radius of the background the region sits on, for drawing feedback.
@@ -341,6 +362,7 @@ pub struct HitRegion {
 }
 
 /// An area that scrolls, cut to what is visible.
+#[derive(Clone)]
 pub struct ScrollRegion {
     pub rect: Rect,
     pub state: ScrollState,
@@ -367,6 +389,19 @@ pub(crate) fn intersect(a: Rect, b: Rect) -> Rect {
 }
 
 impl DisplayList {
+    /// How many subtrees whose layout was kept were reused from the list painted before,
+    /// rather than painted again, when this list was painted with
+    /// [`LaidOut::paint_reusing`](crate::LaidOut::paint_reusing). Subtrees inside a reused
+    /// one are not counted.
+    pub fn reused_subtrees(&self) -> usize {
+        self.reuse.reused
+    }
+
+    /// How many subtrees whose layout was kept were painted afresh when this list was painted.
+    pub fn repainted_subtrees(&self) -> usize {
+        self.reuse.repainted
+    }
+
     /// Where text input goes now, in the window, for placing an input method's candidate
     /// popup: the caret of the text being edited ([`ime_area`](Self::ime_area)), or else the
     /// caret the started request of the focused

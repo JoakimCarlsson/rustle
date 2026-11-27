@@ -134,9 +134,9 @@ impl App {
         let before = self.active;
         for index in 0..self.slots.len() {
             self.activate(index);
-            self.ui.repaint();
+            self.ui.repaint(true);
             if let Some(state) = &self.window {
-                state.window.request_redraw();
+                state.request_frame();
             }
         }
         self.activate(before);
@@ -178,9 +178,11 @@ impl App {
             options.transparent,
         )
         .map_err(|error| error.to_string())?;
+        let pacer = crate::frame_pacing::FramePacer::new(&window);
         Ok(NativeWindow {
             adapter,
             renderer,
+            pacer,
             window,
         })
     }
@@ -366,6 +368,11 @@ impl App {
         let Some(index) = self.slot_of(id) else {
             return;
         };
+        if matches!(event, winit::event::WindowEvent::RedrawRequested) {
+            self.show_resampled_wheel(id);
+        } else if !crate::handler::coalescible(&event) {
+            self.drain_resampled_wheel();
+        }
         if !crate::handler::coalescible(&event) {
             self.flush_pending_input(event_loop);
         }
@@ -456,7 +463,7 @@ impl App {
         if self.ui.take_redraw()
             && let Some(state) = &self.window
         {
-            state.window.request_redraw();
+            state.request_frame();
         }
     }
 

@@ -13,6 +13,14 @@ use crate::text::{
 use crate::{Renderer, image, path, shaders};
 
 impl Renderer {
+    /// Splits `commands` into the layers a frame of the renderer's size draws, shaping the
+    /// text they hold, without preparing or drawing anything, and returns how many items the
+    /// frame holds: what a frame costs on the CPU before the GPU is involved, for benchmarks.
+    pub fn build_layers(&mut self, commands: &[DrawCommand], scale_factor: f32) -> usize {
+        let target = (self.surface_config.width, self.surface_config.height);
+        self.layers(commands, scale_factor, target).len()
+    }
+
     /// Splits `commands` into layers: each is the rectangles drawn together,
     /// the text drawn over them, and the clip they are cut to.
     pub(super) fn layers(

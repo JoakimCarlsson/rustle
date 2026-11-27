@@ -28,6 +28,8 @@ mod uri_handler;
 mod view_configuration;
 
 #[cfg(test)]
+mod paint_reuse_tests;
+#[cfg(test)]
 mod restartable_tests;
 #[cfg(test)]
 mod semantics_tests;

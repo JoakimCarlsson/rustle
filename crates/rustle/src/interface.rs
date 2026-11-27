@@ -195,7 +195,8 @@ impl Interface {
     /// Shows `laid_out`, a tree just measured, painting its interactive areas in the state
     /// the pointer and focus put them in now.
     pub(crate) fn show(&mut self, laid_out: LaidOut) {
-        self.display = self.paint(&laid_out, self.pointer_state());
+        let previous = mem::take(&mut self.display);
+        self.display = self.paint(&laid_out, self.pointer_state(), previous);
         self.follow_listeners();
         self.laid_out = Some(laid_out);
         self.follow_focused_area();
@@ -203,11 +204,19 @@ impl Interface {
     }
 
     /// Paints `laid_out` with its interactive areas in the state `pointer` puts them in,
-    /// counting the state the drawing reads as read while drawing the composition shown.
-    fn paint(&self, laid_out: &LaidOut, pointer: PointerState) -> DisplayList {
+    /// reusing what `previous`, the list shown before, holds of the subtrees that did not
+    /// change, and counting the state the drawing reads as read while drawing the composition
+    /// shown.
+    fn paint(
+        &self,
+        laid_out: &LaidOut,
+        pointer: PointerState,
+        previous: DisplayList,
+    ) -> DisplayList {
+        let paint = || laid_out.paint_reusing(pointer, previous);
         match &self.phases {
-            Some(phases) => phases.run(rustle_runtime::Phase::Drawing, || laid_out.paint(pointer)),
-            None => laid_out.paint(pointer),
+            Some(phases) => phases.run(rustle_runtime::Phase::Drawing, paint),
+            None => paint(),
         }
     }
 
@@ -227,18 +236,26 @@ impl Interface {
         if let Some(laid_out) = &self.laid_out
             && self.display.interactions_changed(pointer)
         {
-            self.display = self.paint(laid_out, pointer);
+            let previous = mem::take(&mut self.display);
+            self.display = self.paint(laid_out, pointer, previous);
             self.follow_listeners();
             self.redraw = true;
         }
     }
 
-    /// Paints the shown tree again, without composing or measuring it, so drawing closures
-    /// that read something outside composition, such as a clock the host keeps, run again,
-    /// and asks for a redraw.
-    pub(crate) fn repaint(&mut self) {
+    /// Paints the shown tree again, without composing or measuring it, and asks for a redraw.
+    /// With `reuse`, the subtrees whose drawing read no state that changed are reused, which
+    /// suits a redraw asked for by state read while drawing; without, every drawing closure
+    /// runs again, so those that read something outside composition, such as a clock the
+    /// host keeps, see it change.
+    pub(crate) fn repaint(&mut self, reuse: bool) {
         if let Some(laid_out) = &self.laid_out {
-            self.display = self.paint(laid_out, self.pointer_state());
+            let previous = if reuse {
+                mem::take(&mut self.display)
+            } else {
+                DisplayList::default()
+            };
+            self.display = self.paint(laid_out, self.pointer_state(), previous);
             self.follow_listeners();
             self.redraw = true;
         }

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use rustle_geometry::{Offset, Rect, Size};
@@ -22,6 +23,11 @@ use crate::popup::{PopupPlacement, popup_position};
 use crate::scroll::{ScrollState, ScrollbarVisibility, thumb};
 use crate::semantics::{Role, Semantics};
 use crate::{Node, TextEditing};
+
+#[path = "reuse.rs"]
+mod reuse;
+
+pub(super) use reuse::Reuse;
 
 /// How the edges of laid-out areas are placed on the pixel grid.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -142,46 +148,43 @@ impl LaidOut {
     /// painted, so an area that turns out to be covered where the pointer is gets painted a
     /// second time; with no interactive area, or none covered, the tree is painted once.
     pub fn paint(&self, pointer: PointerState) -> DisplayList {
-        let list = self.paint_in(pointer, None);
+        self.paint_reusing(pointer, DisplayList::default())
+    }
+
+    /// Paints the measured tree as [`paint`](Self::paint) does, reusing what `previous`, the
+    /// list painted last, holds of the subtrees kept from the tree it was painted from.
+    ///
+    /// A subtree laid out again is painted again. One whose layout was kept is reused, moved
+    /// to where it is now, when it is painted in the same circumstances (the alpha, focus,
+    /// interaction group and clips around it, the window and pixel grid), nothing its drawing
+    /// read changed, and its interactive areas are in the same state; the unchanged subtrees
+    /// inside a subtree painted again are reused in turn. The list is the same as painting
+    /// everything would make. Drawing closures in a reused subtree do not run, so one that
+    /// reads something outside composition (not state) is only seen to change by
+    /// [`paint`](Self::paint).
+    pub fn paint_reusing(&self, pointer: PointerState, previous: DisplayList) -> DisplayList {
+        let list = self.paint_in(pointer, None, previous);
         if list.interactions.is_empty() || !list.interactions_changed(pointer) {
             return list;
         }
         let resolved = list.resolve_interactions(pointer);
-        self.paint_in(pointer, Some(resolved))
+        self.paint_in(pointer, Some(resolved), list)
     }
 
     /// Paints the tree once, with the interactive areas in the states `resolved` gives, in
-    /// paint order, or in the state worked out as they are painted when it is `None`.
-    fn paint_in(&self, pointer: PointerState, resolved: Option<Vec<Interaction>>) -> DisplayList {
-        let mut painter = Painter {
-            pending_end: None,
-            deferred: Vec::new(),
-            alpha: 1.0,
-            merging: 0,
-            clearing: 0,
-            parents: Vec::new(),
-            merged_text: Vec::new(),
-            merged_labels: Vec::new(),
-            list: DisplayList::default(),
-            clips: Vec::new(),
-            clip_radii: Vec::new(),
-            window: self.window,
-            grid: self.grid,
-            focus: None,
-            requester: None,
-            scroll_parents: Vec::new(),
-            focus_observers: Vec::new(),
-            key_scopes: Vec::new(),
-            focused_flag: None,
-            group: None,
-            pointer,
-            resolved,
-            anchors: Vec::new(),
-            pointer_event_parents: Vec::new(),
-        };
+    /// paint order, or in the state worked out as they are painted when it is `None`, reusing
+    /// what `previous` holds of unchanged subtrees.
+    fn paint_in(
+        &self,
+        pointer: PointerState,
+        resolved: Option<Vec<Interaction>>,
+        previous: DisplayList,
+    ) -> DisplayList {
+        let mut painter = Painter::new(self.window, self.grid, pointer, resolved);
+        painter.previous = reuse::Previous::new(previous);
         painter.paint(&self.measured, Offset::default());
         painter.paint_deferred();
-        painter.list
+        painter.finish()
     }
 }
 
@@ -269,9 +272,71 @@ struct Painter<'a> {
     /// The areas that hear pointer events being painted inside, as indices into the list,
     /// innermost last.
     pointer_event_parents: Vec<usize>,
+    /// The list painted before, whose unchanged subtrees are reused.
+    previous: Option<reuse::Previous>,
+    /// What this paint keeps of its subtrees for the next one.
+    kept: reuse::Kept,
+    /// Whether a clip cut an area of the subtree being painted.
+    cut: Cell<bool>,
+    /// Whether a drag handler in the subtree being painted took a drag-end handler.
+    used_end: Cell<bool>,
+    /// The union of the areas of the subtree being painted that were cut to the clips.
+    extent: Cell<Option<Rect>>,
+    /// Whether the subtree being painted draws something that changes without its state
+    /// changing, or reaches out of itself, so it cannot be reused.
+    volatile: bool,
 }
 
 impl<'a> Painter<'a> {
+    /// A painter of a window of size `window`, rounding edges to `grid` steps a logical pixel
+    /// if given, with interactive areas in the state `pointer` puts them in, or in the states
+    /// `resolved` gives in paint order.
+    fn new(
+        window: Size,
+        grid: Option<f32>,
+        pointer: PointerState,
+        resolved: Option<Vec<Interaction>>,
+    ) -> Self {
+        Self {
+            pending_end: None,
+            deferred: Vec::new(),
+            alpha: 1.0,
+            merging: 0,
+            clearing: 0,
+            parents: Vec::new(),
+            merged_text: Vec::new(),
+            merged_labels: Vec::new(),
+            list: DisplayList::default(),
+            clips: Vec::new(),
+            clip_radii: Vec::new(),
+            window,
+            grid,
+            focus: None,
+            requester: None,
+            scroll_parents: Vec::new(),
+            focus_observers: Vec::new(),
+            key_scopes: Vec::new(),
+            focused_flag: None,
+            group: None,
+            pointer,
+            resolved,
+            anchors: Vec::new(),
+            pointer_event_parents: Vec::new(),
+            previous: None,
+            kept: reuse::Kept::default(),
+            cut: Cell::new(false),
+            used_end: Cell::new(false),
+            extent: Cell::new(None),
+            volatile: false,
+        }
+    }
+
+    /// The list painted, keeping what the next paint can reuse.
+    fn finish(mut self) -> DisplayList {
+        self.list.reuse = self.kept.into_reuse();
+        self.list
+    }
+
     /// Where an area whose unrounded place is `exact` and size is `size` is drawn: as it is,
     /// or with its edges rounded to the grid, the size being the distance between them.
     fn snap(&self, exact: Offset, size: Size) -> (Offset, Size) {
@@ -465,11 +530,23 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// `rect` cut to what the clips leave visible.
+    /// `rect` cut to what the clips leave visible, noting `rect` in the extent of the subtree
+    /// being painted, and whether the clips cut it.
     fn visible(&self, rect: Rect) -> Rect {
-        self.clips
+        let visible = self
+            .clips
             .iter()
-            .fold(rect, |rect, clip| intersect(rect, *clip))
+            .fold(rect, |rect, clip| intersect(rect, *clip));
+        self.extent.set(reuse::union(self.extent.get(), Some(rect)));
+        let apart = |a: f32, b: f32| (a - b).abs() > 1e-3;
+        if apart(visible.origin.x, rect.origin.x)
+            || apart(visible.origin.y, rect.origin.y)
+            || apart(visible.size.width, rect.size.width)
+            || apart(visible.size.height, rect.size.height)
+        {
+            self.cut.set(true);
+        }
+        visible
     }
 
     /// `color` as faded by the alpha modifiers in effect.
@@ -1076,7 +1153,7 @@ impl<'a> Painter<'a> {
                     self.pop_clip();
                 }
             }
-            Paint::Shared(shared) => self.paint(shared, exact),
+            Paint::Shared(shared) => self.paint_shared(shared, exact),
             Paint::Children(children) => {
                 self.anchors.push(Rect::new(exact, measured.size));
                 for (offset, child) in children {
@@ -1167,10 +1244,15 @@ impl<'a> Painter<'a> {
                     inside(rect.origin.x, rect.size.width, self.window.width),
                     inside(rect.origin.y, rect.size.height, self.window.height),
                 );
+                self.volatile = true;
                 self.paint(inner, Offset::new(exact.x + shift.x, exact.y + shift.y));
             }
-            Paint::InWindow { at, inner } => self.paint(inner, *at),
+            Paint::InWindow { at, inner } => {
+                self.volatile = true;
+                self.paint(inner, *at);
+            }
             Paint::Popup { placement, inner } => {
+                self.volatile = true;
                 self.paint_popup(placement, inner, Rect::new(exact, measured.size));
             }
             Paint::InteractionGroup { inner } => {
@@ -1422,10 +1504,15 @@ impl<'a> Painter<'a> {
             }
             Paint::Placed { on_placed, inner } => {
                 on_placed(rect, self.window);
+                self.kept
+                    .note(reuse::PlacedCall::Placed(Rc::clone(on_placed), rect));
                 self.paint(inner, exact);
             }
             Paint::PlacedVisible { on_visible, inner } => {
-                on_visible(self.visible(rect));
+                let visible = self.visible(rect);
+                on_visible(visible);
+                self.kept
+                    .note(reuse::PlacedCall::Visible(Rc::clone(on_visible), visible));
                 self.paint(inner, exact);
             }
             Paint::FocusChanged {
@@ -1471,6 +1558,7 @@ impl<'a> Painter<'a> {
                 } else {
                     Vec::new()
                 };
+                self.volatile = true;
                 self.deferred.push(Deferred {
                     z_index: *z_index,
                     origin: exact,
@@ -1611,10 +1699,14 @@ impl<'a> Painter<'a> {
                 };
                 self.paint(inner, inside);
                 self.scroll_parents.pop();
+                self.volatile = true;
                 self.paint_scrollbar(rect, state, *vertical, *offset);
                 self.pop_clip();
             }
             Paint::Drag { on_drag, inner } => {
+                if self.pending_end.is_some() {
+                    self.used_end.set(true);
+                }
                 self.list.drags.push(DragRegion {
                     on_end: self.pending_end.clone(),
                     rect: self.visible(rect),

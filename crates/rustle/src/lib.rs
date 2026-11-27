@@ -11,6 +11,7 @@ mod drag_and_drop;
 mod embedded;
 mod file_drops;
 mod focus;
+mod frame_pacing;
 mod frame_timing;
 mod handler;
 mod host;
@@ -24,6 +25,7 @@ mod saved;
 mod shadow;
 #[cfg(test)]
 mod testing;
+mod wheel_pacing;
 mod window;
 mod window_info;
 mod window_state;
@@ -109,6 +111,7 @@ pub use rustle_foundation::{
     remember_scroll_state, remember_text_field_state, selectable_text,
 };
 pub use rustle_foundation::{LOCAL_TEXT_CONTEXT_MENU, TextContextMenu, TextManager};
+pub use rustle_foundation::{OneRowEach, UniformRows, uniform_list, uniform_list_with};
 pub use rustle_foundation::{
     SelectionPoint, SelectionState, basic_text_area_no_wrap, remember_selection_state,
     selection_container, selection_container_with,
@@ -249,7 +252,8 @@ pub mod prelude {
         LazyListItemInfo, LazyListLayoutInfo, ShaderBrush, flow_column, flow_column_with,
         flow_row_with, lazy_horizontal_list, lazy_horizontal_list_keyed, lazy_horizontal_list_with,
         lazy_horizontal_staggered_grid, lazy_list_keyed, lazy_list_with, lazy_sticky_list,
-        lazy_vertical_grid_spanned, lazy_vertical_staggered_grid, with_constraints,
+        lazy_vertical_grid_spanned, lazy_vertical_staggered_grid, uniform_list, uniform_list_with,
+        with_constraints,
     };
 }
 

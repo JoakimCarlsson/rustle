@@ -119,7 +119,7 @@ impl App {
             self.deferred_phases.1 |= redraw;
             if self.composition.is_dirty() || relayout || redraw {
                 for state in self.native_windows() {
-                    state.window.request_redraw();
+                    state.request_frame();
                 }
             }
         }
@@ -246,7 +246,8 @@ impl App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.ui.wheel(wheel_delta(delta, state.window.scale_factor()));
+                self.ui
+                    .wheel(wheel_delta(delta, state.window.scale_factor()));
             }
             WindowEvent::PinchGesture { delta, .. } => self.ui.pinch(delta as f32),
             WindowEvent::ThemeChanged(theme) => self.set_dark(theme == WindowTheme::Dark),
@@ -284,7 +285,7 @@ impl App {
                         scene: built - started,
                         render: built.elapsed(),
                     }),
-                    Ok(false) => state.window.request_redraw(),
+                    Ok(false) => state.request_frame(),
                     Err(error) => return self.fail(event_loop, error),
                 }
                 self.request_redraw_for_frames();
@@ -309,10 +310,24 @@ impl App {
         if !coalescible(event) {
             return false;
         }
-        let Some(scale_factor) = self.window.as_ref().map(|state| state.window.scale_factor())
+        let Some(scale_factor) = self
+            .window
+            .as_ref()
+            .map(|state| state.window.scale_factor())
         else {
             return false;
         };
+        if let Some(state) = &self.window {
+            state.pacer.note_input();
+        }
+        if let WindowEvent::MouseWheel {
+            delta: precise @ MouseScrollDelta::PixelDelta(_),
+            ..
+        } = event
+        {
+            self.resample_wheel(event_loop, id, wheel_delta(*precise, scale_factor));
+            return true;
+        }
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let delta = wheel_delta(*delta, scale_factor);
             if self.pending_move.is_some()
@@ -339,9 +354,79 @@ impl App {
             self.pending_move = Some((id, event.clone()));
         }
         if let Some(state) = &self.window {
-            state.window.request_redraw();
+            state.request_frame();
         }
         true
+    }
+
+    /// Holds back a trackpad's scroll by `delta` in the window `id`, to be shown spread
+    /// evenly over the frames that follow, as [`App::show_resampled_wheel`] hands it out.
+    /// A mouse move held back is handled first, and the scrolls of another window are all
+    /// handled at once.
+    fn resample_wheel(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, delta: Offset) {
+        if self.pending_move.is_some() || self.pending_wheel.is_some() {
+            self.flush_pending_input(event_loop);
+        }
+        if self.resampled_wheel.1.is_some_and(|window| window != id) {
+            self.drain_resampled_wheel();
+        }
+        self.resampled_wheel.0.push(Instant::now(), delta);
+        self.resampled_wheel.1 = Some(id);
+        if let Some(state) = &self.window {
+            state.request_frame();
+        }
+    }
+
+    /// Scrolls the window `id` by the part of a trackpad's scrolls that its frame about to
+    /// be drawn shows, sampled at the refresh the frame is for, and asks for another frame
+    /// while some are still to be shown.
+    pub(crate) fn show_resampled_wheel(&mut self, id: WindowId) {
+        if self.resampled_wheel.1 != Some(id) {
+            return;
+        }
+        let Some(index) = self.slot_of(id) else {
+            self.resampled_wheel = Default::default();
+            return;
+        };
+        let frame = self
+            .slot_window(index)
+            .and_then(|state| state.pacer.frame_time())
+            .unwrap_or_else(Instant::now);
+        let delta = self.resampled_wheel.0.take(frame);
+        self.scroll_window(index, delta);
+        if self.resampled_wheel.0.pending() {
+            if let Some(state) = self.slot_window(index) {
+                state.request_frame();
+            }
+        } else {
+            self.resampled_wheel.1 = None;
+        }
+    }
+
+    /// Scrolls by every trackpad scroll not shown yet at once, before an event that must
+    /// come after them.
+    pub(crate) fn drain_resampled_wheel(&mut self) {
+        let Some(id) = self.resampled_wheel.1.take() else {
+            return;
+        };
+        let delta = self.resampled_wheel.0.drain();
+        if let Some(index) = self.slot_of(id) {
+            self.scroll_window(index, delta);
+        }
+    }
+
+    /// Scrolls what is under the pointer in the window in slot `index` by `delta`, leaving
+    /// the active window as it was.
+    fn scroll_window(&mut self, index: usize, delta: Offset) {
+        if delta.x == 0.0 && delta.y == 0.0 {
+            return;
+        }
+        let before = self.active;
+        self.activate(index);
+        self.ui.wheel(delta);
+        self.apply_focus_request();
+        self.apply_effects();
+        self.activate(before);
     }
 
     /// Handles the mouse move and the summed scroll held back by [`App::coalesce`], in the
@@ -397,10 +482,9 @@ fn wheel_delta(delta: MouseScrollDelta, scale_factor: f64) -> Offset {
     let scale_factor = scale_factor as f32;
     match delta {
         MouseScrollDelta::LineDelta(x, y) => Offset::new(x * 48.0, y * 48.0),
-        MouseScrollDelta::PixelDelta(delta) => Offset::new(
-            delta.x as f32 / scale_factor,
-            delta.y as f32 / scale_factor,
-        ),
+        MouseScrollDelta::PixelDelta(delta) => {
+            Offset::new(delta.x as f32 / scale_factor, delta.y as f32 / scale_factor)
+        }
         _ => Offset::new(0.0, 0.0),
     }
 }

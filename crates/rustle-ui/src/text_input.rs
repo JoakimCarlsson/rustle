@@ -99,6 +99,7 @@ pub fn remember_platform_text_input_session() -> PlatformTextInputSession {
 }
 
 /// An area that takes text from the input method through a session, cut to what is visible.
+#[derive(Clone)]
 pub struct TextInputRegion {
     /// The visible part of the area, in the window.
     pub rect: Rect,

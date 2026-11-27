@@ -95,8 +95,9 @@ impl Modifier {
     /// time layout measures it, at the width the text was given: its lines, glyph positions
     /// and hit testing ([`TextLayout::hit_test`](rustle_text::TextLayout::hit_test)), for
     /// links and selection in text that is not edited. Offsets in it are bytes. Nothing is
-    /// called for a node whose content is not text. The layout of a block holding such text
-    /// is not cached, as for edited text. Not a place to change state; write to a cell instead.
+    /// called for a node whose content is not text. A block holding such text keeps its
+    /// layout as any other does, and when it is reused the handler is told the layout kept with
+    /// it again. Not a place to change state; write to a cell instead.
     pub fn on_text_layout(
         self,
         on_text_layout: impl Fn(Rc<rustle_text::TextLayout>) + 'static,
